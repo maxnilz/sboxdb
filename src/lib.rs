@@ -2,4 +2,7 @@ pub mod error;
 
 pub mod storage;
 
-mod raft;
+pub mod codec;
+
+pub mod config;
+pub mod raft;

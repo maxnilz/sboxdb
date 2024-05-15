@@ -34,23 +34,26 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
 
+    use crate::raft::Index;
+
     use super::*;
 
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct Entry<T> {
-        command: T,
+        index: Index,
         term: u64,
+        command: T,
     }
 
     impl<T: Debug + PartialEq> Entry<T> {
-        fn new(command: T, term: u64) -> Self {
-            Entry { command, term }
+        fn new(index: Index, term: u64, command: T) -> Self {
+            Entry { index, term, command }
         }
     }
 
     #[test]
     fn test_codec() -> Result<()> {
-        let entry = Entry::new("hello", 1);
+        let entry = Entry::new(1, 1, "hello");
         let output = serialize(&entry)?;
         let got = deserialize(&output)?;
         assert_eq!(entry, got);
