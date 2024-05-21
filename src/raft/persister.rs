@@ -1,6 +1,6 @@
 use std::ops::Bound;
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::codec::{bincodec, keycodec};
 use crate::error::Result;
@@ -39,9 +39,10 @@ impl Key {
 // vote info, i.e., the persister here is only for raft states
 // not the state of the state machine that live upper above the
 // raft log.
+#[derive(Debug)]
 pub struct Persister {
     ns: String,
-    storage: Box<dyn Storage + Send + Sync>,
+    storage: Box<dyn Storage>,
 
     last_index: Index,
     last_term: Term,

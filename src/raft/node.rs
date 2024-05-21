@@ -8,7 +8,6 @@ use crate::raft::message::Message;
 use crate::raft::persister::Persister;
 use crate::raft::{Index, NodeId, Term};
 use crate::storage::state::State;
-use crate::storage::Storage;
 
 pub mod candidate;
 pub mod follower;
@@ -33,13 +32,36 @@ fn rand_election_timeout() -> Ticks {
     rand::thread_rng().gen_range(ELECTION_TIMEOUT_RANGE)
 }
 
-pub trait Node: Send + Sync {
-    fn tick(self: Box<Self>) -> Result<Box<dyn Node + Send + Sync>>;
+pub trait Node: Send {
+    fn tick(self: Box<Self>) -> Result<Box<dyn Node>>;
     // step advances the state machine using the given message.
     // the role transitions of a node are driven here.
-    fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node + Send + Sync>>;
+    fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node>>;
+    fn get_state(&self) -> NodeState;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeState {
+    pub me: NodeId,
+    pub term: Term,
+    pub leader: NodeId,
+}
+
+impl NodeState {
+    pub fn is_leader(&self) -> bool {
+        self.leader == self.me
+    }
+}
+
+impl<'a> From<&'a RawNode> for NodeState {
+    fn from(rn: &'a RawNode) -> Self {
+        NodeState { me: rn.id, term: rn.term, leader: rn.leader }
+    }
+}
+
+// impl !Into<RawNode> for NodeState {}
+
+#[derive(Debug)]
 pub struct RawNode {
     id: NodeId,
     peers: Vec<NodeId>,
@@ -50,7 +72,7 @@ pub struct RawNode {
     // to raft peers.
     node_tx: mpsc::UnboundedSender<Message>,
     // state represents the state machine.
-    state: Box<dyn State + Send + Sync>,
+    state: Box<dyn State>,
 
     // persistent state
     //

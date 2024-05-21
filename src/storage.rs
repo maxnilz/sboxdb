@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::iter::once;
 use std::ops::Bound;
 
@@ -29,7 +30,7 @@ impl<'a, T> ScanIterator<'a> for T where
 /// the [object safety rules](https://doc.rust-lang.org/reference/items/traits.html#object-safety)
 /// e.g., the method `scan` is using `(Bound<Vec<u8>>, Bound<Vec<u8>>)` as the range parameter type
 /// instead of a generic involved type `std::ops::RangeBounds`.
-pub trait Storage: Send + Sync {
+pub trait Storage: Debug + Send + Sync {
     /// Flushes any buffered data to underlying storage medium.
     fn flush(&self) -> Result<()>;
 
@@ -88,7 +89,7 @@ pub enum StorageType {
     Memory,
 }
 
-pub fn new_storage(typ: StorageType) -> Result<Box<dyn Storage + Send + Sync>> {
+pub fn new_storage(typ: StorageType) -> Result<Box<dyn Storage>> {
     match typ {
         StorageType::Memory => Ok(Box::new(memory::Memory::new())),
     }
@@ -159,6 +160,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct StorageNoop {}
     impl Storage for StorageNoop {
         fn flush(&self) -> Result<()> {

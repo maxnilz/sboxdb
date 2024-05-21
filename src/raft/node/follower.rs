@@ -1,8 +1,7 @@
 use crate::error::Result;
 use crate::raft::message::Message;
-use crate::raft::node::{rand_election_timeout, Node};
+use crate::raft::node::{rand_election_timeout, Node, NodeState};
 use crate::raft::node::{RawNode, Ticks};
-use crate::storage::Storage;
 
 pub struct Follower {
     rn: RawNode,
@@ -22,11 +21,15 @@ impl Follower {
 }
 
 impl Node for Follower {
-    fn tick(self: Box<Self>) -> Result<Box<dyn Node + Send + Sync>> {
-        todo!()
+    fn tick(self: Box<Self>) -> Result<Box<dyn Node>> {
+        Ok(self)
     }
 
-    fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node + Send + Sync>> {
-        todo!()
+    fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
+        Ok(self)
+    }
+
+    fn get_state(&self) -> NodeState {
+        NodeState::from(&self.rn)
     }
 }

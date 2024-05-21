@@ -21,7 +21,7 @@
 
 use serde::de::value::U32Deserializer;
 use serde::de::{DeserializeSeed, EnumAccess, IntoDeserializer, VariantAccess, Visitor};
-use serde::{ser, Serialize};
+use serde::ser;
 
 use crate::error::{Error, Result};
 
@@ -242,7 +242,7 @@ impl<'de> Deserializer<'de> {
 
     fn take_bytes(&mut self, length: usize) -> Result<&[u8]> {
         if self.input.len() < length {
-            return Err(Error::Internal(format!(
+            return Err(Error::internal(format!(
                 "insufficient bytes, except at least {} for {:x?}",
                 length, self.input
             )));
@@ -260,10 +260,10 @@ impl<'de> Deserializer<'de> {
                 Some((_, 0x00)) => match iter.next() {
                     Some((i, 0x00)) => break i + 1,
                     Some((_, 0xff)) => ans.push(0x00),
-                    _ => return Err(Error::Value("invalid escape sequence".to_string())),
+                    _ => return Err(Error::value("invalid escape sequence")),
                 },
                 Some((_, b)) => ans.push(*b),
-                _ => return Err(Error::Value("unexpected end of input".to_string())),
+                _ => return Err(Error::value("unexpected end of input")),
             }
         };
         self.input = &self.input[taken..];
@@ -544,7 +544,7 @@ impl<'de> VariantAccess<'de> for &mut Deserializer<'de> {
 #[cfg(test)]
 mod tests {
     use paste::paste;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
 
     use super::*;

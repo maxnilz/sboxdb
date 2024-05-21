@@ -5,6 +5,7 @@ use std::ops::Bound;
 use crate::error::Result;
 use crate::storage::{ScanIterator, Storage};
 
+#[derive(Debug, Clone)]
 pub struct Memory {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
 }

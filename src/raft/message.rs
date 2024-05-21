@@ -1,14 +1,45 @@
-use crate::raft::persister::Entry;
-use crate::raft::{Index, NodeId, Term};
+use serde::{Deserialize, Serialize};
 
-// A message that passed between raft peers
-pub struct Message {
-    from: NodeId,
-    to: NodeId,
-    event: Event,
+use crate::error::Error;
+use crate::error::Result;
+use crate::raft::persister::Entry;
+use crate::raft::{Index, NodeId, RequestId, Term};
+
+/// A message address.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum Address {
+    /// Broadcast to all peers. Only valid as an outbound recipient (to).
+    Broadcast,
+    /// A node with the specified node ID (local or remote). Valid both as
+    /// sender and recipient.
+    Node(NodeId),
+    /// A local client. Can only send ClientRequest messages, and receive
+    /// ClientResponse messages.
+    Client,
 }
 
-enum Event {
+/// A message that passed between raft peers
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Message {
+    /// The sender address.
+    pub from: Address,
+    /// The recipient address.
+    pub to: Address,
+    /// The message payload.
+    pub event: Event,
+}
+
+impl Address {
+    pub fn get_node_id(&self) -> Result<NodeId> {
+        match self {
+            Self::Node(id) => Ok(*id),
+            _ => Err(Error::internal(format!("unwrap called on non-Node address {:?}", self))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Event {
     AppendEntries {
         // current term
         term: Term,
@@ -59,34 +90,22 @@ enum Event {
         term: Term,
     },
 
-    // Propose command be appended to the log.
-    // Note that proposals can be lost without
-    // notice, therefore it is user's job to
-    // ensure proposal retries. if a proposal
-    // is accepted, the state machine would
-    // receive the accepted proposal's command
-    // from the ApplyMsg over the apply channel.
-    ProposeCommand {
-        command: Vec<u8>,
+    /// A client request. This can be submitted to the leader, or to a follower
+    /// which will forward it to its leader. If there is no leader, or the
+    /// leader or term changes, the request is aborted with an Error::Abort
+    /// ClientResponse and the client must retry.
+    /// If a request is accepted, the state machine would receive the accepted
+    /// command from the ApplyMsg.
+    ClientRequest {
+        id: RequestId,
+        request: Vec<u8>,
     },
 
-    // Acknowledge Proposal if the command is
-    // proposed to a leader, indicating that
-    // the proposed command has been acknowledged
-    // by the leader, but not yet commited and
-    // applied.
-    ProposalAcknowledged {
-        index: Index,
-        term: Term,
-    },
-
-    // Drop proposal if the command is proposed to
-    // either a follower or a candidate.
-    ProposalDropped,
-
-    ProposalApplied {
-        index: Index,
-        term: Term,
-        res: Vec<u8>,
+    /// A client response.
+    ClientResponse {
+        /// The response id. This matches the id of the ClientRequest.
+        id: RequestId,
+        /// The response, or an error.
+        response: Result<Vec<u8>>,
     },
 }
