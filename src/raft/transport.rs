@@ -136,7 +136,9 @@ impl Transport for TcpTransport {
         let to = match message.to {
             Address::Broadcast => self.txs.keys().copied().collect(),
             Address::Node(peer) => vec![peer],
-            Address::Client => return Err(Error::internal("outbound message to a local address")),
+            Address::Localhost => {
+                return Err(Error::internal("outbound message to a local address"))
+            }
         };
         for id in to {
             match self.txs.get_mut(&id) {
@@ -158,21 +160,16 @@ impl Transport for TcpTransport {
 
 #[cfg(test)]
 pub mod tests {
-    use std::fmt::format;
-    use std::num::NonZeroI8;
     use std::ops::Range;
     use std::sync::{Arc, RwLock};
 
     use async_trait::async_trait;
     use futures::Stream;
     use rand::Rng;
-    use tokio::sync::mpsc::error::SendError;
     use tokio::sync::Mutex;
-    use tokio_stream::StreamExt as _;
 
     use crate::error::Error;
     use crate::error::Result;
-    use crate::raft::node::Node;
 
     use super::*;
 
@@ -230,7 +227,7 @@ pub mod tests {
                     }
                     Some(tx) => HashMap::from_iter(vec![(id, Arc::clone(tx))]),
                 },
-                Address::Client => {
+                Address::Localhost => {
                     return Err(Error::internal("outbound message to a local address"))
                 }
             };

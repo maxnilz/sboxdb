@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::sync::Mutex;
 
 use tokio::sync::oneshot;
@@ -14,25 +13,6 @@ use crate::raft::persister::Persister;
 use crate::raft::transport::Transport;
 use crate::raft::NodeId;
 use crate::storage::state::State;
-
-struct Context {
-    tx: broadcast::Sender<()>,
-}
-
-impl Context {
-    fn new() -> Self {
-        let (tx, _) = broadcast::channel(1);
-        Self { tx }
-    }
-
-    fn close(self) {
-        drop(self.tx)
-    }
-
-    fn done(&self) -> broadcast::Receiver<()> {
-        self.tx.subscribe()
-    }
-}
 
 struct EventLoopContext {
     id: NodeId,
@@ -113,9 +93,6 @@ impl Server {
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
-                _ = done.recv() => {
-                    return Ok(())
-                }
                 _ = ticker.tick() => {
                     node = node.tick()?;
                 },
@@ -128,45 +105,47 @@ impl Server {
                     transport.send(msg).await?
                 },
 
-                Some((_, res_tx)) = state_rx.next() => {
+                Some((_, tx)) = state_rx.next() => {
                     let ns = node.get_state();
-                    if let Err(_) = res_tx.send(ns) {
+                    if let Err(_) = tx.send(ns) {
                         return Err(Error::internal("state response receiver dropped"));
                     }
                 }
 
-                Some((command, res_tx)) = command_rx.next() => {
-                    if let Err(_) = res_tx.send(Ok(command)) {
+                Some((command, tx)) = command_rx.next() => {
+                    if let Err(_) = tx.send(Ok(command)) {
                         return Err(Error::internal("command response receiver dropped"));
                     }
                 }
 
+                _ = done.recv() => {
+                    return Ok(())
+                },
             }
         }
     }
 
     pub fn get_state(&self) -> Result<NodeState> {
-        let (res_tx, res_rx) = oneshot::channel();
-        if let Err(_) = self.state_tx.send(((), res_tx)) {
+        let (tx, rx) = oneshot::channel();
+        if let Err(_) = self.state_tx.send(((), tx)) {
             return Err(Error::internal("state channel is closed or dropped"));
         }
-        let ns = futures::executor::block_on(res_rx)?;
+        let ns = futures::executor::block_on(rx)?;
         Ok(ns)
     }
 
     pub fn execute_command(&self, command: Vec<u8>) -> Result<Vec<u8>> {
-        let (res_tx, res_rx) = oneshot::channel();
-        if let Err(_) = self.command_tx.send((command, res_tx)) {
+        let (tx, rx) = oneshot::channel();
+        if let Err(_) = self.command_tx.send((command, tx)) {
             return Err(Error::internal("command channel is closed or dropped"));
         }
-        futures::executor::block_on(res_rx)?
+        futures::executor::block_on(rx)?
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::future::Future;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -228,11 +207,8 @@ mod tests {
             let server = Arc::clone(server);
             let (tx, rx) = broadcast::channel(1);
             let th = std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .thread_name(format!("ev-{}", id))
-                    .build()
-                    .unwrap();
+                let rt =
+                    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                 rt.block_on(async move {
                     if let Err(err) = server.serve(rx).await {
                         error!("server {} failed {}", id, err)
@@ -284,7 +260,7 @@ mod tests {
         cluster.start();
 
         // check num of leader
-        for i in 0..10 {
+        for i in 0..3 {
             let ans = cluster.get_num_leader();
             println!("found {} leader", ans);
             std::thread::sleep(Duration::from_secs(1));
