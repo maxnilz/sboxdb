@@ -160,7 +160,9 @@ impl Transport for TcpTransport {
 
 #[cfg(test)]
 pub mod tests {
+    use std::collections::HashSet;
     use std::ops::Range;
+    use std::os::linux::raw::stat;
     use std::sync::{Arc, RwLock};
 
     use async_trait::async_trait;
@@ -215,7 +217,7 @@ pub mod tests {
         }
 
         async fn send(&mut self, message: Message) -> Result<()> {
-            let from = message.from.get_node_id()?;
+            let from = message.from.unwrap_node_id();
             let txs: HashMap<_, _> = match message.to {
                 Address::Broadcast => {
                     self.peers.iter().map(|(id, tx)| (*id, Arc::clone(tx))).collect()
@@ -291,6 +293,10 @@ pub mod tests {
     }
 
     pub struct LabNetMesh {
+        nodes: Vec<NodeId>,
+        // assuming node id is equal to the index of array.
+        connected: Vec<bool>,
+
         txs: HashMap<NodeId, Arc<mpsc::Sender<Message>>>,
         rxs: HashMap<NodeId, Arc<Mutex<mpsc::Receiver<Message>>>>,
 
@@ -301,23 +307,31 @@ pub mod tests {
         pub fn new(nodes: Vec<NodeId>) -> Self {
             let mut rxs = HashMap::new();
             let mut txs = HashMap::new();
-            for id in &nodes {
+            for &id in &nodes {
                 let (tx, rx) = mpsc::channel(100);
-                txs.insert(*id, Arc::new(tx));
-                rxs.insert(*id, Arc::new(Mutex::new(rx)));
+                txs.insert(id, Arc::new(tx));
+                rxs.insert(id, Arc::new(Mutex::new(rx)));
             }
             let mut sockets = HashMap::new();
-            for from in &nodes {
-                for to in &nodes {
-                    if *from == *to {
+            for &from in &nodes {
+                for &to in &nodes {
+                    if from == to {
                         continue;
                     }
                     // init the socket state with connected.
-                    sockets.insert((*from, *to), SocketState::Connected);
+                    sockets.insert((from, to), SocketState::Connected);
                 }
             }
-            let net = Arc::new(LabNet { sockets: Arc::new(RwLock::new(sockets)) });
-            Self { txs, rxs, net }
+
+            // connect all node by initially
+            let mut connected = Vec::new();
+            for i in 0..nodes.len() {
+                connected.push(true);
+            }
+
+            let net = LabNet { sockets: Arc::new(RwLock::new(sockets)) };
+            let net = Arc::new(net);
+            Self { nodes, connected, txs, rxs, net }
         }
 
         pub fn get(&self, id: NodeId) -> Result<LabTransport> {
@@ -336,6 +350,40 @@ pub mod tests {
                 )
                 .collect();
             Ok(LabTransport::new(id, Arc::clone(rx), peers, Arc::clone(&self.net)))
+        }
+
+        pub fn disconnect(&mut self, id: NodeId) -> Result<()> {
+            // disconnect outgoing
+            for &to in &self.nodes {
+                self.net.set(id, to, SocketState::Disconnected)?;
+            }
+            // disconnect incoming
+            for &from in &self.nodes {
+                self.net.set(from, id, SocketState::Disconnected)?;
+            }
+            // update connected state
+            // assuming node id is equal to the index of array.
+            self.connected[id as usize] = false;
+            Ok(())
+        }
+
+        pub fn connect(&mut self, id: NodeId) -> Result<()> {
+            // disconnect outgoing
+            for &to in &self.nodes {
+                self.net.set(id, to, SocketState::Connected)?;
+            }
+            // disconnect incoming
+            for &from in &self.nodes {
+                self.net.set(from, id, SocketState::Connected)?;
+            }
+            // update connected state
+            // assuming node id is equal to the index of array.
+            self.connected[id as usize] = true;
+            Ok(())
+        }
+
+        pub fn is_connected(&self, id: NodeId) -> bool {
+            self.connected[id as usize]
         }
     }
 }

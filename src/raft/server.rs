@@ -1,12 +1,15 @@
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
+use log::debug;
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
-use crate::raft::message::Message;
+use crate::raft::message::{Address, Event, Message, ProposalId};
 use crate::raft::node::follower::Follower;
 use crate::raft::node::{Node, NodeState, RawNode, TICK_INTERVAL};
 use crate::raft::persister::Persister;
@@ -48,10 +51,16 @@ pub struct Server {
     command_tx: mpsc::UnboundedSender<(Vec<u8>, oneshot::Sender<Result<Vec<u8>>>)>,
 
     /// eventloop context, will be consumed by
-    /// the eventloop, use mutex here for the
-    /// interior mutability across threads.
-    context: Mutex<Option<EventLoopContext>>,
+    /// the eventloop, use RefCell here to make
+    /// `Server` achieve the interior mutability.
+    /// Since the context will not be used across
+    /// threads(the actual content is moved into
+    /// eventloop and never used again), so it is
+    /// safe to assert `Server` is `Sync` explicitly.
+    context: RefCell<Option<EventLoopContext>>,
 }
+
+unsafe impl Sync for Server {}
 
 impl Server {
     pub fn new(
@@ -69,11 +78,11 @@ impl Server {
         let (state_tx, state_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let context = EventLoopContext { id, node, node_rx, state_rx, command_rx, transport };
-        Ok(Server { id, state_tx, command_tx, context: Mutex::new(Some(context)) })
+        Ok(Server { id, state_tx, command_tx, context: RefCell::new(Some(context)) })
     }
 
     pub async fn serve(&self, done: broadcast::Receiver<()>) -> Result<()> {
-        let context = self.context.lock().as_mut().unwrap().take().unwrap();
+        let context = self.context.borrow_mut().take().unwrap();
         let eventloop = tokio::spawn(Self::eventloop(context, done));
         eventloop.await?
     }
@@ -90,6 +99,10 @@ impl Server {
         let mut transport = context.transport;
         let mut transport_rx = transport.receiver().await?;
 
+        let mut proposals: HashMap<ProposalId, oneshot::Sender<Result<Vec<u8>>>> = HashMap::new();
+
+        debug!("node {} eventloop on {:?}", id, std::thread::current().id());
+
         let mut ticker = tokio::time::interval(TICK_INTERVAL);
         loop {
             tokio::select! {
@@ -102,7 +115,25 @@ impl Server {
                 }
 
                 Some(msg) = node_rx.next() => {
-                    transport.send(msg).await?
+                    match msg {
+                        Message{to: Address::Node(_), ..} => transport.send(msg).await?,
+                        Message{to: Address::Broadcast, ..} => transport.send(msg).await?,
+                        Message{to: Address::Localhost, event: Event::ProposalDropped {id}, ..} => {
+                            if let Some(tx) = proposals.remove(&id) {
+                                if let Err(_) = tx.send(Err(Error::Abort)) {
+                                    return Err(Error::internal("command oneshot receiver dropped"))
+                                }
+                            }
+                        }
+                        Message{to: Address::Localhost, event: Event::ProposalApplied {id,response}, ..} => {
+                            if let Some(tx) = proposals.remove(&id) {
+                                if let Err(_) = tx.send(Ok(response)) {
+                                    return Err(Error::internal("command oneshot receiver dropped"))
+                                }
+                            }
+                        }
+                        _ => return Err(Error::internal(format!("unexpected message to localhost {:?}", msg)))
+                    }
                 },
 
                 Some((_, tx)) = state_rx.next() => {
@@ -113,9 +144,18 @@ impl Server {
                 }
 
                 Some((command, tx)) = command_rx.next() => {
-                    if let Err(_) = tx.send(Ok(command)) {
-                        return Err(Error::internal("command response receiver dropped"));
-                    }
+                    let proposal_id: ProposalId = Uuid::new_v4().as_bytes().to_vec();
+                    let message = Message {
+                        term: 0,
+                        from: Address::Localhost,
+                        to: Address::Node(id),
+                        event: Event::ProposeCommand {
+                            id: proposal_id.clone(),
+                            command
+                        }
+                    };
+                    node = node.step(message)?;
+                    proposals.insert(proposal_id, tx);
                 }
 
                 _ = done.recv() => {
@@ -146,17 +186,26 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::ops::Mul;
     use std::sync::Arc;
     use std::time::Duration;
 
-    use log::error;
+    use log::{debug, error};
+    use rand::Rng;
 
     use crate::error::Result;
+    use crate::raft::node::{ELECTION_TIMEOUT_RANGE, HEARTBEAT_INTERVAL};
     use crate::raft::transport::tests::LabNetMesh;
+    use crate::raft::Term;
     use crate::storage::state::ApplyMsg;
     use crate::storage::{new_storage, StorageType};
 
     use super::*;
+
+    fn max_election_timeout() -> Duration {
+        let ticks = ELECTION_TIMEOUT_RANGE.end + HEARTBEAT_INTERVAL;
+        TICK_INTERVAL.mul(ticks as u32)
+    }
 
     #[derive(Debug, Clone)]
     struct KvState {
@@ -189,7 +238,12 @@ mod tests {
     }
 
     impl Cluster {
-        fn new(nodes: Vec<NodeId>) -> Result<Self> {
+        fn new(n: u8) -> Result<Self> {
+            let mut nodes = Vec::new();
+            for i in 0..n {
+                // node id is equal to the index of array.
+                nodes.push(i as NodeId);
+            }
             let net_mesh = LabNetMesh::new(nodes.clone());
             let mut servers = HashMap::new();
             for &id in nodes.iter() {
@@ -207,11 +261,13 @@ mod tests {
             let server = Arc::clone(server);
             let (tx, rx) = broadcast::channel(1);
             let th = std::thread::spawn(move || {
+                debug!("node {} start on {:?}", id, std::thread::current().id());
                 let rt =
                     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                 rt.block_on(async move {
+                    debug!("node {} block on {:?}", id, std::thread::current().id());
                     if let Err(err) = server.serve(rx).await {
-                        error!("server {} failed {}", id, err)
+                        error!("node {} failed {}", id, err)
                     }
                 })
             });
@@ -248,27 +304,175 @@ mod tests {
             }
             ans
         }
+
+        fn get_state(&self, id: NodeId) -> NodeState {
+            let server = self.servers.get(&id).unwrap();
+            server.get_state().unwrap()
+        }
+
+        fn check_no_leader(&self) -> Result<()> {
+            for &id in &self.nodes {
+                if !self.net_mesh.is_connected(id) {
+                    continue;
+                }
+                let server = self.servers.get(&id).unwrap();
+                let ns = server.get_state().unwrap();
+                if !ns.leader.is_none() {
+                    return Err(Error::internal(format!(
+                        "expected no leader among connected servers, but {} claims to be leader",
+                        ns.leader.unwrap()
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        // check that one of the connected servers thinks
+        // it is the leader, and that no other connected
+        // server thinks otherwise.
+        //
+        // try a few times in case re-elections are needed.
+        fn check_one_leader(&self) -> Result<NodeId> {
+            for _ in 0..10 {
+                // wait at lease max election timeout so that
+                // we will have at least one election.
+                std::thread::sleep(max_election_timeout());
+
+                let mut leaders: HashMap<Term, Vec<NodeId>> = HashMap::new();
+                for &id in &self.nodes {
+                    leaders.insert(id, Vec::new());
+                }
+                for &id in &self.nodes {
+                    if !self.net_mesh.is_connected(id) {
+                        continue;
+                    }
+                    let server = self.servers.get(&id).unwrap();
+                    let ns = server.get_state().unwrap();
+                    if let Some(leader) = ns.leader {
+                        let val = leaders.get_mut(&id).unwrap();
+                        val.push(leader);
+                    }
+                }
+                let mut latest_term = 0;
+                for (&term, leaders) in leaders.iter() {
+                    if leaders.len() > 1 {
+                        return Err(Error::internal(format!(
+                            "term {} have {}(>1) leaders",
+                            term,
+                            leaders.len()
+                        )));
+                    }
+                    if latest_term < term {
+                        latest_term = term;
+                    }
+                }
+                if let Some(leaders) = leaders.get(&latest_term) {
+                    if leaders.len() > 0 {
+                        return Ok(leaders[0]);
+                    }
+                }
+            }
+            Err(Error::internal("expect one leader, got none"))
+        }
+
+        // check that everyone agrees on the term.
+        fn check_terms(&self) -> Result<Term> {
+            let mut term = 0;
+            for &id in &self.nodes {
+                if !self.net_mesh.is_connected(id) {
+                    continue;
+                }
+                let server = self.servers.get(&id).unwrap();
+                let ns = server.get_state().unwrap();
+                if term == 0 {
+                    term = ns.term;
+                    continue;
+                }
+                if term != ns.term {
+                    return Err(Error::internal("servers disagree on term"));
+                }
+            }
+            Ok(term)
+        }
+
+        fn disconnect(&mut self, id: NodeId) {
+            debug!("disconnect {}", id);
+            self.net_mesh.disconnect(id).unwrap()
+        }
+
+        fn connect(&mut self, id: NodeId) {
+            debug!("connect {}", id);
+            self.net_mesh.connect(id).unwrap()
+        }
     }
 
     #[test]
-    fn test_eventloop() -> Result<()> {
-        // initialize a three node cluster
-        let nodes: Vec<NodeId> = vec![1, 2, 3];
-        let mut cluster = Cluster::new(nodes)?;
+    fn test_initial_election() -> Result<()> {
+        env_logger::builder().init();
 
-        // start cluster
+        let mut cluster = Cluster::new(3)?;
         cluster.start();
 
-        // check num of leader
-        for i in 0..3 {
-            let ans = cluster.get_num_leader();
-            println!("found {} leader", ans);
-            std::thread::sleep(Duration::from_secs(1));
-        }
+        // check if a leader elected.
+        let leader1 = cluster.check_one_leader()?;
 
-        // close cluster
+        // check all servers agree on a same term
+        let term1 = cluster.check_terms()?;
+
+        // does the leader+term stay the same if there is no network failure?
+        std::thread::sleep(max_election_timeout());
+        // the term should be the same
+        let term2 = cluster.check_terms()?;
+        assert_eq!(term1, term2);
+        // the leader should be the same
+        let leader2 = cluster.check_one_leader()?;
+        assert_eq!(leader1, leader2);
+
         cluster.close();
+        Ok(())
+    }
 
+    #[test]
+    fn test_re_election() -> Result<()> {
+        env_logger::builder().init();
+
+        let num_nodes = 3;
+
+        let mut cluster = Cluster::new(num_nodes)?;
+        cluster.start();
+
+        let leader1 = cluster.check_one_leader()?;
+
+        // if the leader disconnect, a new one should be elected.
+        cluster.disconnect(leader1);
+        let leader2 = cluster.check_one_leader()?;
+        assert_ne!(leader2, leader1);
+
+        // if old leader rejoins, that should not disturb the
+        // new leader. and the old leader should switch to follower.
+        cluster.connect(leader1);
+        let leader3 = cluster.check_one_leader()?;
+        assert_eq!(leader2, leader3);
+        let ns = cluster.get_state(leader1);
+        assert_eq!(Some(leader2), ns.leader);
+
+        // if there is no quorum, no new leader should e elected.
+        cluster.disconnect(leader2);
+        cluster.disconnect(((leader2 as u8 + 1) % num_nodes) as NodeId);
+        std::thread::sleep(max_election_timeout());
+
+        // check that the one connected server does not think it is the leader.
+        cluster.check_no_leader()?;
+
+        // if quorum arise, it should elect a leader.
+        cluster.connect(((leader2 as u8 + 1) % num_nodes) as NodeId);
+        cluster.check_one_leader()?;
+
+        // re-join of last node, should not prevent leader from existing.
+        cluster.connect(leader2);
+        cluster.check_one_leader()?;
+
+        cluster.close();
         Ok(())
     }
 }

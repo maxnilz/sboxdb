@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 
 use crate::error::Result;
 use crate::raft::message::Message;
-use crate::raft::persister::Persister;
+use crate::raft::node::follower::Follower;
+use crate::raft::persister::{HardState, Persister};
 use crate::raft::{Index, NodeId, Term};
 use crate::storage::state::State;
 
@@ -17,17 +18,19 @@ pub mod leader;
 pub type Ticks = u8;
 
 // The interval between Raft ticks, the unit of time for e.g. heartbeats and
-// elections.
+// elections. consider it as a round trip between two peers.
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-// The interval between leader heartbeats, in ticks.
-const HEARTBEAT_INTERVAL: Ticks = 3;
+// The interval between leader heartbeats, in ticks. i.e., 300ms if TICK_INTERVAL
+// is 100ms.
+pub const HEARTBEAT_INTERVAL: Ticks = 3;
 
 // The randomized election timeout range (min-max), in ticks. This is
 // randomized per node to avoid ties.
-const ELECTION_TIMEOUT_RANGE: std::ops::Range<u8> = 10..20;
+pub const ELECTION_TIMEOUT_RANGE: std::ops::Range<u8> = 10..20;
 
-// Generates a randomized election timeout.
+// Generates a randomized election timeout, range from TICK_INTERVAL * 10 to
+// TICK_INTERVAL * 20, e.g., 1s to 2s if TICK_INTERVAL is 100ms.
 fn rand_election_timeout() -> Ticks {
     rand::thread_rng().gen_range(ELECTION_TIMEOUT_RANGE)
 }
@@ -43,23 +46,22 @@ pub trait Node: Send {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeState {
     pub me: NodeId,
+    pub leader: Option<NodeId>,
+
     pub term: Term,
-    pub leader: NodeId,
 }
 
 impl NodeState {
     pub fn is_leader(&self) -> bool {
-        self.leader == self.me
+        self.leader == Some(self.me)
     }
 }
 
 impl<'a> From<&'a RawNode> for NodeState {
     fn from(rn: &'a RawNode) -> Self {
-        NodeState { me: rn.id, term: rn.term, leader: rn.leader }
+        NodeState { me: rn.id, leader: rn.leader, term: rn.term }
     }
 }
-
-// impl !Into<RawNode> for NodeState {}
 
 #[derive(Debug)]
 pub struct RawNode {
@@ -81,10 +83,10 @@ pub struct RawNode {
     term: Term,
     voted_for: Option<NodeId>,
 
-    // volatile state
+    // volatile state on all servers
     //
     // current leader
-    leader: NodeId,
+    leader: Option<NodeId>,
     // index of highest log entry known to be committed
     // initialized to 0, increases monotonically.
     // TODO: persist commit index to improve performance,
@@ -109,6 +111,8 @@ pub struct RawNode {
     //  then as raft node here, we can start the replay from
     //  there upto the commit_index.
     last_applied: Index,
+
+    seq: u64,
 }
 
 impl RawNode {
@@ -121,7 +125,7 @@ impl RawNode {
     ) -> Result<RawNode> {
         let hs = persister.get_hard_state()?;
         let (term, voted_for) = if let Some(x) = hs { (x.term, x.voted_for) } else { (0, None) };
-        let (leader, commit_index, last_applied) = (0, 0, 0);
+        let (leader, commit_index, last_applied) = (None, 0, 0);
         let rn = RawNode {
             id,
             peers,
@@ -133,7 +137,31 @@ impl RawNode {
             leader,
             commit_index,
             last_applied,
+            seq: 0,
         };
         Ok(rn)
+    }
+
+    pub fn quorum_size(&self) -> u8 {
+        let total = self.peers.len() + 1;
+        total as u8 / 2 + 1
+    }
+
+    pub fn save_hard_state(&mut self, term: Term, voted_for: Option<NodeId>) -> Result<()> {
+        let hs = HardState { term, voted_for };
+        self.persister.save_hard_state(hs)?;
+        self.term = term;
+        self.voted_for = voted_for;
+        Ok(())
+    }
+
+    pub fn into_leaderless_follower(mut self, term: Term, msg: Message) -> Result<Box<dyn Node>> {
+        // save hard state before the transition.
+        self.save_hard_state(term, None)?;
+        // transit to leaderless follower
+        self.leader = None;
+        let follower: Follower = self.into();
+        let follower = Box::new(follower);
+        return follower.step(msg);
     }
 }

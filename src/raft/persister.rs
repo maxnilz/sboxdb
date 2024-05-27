@@ -62,6 +62,10 @@ impl Persister {
         Ok(Persister { ns, storage, last_index, last_term })
     }
 
+    pub fn last(&self) -> (Index, Term) {
+        (self.last_index, self.last_term)
+    }
+
     pub fn save_hard_state(&mut self, state: HardState) -> Result<()> {
         let key = Key::State.encode(&self.ns)?;
         let value = bincodec::serialize(&state)?;

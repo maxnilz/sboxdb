@@ -1,3 +1,5 @@
+#![feature(option_get_or_insert_default)]
+
 pub mod error;
 
 pub mod storage;
