@@ -4,30 +4,6 @@ use crate::raft::node::{Node, NodeState};
 use crate::raft::node::{RawNode, Ticks, HEARTBEAT_INTERVAL};
 use crate::raft::Index;
 
-macro_rules! log {
-    ($rn:expr, $lvl:expr, $($arg:tt)+) => {
-        ::log::log!($lvl, "[l{}-{}] {}", $rn.id, $rn.term, format_args!($($arg)+))
-    };
-}
-
-macro_rules! debug {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Debug, $($arg)+)
-    };
-}
-
-macro_rules! info {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Info, $($arg)+)
-    };
-}
-
-macro_rules! error {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Error, $($arg)+)
-    };
-}
-
 pub struct Leader {
     rn: RawNode,
 
@@ -63,7 +39,6 @@ impl Leader {
         }
         // set leader to myself
         rn.leader = Some(rn.id);
-
         Self { rn, tick: 0, timeout: HEARTBEAT_INTERVAL, next_index, match_index }
     }
 
@@ -86,6 +61,8 @@ impl Leader {
         };
         self.rn.node_tx.send(message)?;
 
+        debug!(self.rn, "send heartbeat, seq: {}", seq);
+
         self.rn.seq = seq;
 
         Ok(())
@@ -103,17 +80,19 @@ impl Node for Leader {
     }
 
     fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
+        debug!(self.rn, "receive message: {}", msg);
+
         // receive a stale message, drop it.
         if msg.term > 0 && msg.term < self.rn.term {
-            debug!(self.rn, "dropping stale message {:?}", msg);
+            debug!(self.rn, "drop stale msg");
             return Ok(self);
         }
 
         // found a higher term, yield to follower and process
         // the message there.
         if msg.term > self.rn.term {
-            debug!(self.rn, "found higher term message {:?}", msg);
-            return self.rn.into_leaderless_follower(msg.term, msg);
+            info!(self.rn, "become leaderless follower, caused by higher term");
+            return self.rn.into_follower(msg.term, None)?.step(msg);
         }
 
         match msg.event {
@@ -171,6 +150,7 @@ impl TryFrom<RawNode> for Leader {
 
     fn try_from(rn: RawNode) -> Result<Leader> {
         let mut leader = Leader::new(rn);
+        debug!(leader.rn, "become leader");
         leader.heartbeat()?;
         Ok(leader)
     }

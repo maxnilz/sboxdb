@@ -1,22 +1,11 @@
+use std::fmt::{Display, Formatter};
+
 use serde::{Deserialize, Serialize};
 
 use crate::raft::persister::Entry;
 use crate::raft::{Index, NodeId, Term};
 
 pub type ProposalId = Vec<u8>;
-
-/// A message address.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub enum Address {
-    /// Broadcast to all peers. Only valid as an outbound recipient (to).
-    Broadcast,
-    /// A node with the specified node ID (local or remote). Valid both as
-    /// sender and recipient.
-    Node(NodeId),
-    /// A local dummy address. Can only send ProposeCommand messages, and
-    /// receive ProposalDropped/ProposalApplied messages.
-    Localhost,
-}
 
 /// A message that passed between raft peers
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -32,11 +21,46 @@ pub struct Message {
     pub event: Event,
 }
 
+impl Display for Message {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{{} -> {}, term: {}, {}}}", self.from, self.to, self.term, self.event)
+    }
+}
+
+/// A message address.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum Address {
+    /// Broadcast to all peers. Only valid as an outbound recipient (to).
+    Broadcast,
+    /// A node with the specified node ID (local or remote). Valid both as
+    /// sender and recipient.
+    Node(NodeId),
+    /// A local dummy address. Can only send ProposeCommand messages, and
+    /// receive ProposalDropped/ProposalApplied messages.
+    Localhost,
+}
+
 impl Address {
     pub fn unwrap_node_id(&self) -> NodeId {
         match self {
             Self::Node(id) => *id,
             _ => panic!("unwrap called on non-Node address {:?}", self),
+        }
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Address::Broadcast => {
+                write!(f, "broadcast")
+            }
+            Address::Node(id) => {
+                write!(f, "{}", id)
+            }
+            Address::Localhost => {
+                write!(f, "localhost")
+            }
         }
     }
 }
@@ -112,4 +136,38 @@ pub enum Event {
         /// The response
         response: Vec<u8>,
     },
+}
+
+impl Display for Event {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Event::AppendEntries(ae) => {
+                write!(f, "AppendEntries: {}", ae.seq)
+            }
+            Event::EntriesAccepted => {
+                write!(f, "EntriesAccepted")
+            }
+            Event::EntriesRejected { .. } => {
+                write!(f, "EntriesRejected")
+            }
+            Event::RequestVote(_) => {
+                write!(f, "RequestVote")
+            }
+            Event::VoteGranted => {
+                write!(f, "VoteGranted")
+            }
+            Event::VoteRejected => {
+                write!(f, "VoteRejected")
+            }
+            Event::ProposeCommand { .. } => {
+                write!(f, "ProposeCommand")
+            }
+            Event::ProposalDropped { .. } => {
+                write!(f, "ProposalDropped")
+            }
+            Event::ProposalApplied { .. } => {
+                write!(f, "ProposalApplied")
+            }
+        }
+    }
 }

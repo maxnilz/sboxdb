@@ -185,13 +185,13 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ops::Mul;
     use std::sync::Arc;
     use std::time::Duration;
 
     use log::{debug, error};
-    use rand::Rng;
+    use rand::{thread_rng, Rng};
 
     use crate::error::Result;
     use crate::raft::node::{ELECTION_TIMEOUT_RANGE, HEARTBEAT_INTERVAL};
@@ -338,10 +338,7 @@ mod tests {
                 // we will have at least one election.
                 std::thread::sleep(max_election_timeout());
 
-                let mut leaders: HashMap<Term, Vec<NodeId>> = HashMap::new();
-                for &id in &self.nodes {
-                    leaders.insert(id, Vec::new());
-                }
+                let mut terms: HashMap<Term, HashSet<NodeId>> = HashMap::new();
                 for &id in &self.nodes {
                     if !self.net_mesh.is_connected(id) {
                         continue;
@@ -349,12 +346,18 @@ mod tests {
                     let server = self.servers.get(&id).unwrap();
                     let ns = server.get_state().unwrap();
                     if let Some(leader) = ns.leader {
-                        let val = leaders.get_mut(&id).unwrap();
-                        val.push(leader);
+                        if let Some(leaders) = terms.get_mut(&ns.term) {
+                            leaders.insert(leader);
+                        } else {
+                            let mut leaders = HashSet::new();
+                            leaders.insert(leader);
+                            terms.insert(ns.term, leaders);
+                        }
                     }
                 }
                 let mut latest_term = 0;
-                for (&term, leaders) in leaders.iter() {
+                let mut leader: Option<NodeId> = None;
+                for (&term, leaders) in terms.iter() {
                     if leaders.len() > 1 {
                         return Err(Error::internal(format!(
                             "term {} have {}(>1) leaders",
@@ -364,12 +367,12 @@ mod tests {
                     }
                     if latest_term < term {
                         latest_term = term;
+                        let leaders = leaders.iter().map(|&x| x).collect::<Vec<NodeId>>();
+                        leader = Some(leaders[0])
                     }
                 }
-                if let Some(leaders) = leaders.get(&latest_term) {
-                    if leaders.len() > 0 {
-                        return Ok(leaders[0]);
-                    }
+                if let Some(leader) = leader {
+                    return Ok(leader);
                 }
             }
             Err(Error::internal("expect one leader, got none"))
@@ -456,7 +459,7 @@ mod tests {
         let ns = cluster.get_state(leader1);
         assert_eq!(Some(leader2), ns.leader);
 
-        // if there is no quorum, no new leader should e elected.
+        // if there is no quorum, no new leader should be elected.
         cluster.disconnect(leader2);
         cluster.disconnect(((leader2 as u8 + 1) % num_nodes) as NodeId);
         std::thread::sleep(max_election_timeout());
@@ -473,6 +476,45 @@ mod tests {
         cluster.check_one_leader()?;
 
         cluster.close();
+        Ok(())
+    }
+
+    #[test]
+    fn test_many_election() -> Result<()> {
+        env_logger::builder().init();
+
+        let num_nodes = 7;
+        let mut cluster = Cluster::new(num_nodes)?;
+        cluster.start();
+
+        cluster.check_one_leader()?;
+
+        let iters = 10;
+        for i in 0..iters {
+            debug!("test many election iter {}", i);
+
+            // disconnect three nodes
+            let i1 = thread_rng().gen_range(0..num_nodes) as NodeId;
+            let i2 = thread_rng().gen_range(0..num_nodes) as NodeId;
+            let i3 = thread_rng().gen_range(0..num_nodes) as NodeId;
+
+            cluster.disconnect(i1);
+            cluster.disconnect(i2);
+            cluster.disconnect(i3);
+
+            // either the current leader should alive, or
+            // the remaining four should elect a new one.
+            cluster.check_one_leader()?;
+
+            cluster.connect(i1);
+            cluster.connect(i2);
+            cluster.connect(i3);
+        }
+
+        cluster.check_one_leader()?;
+
+        cluster.close();
+
         Ok(())
     }
 }

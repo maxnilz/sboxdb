@@ -7,30 +7,6 @@ use crate::raft::node::{rand_election_timeout, RawNode, Ticks};
 use crate::raft::node::{Node, NodeState};
 use crate::raft::NodeId;
 
-macro_rules! log {
-    ($rn:expr, $lvl:expr, $($arg:tt)+) => {
-        ::log::log!($lvl, "[c{}-{}] {}", $rn.id, $rn.term, format_args!($($arg)+))
-    };
-}
-
-macro_rules! debug {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Debug, $($arg)+)
-    };
-}
-
-macro_rules! info {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Info, $($arg)+)
-    };
-}
-
-macro_rules! error {
-    ($rn:expr, $($arg:tt)+) => {
-        log!($rn, ::log::Level::Error, $($arg)+)
-    };
-}
-
 pub struct Candidate {
     rn: RawNode,
 
@@ -55,6 +31,8 @@ impl Candidate {
         self.rn.save_hard_state(term, voted_for)?;
 
         self.votes.insert(voted_for.unwrap());
+
+        info!(self.rn, "requesting vote as candidate");
 
         let (log_index, log_term) = self.rn.persister.last();
         let message = Message {
@@ -84,9 +62,11 @@ impl Node for Candidate {
     }
 
     fn step(mut self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
+        debug!(self.rn, "receive message: {}", msg);
+
         // receive a stale message, drop it.
         if msg.term < self.rn.term {
-            debug!(self.rn, "dropping stale message {:?}", msg);
+            debug!(self.rn, "drop stale msg");
             match msg.event {
                 // drop any command proposal explicitly
                 Event::ProposeCommand { id, .. } => {
@@ -107,8 +87,8 @@ impl Node for Candidate {
         // whenever we receive a message from higher term, transit
         // to follower, and process the message with follower.
         if msg.term > self.rn.term {
-            debug!(self.rn, "found higher term message {:?}", msg);
-            return self.rn.into_leaderless_follower(msg.term, msg);
+            info!(self.rn, "become leaderless follower, caused by higher term");
+            return self.rn.into_follower(msg.term, None)?.step(msg);
         }
 
         match msg.event {
@@ -117,8 +97,10 @@ impl Node for Candidate {
             // send an empty append entry as a heartbeat to
             // declare the leadership immediately.
             Event::VoteGranted => {
-                debug!(self.rn, "{:?} granted vote", msg.from);
                 self.votes.insert(msg.from.unwrap_node_id());
+
+                let votes: Vec<NodeId> = self.votes.iter().map(|&x| x).collect();
+                info!(self.rn, "receive yes vote from {}, votes: {:?}", msg.from, votes);
 
                 let granted_votes = self.votes.len() as u8;
                 if granted_votes >= self.rn.quorum_size() {
@@ -127,7 +109,6 @@ impl Node for Candidate {
                     let voted_for = None;
                     self.rn.save_hard_state(term, voted_for)?;
                     // transit to leader
-                    info!(self.rn, "elected as leader");
                     let leader: Leader = self.rn.try_into()?;
                     return Ok(Box::new(leader));
                 }
@@ -135,7 +116,7 @@ impl Node for Candidate {
 
             // received a vote rejection, log it and do nothing.
             Event::VoteRejected { .. } => {
-                info!(self.rn, "{:?} rejected vote", msg.from);
+                debug!(self.rn, "receive reject vote from {}", msg.from);
             }
 
             // reject any vote request while we are
@@ -154,9 +135,10 @@ impl Node for Candidate {
             // whenever we receive an append entry, it means
             // there is a leader we can talk to, so, we should
             // step down as a follower.
-            Event::AppendEntries(_) => {
+            Event::AppendEntries(ref ae) => {
                 assert_eq!(self.rn.term, msg.term);
-                return self.rn.into_leaderless_follower(msg.term, msg);
+                info!(self.rn, "become follower, leader: {}, caused by AE", ae.leader_id);
+                return self.rn.into_follower(msg.term, Some(ae.leader_id))?.step(msg);
             }
 
             // drop any command proposal while we are candidate.
@@ -176,7 +158,7 @@ impl Node for Candidate {
             | Event::EntriesRejected { .. }
             | Event::ProposalDropped { .. }
             | Event::ProposalApplied { .. } => {
-                error!(self.rn, "received unexpected message {:?}", msg)
+                error!(self.rn, "received unexpected message {}", msg)
             }
         };
 

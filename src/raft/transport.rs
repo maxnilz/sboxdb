@@ -238,6 +238,7 @@ pub mod tests {
                 match state {
                     SocketState::Connected => tx.send(message.clone()).await?,
                     SocketState::Disconnected => {
+                        debug!("connection from {} to {} are disconnected", from, id)
                         // drop message quietly.
                     }
                     SocketState::Unstable((loss, delay)) => {
@@ -315,9 +316,6 @@ pub mod tests {
             let mut sockets = HashMap::new();
             for &from in &nodes {
                 for &to in &nodes {
-                    if from == to {
-                        continue;
-                    }
                     // init the socket state with connected.
                     sockets.insert((from, to), SocketState::Connected);
                 }
@@ -353,13 +351,11 @@ pub mod tests {
         }
 
         pub fn disconnect(&mut self, id: NodeId) -> Result<()> {
-            // disconnect outgoing
-            for &to in &self.nodes {
-                self.net.set(id, to, SocketState::Disconnected)?;
-            }
-            // disconnect incoming
-            for &from in &self.nodes {
-                self.net.set(from, id, SocketState::Disconnected)?;
+            for &peer in &self.nodes {
+                // disconnect outgoing
+                self.net.set(id, peer, SocketState::Disconnected)?;
+                // disconnect incoming
+                self.net.set(peer, id, SocketState::Disconnected)?;
             }
             // update connected state
             // assuming node id is equal to the index of array.
@@ -368,13 +364,14 @@ pub mod tests {
         }
 
         pub fn connect(&mut self, id: NodeId) -> Result<()> {
-            // disconnect outgoing
-            for &to in &self.nodes {
-                self.net.set(id, to, SocketState::Connected)?;
-            }
-            // disconnect incoming
-            for &from in &self.nodes {
-                self.net.set(from, id, SocketState::Connected)?;
+            for &peer in &self.nodes {
+                if id != peer && self.connected[peer as usize] == false {
+                    continue;
+                }
+                // connect outgoing
+                self.net.set(id, peer, SocketState::Connected)?;
+                // connect incoming
+                self.net.set(peer, id, SocketState::Connected)?;
             }
             // update connected state
             // assuming node id is equal to the index of array.

@@ -10,6 +10,30 @@ use crate::raft::persister::{HardState, Persister};
 use crate::raft::{Index, NodeId, Term};
 use crate::storage::state::State;
 
+macro_rules! log {
+    ($rn:expr, $lvl:expr, $($arg:tt)+) => {
+        ::log::log!($lvl, "server/{} term:{} leader:{:?} {}", $rn.id, $rn.term, $rn.leader, format_args!($($arg)+))
+    };
+}
+
+macro_rules! debug {
+    ($rn:expr, $($arg:tt)+) => {
+        log!($rn, ::log::Level::Debug, $($arg)+)
+    };
+}
+
+macro_rules! info {
+    ($rn:expr, $($arg:tt)+) => {
+        log!($rn, ::log::Level::Info, $($arg)+)
+    };
+}
+
+macro_rules! error {
+    ($rn:expr, $($arg:tt)+) => {
+        log!($rn, ::log::Level::Error, $($arg)+)
+    };
+}
+
 pub mod candidate;
 pub mod follower;
 pub mod leader;
@@ -155,13 +179,10 @@ impl RawNode {
         Ok(())
     }
 
-    pub fn into_leaderless_follower(mut self, term: Term, msg: Message) -> Result<Box<dyn Node>> {
+    pub fn into_follower(mut self, term: Term, leader: Option<NodeId>) -> Result<Box<dyn Node>> {
         // save hard state before the transition.
         self.save_hard_state(term, None)?;
-        // transit to leaderless follower
-        self.leader = None;
-        let follower: Follower = self.into();
-        let follower = Box::new(follower);
-        return follower.step(msg);
+        self.leader = leader;
+        Ok(Box::new(Follower::new(self)))
     }
 }
