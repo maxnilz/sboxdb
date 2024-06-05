@@ -1,11 +1,12 @@
 use std::fmt::{Display, Formatter};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Result;
+use crate::raft::node::{NodeId, ProposalId};
 use crate::raft::persister::Entry;
-use crate::raft::{Index, NodeId, Term};
-
-pub type ProposalId = Vec<u8>;
+use crate::raft::{Command, CommandResult, Index, Term};
 
 /// A message that passed between raft peers
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -70,9 +71,9 @@ pub struct RequestVote {
     // candidate requesting vote.
     pub candidate: NodeId,
     // index of candidate's last log entry.
-    pub last_log_index: Index,
+    pub last_index: Index,
     // term of candidate's last log entry.
-    pub last_log_term: Term,
+    pub last_term: Term,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -98,13 +99,10 @@ pub struct AppendEntries {
 pub enum Event {
     AppendEntries(AppendEntries),
 
-    EntriesAccepted,
+    EntriesAccepted(Index),
 
     EntriesRejected {
-        // for fast rollback
-        xterm: Term,
         xindex: Index,
-        xlen: u64,
     },
 
     RequestVote(RequestVote),
@@ -118,40 +116,71 @@ pub enum Event {
     /// leader or term changes, the proposal is dropped and the client must retry.
     /// If a request is accepted, the state machine would receive the accepted
     /// command from the ApplyMsg.
-    ProposeCommand {
+    ProposalRequest {
         id: ProposalId,
-        command: Vec<u8>,
+        command: Command,
+        /// the amount time to wait before returning to the client, None means
+        /// no timeout at all, otherwise respect the given duration.
+        /// If the command is not applied yet before the timeout duration, we
+        /// will return the log index to the client, otherwise return the ApplyResp.
+        timeout: Option<Duration>,
     },
 
+    /// A proposal response.
+    ProposalResponse {
+        /// The proposal id. This matches the id of the ProposeCommand.
+        id: ProposalId,
+        /// The result return to the client, it may carry the application result
+        /// generated from the state machine if the command is commited and applied
+        /// to the state machine before timeout, otherwise return the log index, or
+        /// the proposal get dropped if there is no leader or the leader/term changed.
+        result: ProposalResult,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ProposalResult {
     /// A proposal is dropped if there is no leader, or the leader or term changes.
-    ProposalDropped {
-        /// The proposal id. This matches the id of the ProposeCommand.
-        id: ProposalId,
-    },
+    Dropped,
+    /// A proposal is in progress if it is not applied yet before timeout.
+    Ongoing(Index),
+    /// A proposal is applied to the state machine, the state machine may raise error
+    /// or generate a result command with the given request command.
+    Applied { index: Index, result: Result<Command> },
+}
 
-    /// A proposal is applied with response.
-    ProposalApplied {
-        /// The proposal id. This matches the id of the ProposeCommand.
-        id: ProposalId,
-        /// The response
-        response: Vec<u8>,
-    },
+impl From<ProposalResult> for CommandResult {
+    fn from(value: ProposalResult) -> Self {
+        match value {
+            ProposalResult::Dropped => CommandResult::Dropped,
+            ProposalResult::Ongoing(index) => CommandResult::Ongoing(index),
+            ProposalResult::Applied { index, result: res } => CommandResult::Applied { index, res },
+        }
+    }
 }
 
 impl Display for Event {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Event::AppendEntries(ae) => {
-                write!(f, "AppendEntries: {}", ae.seq)
+                write!(
+                    f,
+                    "AppendEntries: {} prev:{}/{} len:{} c:{}",
+                    ae.seq,
+                    ae.prev_log_index,
+                    ae.prev_log_term,
+                    ae.entries.len(),
+                    ae.leader_commit,
+                )
             }
-            Event::EntriesAccepted => {
-                write!(f, "EntriesAccepted")
+            Event::EntriesAccepted(index) => {
+                write!(f, "EntriesAccepted: match_index:{}", index)
             }
-            Event::EntriesRejected { .. } => {
-                write!(f, "EntriesRejected")
+            Event::EntriesRejected { xindex } => {
+                write!(f, "EntriesRejected: xindex:{}", xindex)
             }
-            Event::RequestVote(_) => {
-                write!(f, "RequestVote")
+            Event::RequestVote(r) => {
+                write!(f, "RequestVote: last:{}/{}", r.last_index, r.last_term)
             }
             Event::VoteGranted => {
                 write!(f, "VoteGranted")
@@ -159,14 +188,11 @@ impl Display for Event {
             Event::VoteRejected => {
                 write!(f, "VoteRejected")
             }
-            Event::ProposeCommand { .. } => {
-                write!(f, "ProposeCommand")
+            Event::ProposalRequest { id, .. } => {
+                write!(f, "ProposeCommand: {:?}", id)
             }
-            Event::ProposalDropped { .. } => {
-                write!(f, "ProposalDropped")
-            }
-            Event::ProposalApplied { .. } => {
-                write!(f, "ProposalApplied")
+            Event::ProposalResponse { id, result: result } => {
+                write!(f, "ProposalResponse: {:?}, {:?}", id, result)
             }
         }
     }

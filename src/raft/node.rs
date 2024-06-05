@@ -1,13 +1,14 @@
+use std::cell::Cell;
 use std::time::Duration;
 
 use rand::Rng;
 use tokio::sync::mpsc;
 
 use crate::error::Result;
-use crate::raft::message::Message;
+use crate::raft::message::{Address, Event, Message};
 use crate::raft::node::follower::Follower;
 use crate::raft::persister::{HardState, Persister};
-use crate::raft::{Index, NodeId, Term};
+use crate::raft::{Index, Term};
 use crate::storage::state::State;
 
 macro_rules! log {
@@ -40,7 +41,9 @@ pub mod leader;
 
 // A logical clock interval as number of ticks.
 pub type Ticks = u8;
-
+pub type NodeId = u8;
+pub const MAX_NODE_ID: u8 = 255;
+pub type ProposalId = Vec<u8>;
 // The interval between Raft ticks, the unit of time for e.g. heartbeats and
 // elections. consider it as a round trip between two peers.
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -73,12 +76,6 @@ pub struct NodeState {
     pub leader: Option<NodeId>,
 
     pub term: Term,
-}
-
-impl NodeState {
-    pub fn is_leader(&self) -> bool {
-        self.leader == Some(self.me)
-    }
 }
 
 impl<'a> From<&'a RawNode> for NodeState {
@@ -136,7 +133,7 @@ pub struct RawNode {
     //  there upto the commit_index.
     last_applied: Index,
 
-    seq: u64,
+    seq: Cell<u64>,
 }
 
 impl RawNode {
@@ -161,7 +158,7 @@ impl RawNode {
             leader,
             commit_index,
             last_applied,
-            seq: 0,
+            seq: Cell::new(0),
         };
         Ok(rn)
     }
@@ -184,5 +181,11 @@ impl RawNode {
         self.save_hard_state(term, None)?;
         self.leader = leader;
         Ok(Box::new(Follower::new(self)))
+    }
+
+    pub fn send_message(&self, peer: Address, event: Event) -> Result<()> {
+        let message = Message { term: self.term, from: Address::Node(self.id), to: peer, event };
+        self.node_tx.send(message)?;
+        Ok(())
     }
 }

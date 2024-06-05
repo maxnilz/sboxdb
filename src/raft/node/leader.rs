@@ -1,8 +1,20 @@
+use std::cmp::max;
+use std::collections::HashMap;
+use std::ops::Add;
+use std::time::{Duration, SystemTime};
+
 use crate::error::{Error, Result};
-use crate::raft::message::{Address, AppendEntries, Event, Message};
-use crate::raft::node::{Node, NodeState};
+use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult};
+use crate::raft::node::{Node, NodeId, NodeState, ProposalId, MAX_NODE_ID};
 use crate::raft::node::{RawNode, Ticks, HEARTBEAT_INTERVAL};
-use crate::raft::Index;
+use crate::raft::{Index, Term};
+use crate::storage::state::ApplyMsg;
+
+struct Ticket {
+    from: Address,
+    id: ProposalId,
+    expire_at: SystemTime,
+}
 
 pub struct Leader {
     rn: RawNode,
@@ -21,50 +33,175 @@ pub struct Leader {
     //
     // for each peer, index of next log entry to send to that
     // peer, initialized to leader last log index + 1.
+    // peer NodeId as array index.
     next_index: Vec<Index>,
     // for each peer, index of highest log entry known to be replicated
     // on the peer, initialized to 0, increases monotonically
+    // peer NodeId as array index.
     match_index: Vec<Index>,
+    // tickets for the proposals that are in progress, once the proposal
+    // at the given index is considered as commited & applied to state
+    // machine, we use the indexed ticket to send the command apply result
+    // back to the client.
+    // these should be dropped when leadership get lost.
+    tickets: HashMap<Index, Ticket>,
 }
 
 impl Leader {
     pub fn new(mut rn: RawNode) -> Self {
         // init index array
-        let (log_index, _) = rn.persister.last();
-        let mut next_index = vec![];
-        let mut match_index = vec![];
-        for _ in 0..rn.peers.len() {
-            next_index.push(log_index);
-            match_index.push(0);
-        }
+        let (last_index, _) = rn.persister.last();
+        let next_index = vec![last_index + 1; MAX_NODE_ID as usize];
+        let match_index = vec![0; MAX_NODE_ID as usize];
         // set leader to myself
         rn.leader = Some(rn.id);
-        Self { rn, tick: 0, timeout: HEARTBEAT_INTERVAL, next_index, match_index }
+        let proposals = HashMap::new();
+        Self {
+            rn,
+            tick: 0,
+            timeout: HEARTBEAT_INTERVAL,
+            next_index,
+            match_index,
+            tickets: proposals,
+        }
     }
 
-    pub fn heartbeat(&mut self) -> Result<()> {
-        let seq = self.rn.seq + 1;
+    fn heartbeat(&self) -> Result<()> {
+        let seq = self.rn.seq.get() + 1;
 
-        let (log_index, log_term) = self.rn.persister.last();
-        let message = Message {
-            term: self.rn.term,
-            from: Address::Node(self.rn.id),
-            to: Address::Broadcast,
-            event: Event::AppendEntries(AppendEntries {
-                leader_id: self.rn.id,
-                leader_commit: self.rn.commit_index,
-                prev_log_index: log_index,
-                prev_log_term: log_term,
-                entries: vec![],
-                seq,
-            }),
+        let (last_index, last_term) = self.rn.persister.last();
+        let req = AppendEntries {
+            leader_id: self.rn.id,
+            leader_commit: self.rn.commit_index,
+            prev_log_index: last_index,
+            prev_log_term: last_term,
+            entries: vec![],
+            seq,
         };
-        self.rn.node_tx.send(message)?;
+        self.rn.send_message(Address::Broadcast, Event::AppendEntries(req))?;
 
         debug!(self.rn, "send heartbeat, seq: {}", seq);
 
-        self.rn.seq = seq;
+        self.rn.seq.set(seq);
 
+        Ok(())
+    }
+
+    pub fn into_follower(self, term: Term, leader: Option<NodeId>) -> Result<Box<dyn Node>> {
+        // drop any pending proposals that is waiting response
+        for (_, ticket) in self.tickets {
+            let event = Event::ProposalResponse { id: ticket.id, result: ProposalResult::Dropped };
+            self.rn.send_message(ticket.from, event)?;
+        }
+        // transit to follower.
+        self.rn.into_follower(term, leader)
+    }
+
+    fn may_send_append_entries(&self, peer: NodeId) -> Result<()> {
+        let seq = self.rn.seq.get() + 1;
+
+        // TODO: we are reading same data again and again and
+        //  sending too much data over wire to peer.
+
+        // gather entries to be appended to peer
+        let from = self.next_index[peer as usize];
+        let entries = self.rn.persister.scan_from(from)?;
+        let num_entries = entries.len();
+        if num_entries == 0 {
+            // if there is no entries to be sent to
+            // the peer, issue a heartbeat instead.
+            self.heartbeat()?;
+            return Ok(());
+        }
+
+        // get the prev index and term
+        let entry = self.rn.persister.get_entry(from - 1)?;
+        let (prev_log_index, prev_log_term) =
+            if let Some(entry) = entry { (entry.index, entry.term) } else { (0, 0) };
+
+        let req = AppendEntries {
+            leader_id: self.rn.id,
+            leader_commit: self.rn.commit_index,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            seq,
+        };
+        self.rn.send_message(Address::Node(peer), Event::AppendEntries(req))?;
+
+        debug!(self.rn, "send append entries to {}, seq: {}, #entries: {}", peer, seq, num_entries);
+
+        self.rn.seq.set(seq);
+
+        Ok(())
+    }
+
+    fn maybe_commit_and_apply(&mut self) -> Result<()> {
+        let pos = self.rn.quorum_size() - 1;
+
+        // TODO: quorum size could be one in a single node cluster,
+        //  the peers array can be empty and the `pos` here is zero.
+
+        let mut match_index: Vec<_> =
+            self.rn.peers.iter().map(|&x| self.match_index[x as usize]).collect();
+        match_index.select_nth_unstable(pos as usize);
+
+        // quorum index is the index of highest log entry
+        // known to be replicated to majority peers, i.e.,
+        // the new commit index.
+        let quorum_index = match_index[pos as usize];
+        // if there is no entries are considered as committed
+        // by comparing with the latest commit index, do nothing.
+        if quorum_index == self.rn.commit_index {
+            return Ok(());
+        }
+
+        // update the commit index(implies the entries are committed)
+        self.rn.commit_index = quorum_index;
+
+        // apply committed entries
+        let from = self.rn.last_applied + 1;
+        let to = self.rn.commit_index + 1;
+        let entries = self.rn.persister.scan_entries(from, to)?;
+
+        for entry in entries {
+            let (index, command) = (entry.index, entry.command);
+            let msg = ApplyMsg { index, command };
+            let result = self.rn.state.apply(msg);
+            self.rn.last_applied += 1;
+            if let Some(ticket) = self.tickets.remove(&index) {
+                let (id, result) = (ticket.id, ProposalResult::Applied { index, result });
+                self.rn.send_message(ticket.from, Event::ProposalResponse { id, result })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_expiring_proposal(&mut self) -> Result<()> {
+        let now = SystemTime::now();
+
+        // TODO:  speed up the expiration check.
+        let indexes: Vec<_> = self
+            .tickets
+            .iter()
+            .filter_map(
+                |(&index, ticket)| {
+                    if ticket.expire_at.le(&now) {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect();
+
+        for index in indexes {
+            if let Some(ticket) = self.tickets.remove(&index) {
+                let (id, result) = (ticket.id, ProposalResult::Ongoing(index));
+                self.rn.send_message(ticket.from, Event::ProposalResponse { id, result })?;
+            }
+        }
         Ok(())
     }
 }
@@ -76,10 +213,11 @@ impl Node for Leader {
             self.heartbeat()?;
             self.tick = 0;
         }
+        self.check_expiring_proposal()?;
         Ok(self)
     }
 
-    fn step(self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
+    fn step(mut self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
         debug!(self.rn, "receive message: {}", msg);
 
         // receive a stale message, drop it.
@@ -92,15 +230,28 @@ impl Node for Leader {
         // the message there.
         if msg.term > self.rn.term {
             info!(self.rn, "become leaderless follower, caused by higher term");
-            return self.rn.into_follower(msg.term, None)?.step(msg);
+            return self.into_follower(msg.term, None)?.step(msg);
         }
 
         match msg.event {
-            Event::EntriesAccepted => {
-                todo!()
+            Event::EntriesAccepted(index) => {
+                let peer = msg.from.unwrap_node_id();
+
+                let ind = peer as usize;
+                self.match_index[ind] = max(index, self.match_index[ind]);
+                self.maybe_commit_and_apply()?;
+
+                return Ok(self);
             }
-            Event::EntriesRejected { .. } => {
-                todo!()
+
+            Event::EntriesRejected { xindex } => {
+                let peer = msg.from.unwrap_node_id();
+
+                let ind = peer as usize;
+                self.next_index[ind] = xindex;
+                self.may_send_append_entries(peer)?;
+
+                return Ok(self);
             }
 
             // receive a stale vote request where the voting term is same as
@@ -110,13 +261,7 @@ impl Node for Leader {
             // got the majority votes already and become leader). although ignore
             // it is okay, but we reject it explicitly here for debug purpose.
             Event::RequestVote(_) => {
-                let message = Message {
-                    term: self.rn.term,
-                    from: Address::Node(self.rn.id),
-                    to: msg.from,
-                    event: Event::VoteRejected,
-                };
-                self.rn.node_tx.send(message)?;
+                self.rn.send_message(msg.from, Event::VoteRejected)?;
             }
 
             // receive a slow vote grant response, however we've
@@ -127,15 +272,37 @@ impl Node for Leader {
             // already get majority vote and become leader, ignore it.
             Event::VoteRejected => {}
 
-            Event::ProposeCommand { .. } => {
-                todo!()
+            Event::ProposalRequest { id, command, timeout } => {
+                let index = self.rn.persister.append(self.rn.term, command)?;
+
+                // send append entries to the peers
+                for &peer in &self.rn.peers {
+                    self.may_send_append_entries(peer)?;
+                }
+
+                // check the timeout duration, start from the infinity(say 1000 days from now)
+                let now = SystemTime::now();
+                let mut expire_at = now.add(Duration::from_days(1000));
+                if let Some(timeout) = timeout {
+                    if timeout.is_zero() {
+                        let result = ProposalResult::Ongoing(index);
+                        self.rn.send_message(msg.from, Event::ProposalResponse { id, result })?;
+                        return Ok(self);
+                    }
+                    expire_at = now.add(timeout);
+                }
+
+                // save the ongoing proposal as ticket so that we can send
+                // the apply result back to the client.
+                self.tickets.insert(index, Ticket { from: msg.from, id, expire_at });
+
+                return Ok(self);
             }
 
             // As a leader, we should not receive any of
             // the following messages.
             Event::AppendEntries(_) => {}
-            Event::ProposalDropped { .. } => {}
-            Event::ProposalApplied { .. } => {}
+            Event::ProposalResponse { .. } => {}
         }
         Ok(self)
     }
@@ -149,7 +316,7 @@ impl TryFrom<RawNode> for Leader {
     type Error = Error;
 
     fn try_from(rn: RawNode) -> Result<Leader> {
-        let mut leader = Leader::new(rn);
+        let leader = Leader::new(rn);
         debug!(leader.rn, "become leader");
         leader.heartbeat()?;
         Ok(leader)

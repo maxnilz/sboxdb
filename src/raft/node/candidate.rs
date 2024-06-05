@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
 use crate::error::{Error, Result};
-use crate::raft::message::{Address, Event, Message, RequestVote};
+use crate::raft::message::{Address, Event, Message, ProposalResult, RequestVote};
 use crate::raft::node::leader::Leader;
+use crate::raft::node::NodeId;
 use crate::raft::node::{rand_election_timeout, RawNode, Ticks};
 use crate::raft::node::{Node, NodeState};
-use crate::raft::NodeId;
 
 pub struct Candidate {
     rn: RawNode,
@@ -34,18 +34,9 @@ impl Candidate {
 
         info!(self.rn, "requesting vote as candidate");
 
-        let (log_index, log_term) = self.rn.persister.last();
-        let message = Message {
-            term,
-            from: Address::Node(self.rn.id),
-            to: Address::Broadcast,
-            event: Event::RequestVote(RequestVote {
-                candidate: voted_for.unwrap(),
-                last_log_index: log_index,
-                last_log_term: log_term,
-            }),
-        };
-        self.rn.node_tx.send(message)?;
+        let (last_index, last_term) = self.rn.persister.last();
+        let req = RequestVote { candidate: voted_for.unwrap(), last_index, last_term };
+        self.rn.send_message(Address::Broadcast, Event::RequestVote(req))?;
 
         Ok(())
     }
@@ -69,14 +60,9 @@ impl Node for Candidate {
             debug!(self.rn, "drop stale msg");
             match msg.event {
                 // drop any command proposal explicitly
-                Event::ProposeCommand { id, .. } => {
-                    let message = Message {
-                        term: self.rn.term,
-                        from: Address::Node(self.rn.id),
-                        to: msg.from,
-                        event: Event::ProposalDropped { id },
-                    };
-                    self.rn.node_tx.send(message)?;
+                Event::ProposalRequest { id, .. } => {
+                    let event = Event::ProposalResponse { id, result: ProposalResult::Dropped };
+                    self.rn.send_message(msg.from, event)?;
                 }
                 // drop any other message quietly.
                 _ => {}
@@ -122,13 +108,7 @@ impl Node for Candidate {
             // reject any vote request while we are
             // requesting vote as a candidate.
             Event::RequestVote(_) => {
-                let message = Message {
-                    term: self.rn.term,
-                    from: Address::Node(self.rn.id),
-                    to: msg.from,
-                    event: Event::VoteRejected,
-                };
-                self.rn.node_tx.send(message)?;
+                self.rn.send_message(msg.from, Event::VoteRejected)?;
             }
 
             // an append entries MUST send by leader,
@@ -142,22 +122,16 @@ impl Node for Candidate {
             }
 
             // drop any command proposal while we are candidate.
-            Event::ProposeCommand { id, .. } => {
-                let message = Message {
-                    term: self.rn.term,
-                    from: Address::Node(self.rn.id),
-                    to: msg.to,
-                    event: Event::ProposalDropped { id },
-                };
-                self.rn.node_tx.send(message)?;
+            Event::ProposalRequest { id, .. } => {
+                let event = Event::ProposalResponse { id, result: ProposalResult::Dropped };
+                self.rn.send_message(msg.from, event)?;
             }
 
             // As a candidate, we should not receive any of
             // the following messages.
-            Event::EntriesAccepted
+            Event::EntriesAccepted(_)
             | Event::EntriesRejected { .. }
-            | Event::ProposalDropped { .. }
-            | Event::ProposalApplied { .. } => {
+            | Event::ProposalResponse { .. } => {
                 error!(self.rn, "received unexpected message {}", msg)
             }
         };

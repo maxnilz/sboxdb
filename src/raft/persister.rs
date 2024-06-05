@@ -4,14 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::{bincodec, keycodec};
 use crate::error::Result;
-use crate::raft::{Index, NodeId, Term};
+use crate::raft::node::NodeId;
+use crate::raft::{Index, Term};
 use crate::storage::Storage;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Entry {
-    index: Index,
-    term: Term,
-    command: Option<Vec<u8>>,
+    pub index: Index,
+    pub term: Term,
+    pub command: Option<Vec<u8>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -152,13 +153,18 @@ impl Persister {
             })
             .collect()
     }
+
+    pub fn delete_from(&mut self, from: Index) -> Result<i32> {
+        let from = Key::Entry(from).encode(&self.ns)?;
+        self.storage.delete_prefix(&from)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::{new_storage, StorageType};
-
     use super::*;
+
+    use crate::storage::{new_storage, StorageType};
 
     #[test]
     fn test_persister_simple() -> Result<()> {

@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// All except Internal are considered user-facing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Error {
-    Abort,
     Internal(String),
     Value(String),
+    Abort,
 }
 
 impl Error {

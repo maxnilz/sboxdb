@@ -117,13 +117,13 @@ mod tests {
         fn1(m)?;
 
         let m = memory::Memory::new();
-        let s1: Struct1<memory::Memory> = Struct1 { storage: m };
+        let _s1: Struct1<memory::Memory> = Struct1 { storage: m };
 
         Ok(())
     }
 
     // test `impl Trait`
-    fn new_storage_v2(typ: StorageType) -> impl Storage {
+    fn new_storage_v2(_typ: StorageType) -> impl Storage {
         let m = memory::Memory::new();
         m
     }
@@ -167,19 +167,19 @@ mod tests {
             Ok(())
         }
 
-        fn set(&mut self, key: &[u8], value: Vec<u8>) -> Result<()> {
+        fn set(&mut self, _key: &[u8], _value: Vec<u8>) -> Result<()> {
             Ok(())
         }
 
-        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        fn get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
             Ok(None)
         }
 
-        fn scan(&self, range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Box<dyn ScanIterator<'_> + '_> {
+        fn scan(&self, _range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Box<dyn ScanIterator<'_> + '_> {
             Box::new(ScanIteratorNoop {})
         }
 
-        fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        fn delete(&mut self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
             Ok(None)
         }
     }

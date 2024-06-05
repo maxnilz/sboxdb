@@ -15,7 +15,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use crate::error::Error;
 use crate::error::Result;
 use crate::raft::message::{Address, Message};
-use crate::raft::NodeId;
+use crate::raft::node::NodeId;
 
 // Transport act as the message exchange(send, receive) among
 // raft peers.
@@ -160,9 +160,7 @@ impl Transport for TcpTransport {
 
 #[cfg(test)]
 pub mod tests {
-    use std::collections::HashSet;
     use std::ops::Range;
-    use std::os::linux::raw::stat;
     use std::sync::{Arc, RwLock};
 
     use async_trait::async_trait;
@@ -176,7 +174,9 @@ pub mod tests {
     use super::*;
 
     pub struct LabTransport {
+        #[allow(unused)]
         id: NodeId,
+
         me: Arc<Mutex<mpsc::Receiver<Message>>>,
         peers: HashMap<NodeId, Arc<mpsc::Sender<Message>>>,
 
@@ -322,10 +322,7 @@ pub mod tests {
             }
 
             // connect all node by initially
-            let mut connected = Vec::new();
-            for i in 0..nodes.len() {
-                connected.push(true);
-            }
+            let connected = vec![true; nodes.len()];
 
             let net = LabNet { sockets: Arc::new(RwLock::new(sockets)) };
             let net = Arc::new(net);
