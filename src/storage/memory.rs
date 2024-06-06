@@ -37,7 +37,7 @@ impl Storage for Memory {
         Box::new(MemScanIterator { it: result })
     }
 
-    fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let res = self.data.remove(key);
         Ok(res)
     }
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(Some(vec![1]), m.get(b"a")?);
 
         // delete
-        let got = m.delete(b"a")?;
+        let got = m.remove(b"a")?;
         assert_eq!(Some(vec![1]), got);
 
         // get again

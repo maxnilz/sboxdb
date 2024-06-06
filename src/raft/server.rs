@@ -7,7 +7,6 @@ use tokio::sync::oneshot;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
-use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::raft::message::{Address, Event, Message};
@@ -145,7 +144,7 @@ impl Server {
                 }
 
                 Some(req) = command_rx.next() => {
-                    let id: ProposalId = Uuid::new_v4().as_bytes().to_vec();
+                    let id = ProposalId::new();
                     let message = Message {
                         term: 0,
                         from: Address::Localhost,
@@ -193,15 +192,15 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
-    use std::ops::Mul;
+    use std::ops::{Add, Mul};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use log::{debug, error};
     use rand::{thread_rng, Rng};
 
     use crate::error::Result;
-    use crate::raft::node::{ELECTION_TIMEOUT_RANGE, HEARTBEAT_INTERVAL};
+    use crate::raft::node::{ELECTION_TIMEOUT_RANGE, HEARTBEAT_INTERVAL, ROUND_TRIP_INTERVAL};
     use crate::raft::transport::tests::LabNetMesh;
     use crate::raft::Index;
     use crate::raft::Term;
@@ -422,8 +421,8 @@ mod tests {
             Ok(term)
         }
 
-        // how many servers think a log entry is committed at the given index
-        fn ncommitted(&self, index: Index) -> Result<(i32, Option<Command>)> {
+        // how many servers think a log entry is applied at the given index
+        fn napplied(&self, index: Index) -> Result<(u8, Option<Command>)> {
             let mut n = 0;
             let mut ans: Option<Command> = None;
             for &id in &self.nodes {
@@ -436,7 +435,7 @@ mod tests {
                 #[rustfmt::skip]
                 if let Some(c) = &ans && n > 1 {
                     if *c != cmd {
-                        return Err(Error::internal(format!("committed values do not match: index {}, {:?}, {:?}", index, *c, cmd)));
+                        return Err(Error::internal(format!("applied values do not match: index {}, {:?}, {:?}", index, *c, cmd)));
                     }
                 }
                 n += 1;
@@ -445,17 +444,72 @@ mod tests {
             Ok((n, ans))
         }
 
-        fn one(&self, command: Command, m: i32, retry: bool) -> Result<Index> {
-            for _ in 0..10 {
-                // wait at lease max election timeout so that
-                // we will have at least one election.
-                std::thread::sleep(max_election_timeout());
+        // do a complete agreement, since our raft implementation would forward
+        // command to the leader as long as the election is done. so we always
+        // send the commend to raft via the first server. the command might get
+        // drop because of the leader election or leader change, we have to re-submit
+        // the command in this case. keep retrying in 10 seconds before entirely
+        // giving up.
+        // if retry == ture, we may submit the command multiple times, in case a
+        // leader fails just after submit.
+        // if retry == false, just do a success submit only once.
+        fn one(&self, command: Vec<u8>, n: u8, retry: bool) -> Result<Index> {
+            let tm = SystemTime::now().add(Duration::from_secs(10));
+            loop {
+                // since our raft implementation would forward command
+                // to the leader as long as the election is done. so
+                // try to send a command to first server as a client,
+                // if we get Command Dropped back, we need to retry.
+                let server = &self.servers[0];
+                // set the agreement timeout to be 3 times of round trip interval
+                let timeout = TICK_INTERVAL.mul(3 * ROUND_TRIP_INTERVAL as u32);
+                let res = server.execute_command(command.clone(), Some(timeout))?;
+                match res {
+                    CommandResult::Dropped => {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue; // command get dropped by raft, continue
+                    }
+                    CommandResult::Ongoing(index) => {
+                        // somebody claimed to be the leader and to have
+                        // submitted our command, however, after the timeout
+                        // it still not reach agreement yet.
+                        //
+                        // check if we have retry setup, otherwise consider this
+                        // as fail to agreement and return err.
+                        if retry == false {
+                            #[rustfmt::skip]
+                            return Err(Error::internal(format!( "failed to reach agreement {:?} at index {}", command, index)));
+                        }
+                    }
+                    CommandResult::Applied { index, .. } => {
+                        // since we will get applied response back as soon as the
+                        // leader applied the command to the state machine after
+                        // the cluster think the command is replicated/logged to
+                        // majority.
+                        // wait a while to for the follower to apply the command.
+                        let d = TICK_INTERVAL.mul(3 * ROUND_TRIP_INTERVAL as u32);
+                        let until = SystemTime::now().add(d);
+                        let mut m: u8 = 0;
+                        let mut cmd: Option<Command> = None;
+                        loop {
+                            (m, cmd) = self.napplied(index)?;
+                            if m >= n && cmd == Some(Some(command.clone())) {
+                                return Ok(index);
+                            }
+                            if SystemTime::now().gt(&until) {
+                                break;
+                            }
+                        }
+                        #[rustfmt::skip]
+                        return Err(Error::internal(format!("failed to reach agreement {:?} at index {}, {}/{}, {:?}", command, index, m, n, cmd)));
+                    }
+                };
 
-                // try to send a command to a server as a client,
-                // if we get Error::Abort error back, we need to retry.
-                for &id in &self.nodes {}
+                if SystemTime::now().gt(&tm) {
+                    break;
+                }
             }
-            todo!()
+            Err(Error::internal(format!("failed to reach agreement {:?}", command)))
         }
 
         fn disconnect(&mut self, id: NodeId) {
@@ -574,6 +628,24 @@ mod tests {
         cluster.check_one_leader()?;
 
         cluster.close();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_basic_agree() -> Result<()> {
+        env_logger::builder().init();
+
+        let num_nodes = 3;
+        let mut cluster = Cluster::new(num_nodes)?;
+        cluster.start();
+
+        for index in 1..=3 {
+            let (n, _) = cluster.napplied(index)?;
+            assert_eq!(n, 0, "some have committed before");
+            let got = cluster.one(vec![index as u8], num_nodes, false)?;
+            assert_eq!(index, got, "got index {}, expected {}", got, index);
+        }
 
         Ok(())
     }

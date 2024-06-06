@@ -53,7 +53,7 @@ impl Node for Candidate {
     }
 
     fn step(mut self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
-        debug!(self.rn, "receive message: {}", msg);
+        debug!(self.rn, "recv msg: {}", msg);
 
         // receive a stale message, drop it.
         if msg.term < self.rn.term {

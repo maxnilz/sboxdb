@@ -154,7 +154,7 @@ impl From<ProposalResult> for CommandResult {
         match value {
             ProposalResult::Dropped => CommandResult::Dropped,
             ProposalResult::Ongoing(index) => CommandResult::Ongoing(index),
-            ProposalResult::Applied { index, result: res } => CommandResult::Applied { index, res },
+            ProposalResult::Applied { index, result } => CommandResult::Applied { index, result },
         }
     }
 }
@@ -189,10 +189,10 @@ impl Display for Event {
                 write!(f, "VoteRejected")
             }
             Event::ProposalRequest { id, .. } => {
-                write!(f, "ProposeCommand: {:?}", id)
+                write!(f, "ProposeCommand: {}", id)
             }
-            Event::ProposalResponse { id, result: result } => {
-                write!(f, "ProposalResponse: {:?}, {:?}", id, result)
+            Event::ProposalResponse { id, result } => {
+                write!(f, "ProposalResponse: {}, {:?}", id, result)
             }
         }
     }

@@ -164,6 +164,8 @@ impl Leader {
         let to = self.rn.commit_index + 1;
         let entries = self.rn.persister.scan_entries(from, to)?;
 
+        info!(self.rn, "applying entries [{}, {}), {}", from, to, entries.len());
+
         for entry in entries {
             let (index, command) = (entry.index, entry.command);
             let msg = ApplyMsg { index, command };
@@ -218,7 +220,7 @@ impl Node for Leader {
     }
 
     fn step(mut self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
-        debug!(self.rn, "receive message: {}", msg);
+        debug!(self.rn, "recv msg: {}", msg);
 
         // receive a stale message, drop it.
         if msg.term > 0 && msg.term < self.rn.term {
@@ -238,7 +240,8 @@ impl Node for Leader {
                 let peer = msg.from.unwrap_node_id();
 
                 let ind = peer as usize;
-                self.match_index[ind] = max(index, self.match_index[ind]);
+                self.next_index[ind] = index + 1;
+                self.match_index[ind] = index;
                 self.maybe_commit_and_apply()?;
 
                 return Ok(self);

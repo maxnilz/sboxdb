@@ -40,8 +40,8 @@ impl Follower {
 
     fn drop_forwarded(&mut self) -> Result<()> {
         for (id, peer) in std::mem::take(&mut self.forwarded) {
-            self.rn
-                .send_message(peer, Event::ProposalResponse { id, result: ProposalResult::Dropped })?;
+            let result = ProposalResult::Dropped;
+            self.rn.send_message(peer, Event::ProposalResponse { id, result })?;
         }
         Ok(())
     }
@@ -102,6 +102,7 @@ impl Follower {
         let to = self.rn.commit_index + 1;
         assert!(from < to);
         let entries = self.rn.persister.scan_entries(from, to)?;
+        info!(self.rn, "applying entries [{}, {}), {}", from, to, entries.len());
         for entry in entries {
             let msg = ApplyMsg { index: entry.index, command: entry.command };
             self.rn.state.apply(msg)?;
@@ -123,7 +124,7 @@ impl Node for Follower {
     }
 
     fn step(mut self: Box<Self>, msg: Message) -> Result<Box<dyn Node>> {
-        debug!(self.rn, "receive message: {}", msg);
+        debug!(self.rn, "recv msg: {}", msg);
 
         // receive a stale message, drop it.
         if msg.term > 0 && msg.term < self.rn.term {
@@ -165,10 +166,11 @@ impl Node for Follower {
                 }
 
                 // entries are accepted
-                if !ae.entries.is_empty() {
+                let num = ae.entries.len();
+                if num > 0 {
                     // keep the log entries upto prev_log_index(inclusive),
                     // discard any entries from prev_log_index+1 inclusively.
-                    self.rn.persister.delete_from(ae.prev_log_index + 1)?;
+                    self.rn.persister.remove_from(ae.prev_log_index + 1)?;
                     // append entries
                     for entry in ae.entries {
                         self.rn.persister.append(entry.term, entry.command)?;
@@ -177,7 +179,8 @@ impl Node for Follower {
 
                 let (last_index, _) = self.rn.persister.last();
 
-                info!(self.rn, "accept entries from {}, last_index: {}", msg.from, last_index);
+                #[rustfmt::skip]
+                info!(self.rn, "accept {} entries from {}, last_index: {}, c: {}/{}", num, msg.from, last_index, ae.leader_commit, self.rn.commit_index);
 
                 // check if we have entries need to apply to state machine.
                 assert_eq!(ae.leader_commit >= self.rn.commit_index, true);

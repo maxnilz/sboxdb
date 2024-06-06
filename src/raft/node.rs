@@ -1,8 +1,11 @@
 use std::cell::Cell;
+use std::fmt::{format, write, Display, Formatter};
 use std::time::Duration;
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::error::Result;
 use crate::raft::message::{Address, Event, Message};
@@ -13,7 +16,7 @@ use crate::storage::state::State;
 
 macro_rules! log {
     ($rn:expr, $lvl:expr, $($arg:tt)+) => {
-        ::log::log!($lvl, "server/{} term:{} leader:{:?} {}", $rn.id, $rn.term, $rn.leader, format_args!($($arg)+))
+        ::log::log!(target: "", $lvl, "server/{} term:{} leader:{:?} {}", $rn.id, $rn.term, $rn.leader, format_args!($($arg)+))
     };
 }
 
@@ -43,7 +46,21 @@ pub mod leader;
 pub type Ticks = u8;
 pub type NodeId = u8;
 pub const MAX_NODE_ID: u8 = 255;
-pub type ProposalId = Vec<u8>;
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct ProposalId(String);
+impl ProposalId {
+    pub fn new() -> ProposalId {
+        ProposalId(Uuid::new_v4().hyphenated().to_string())
+    }
+}
+
+impl Display for ProposalId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 // The interval between Raft ticks, the unit of time for e.g. heartbeats and
 // elections. consider it as a round trip between two peers.
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -51,6 +68,7 @@ pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
 // The interval between leader heartbeats, in ticks. i.e., 300ms if TICK_INTERVAL
 // is 100ms.
 pub const HEARTBEAT_INTERVAL: Ticks = 3;
+pub const ROUND_TRIP_INTERVAL: Ticks = 2 * HEARTBEAT_INTERVAL;
 
 // The randomized election timeout range (min-max), in ticks. This is
 // randomized per node to avoid ties.

@@ -100,7 +100,7 @@ impl Persister {
         if entry.index < self.last_index {
             // truncate entries
             let from = Key::Entry(entry.index).encode(&self.ns)?;
-            self.storage.delete_prefix(&from)?;
+            self.storage.remove_prefix(&from)?;
         }
         let key = Key::Entry(entry.index).encode(&self.ns)?;
         let value = bincodec::serialize(&entry)?;
@@ -154,17 +154,30 @@ impl Persister {
             .collect()
     }
 
-    pub fn delete_from(&mut self, from: Index) -> Result<i32> {
+    pub fn remove_from(&mut self, from: Index) -> Result<usize> {
+        let prev = from - 1;
+
+        // remove entries from the given index.
         let from = Key::Entry(from).encode(&self.ns)?;
-        self.storage.delete_prefix(&from)
+        let values = self.storage.remove_prefix(&from)?;
+        if values.is_empty() {
+            return Ok(0);
+        }
+
+        // update the last index & term
+        let last = self.get_entry(prev)?;
+        (self.last_index, self.last_term) =
+            if let Some(last) = last { (last.index, last.term) } else { (0, 0) };
+
+        Ok(values.len())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use crate::storage::{new_storage, StorageType};
+
+    use super::*;
 
     #[test]
     fn test_persister_simple() -> Result<()> {
@@ -256,9 +269,27 @@ mod tests {
         // test persister init
 
         // test persister init with non-empty storage
-        let p = Persister::new(ns.clone(), p.storage)?;
+        let mut p = Persister::new(ns.clone(), p.storage)?;
         assert_eq!(6, p.last_index);
         assert_eq!(6, p.last_term);
+
+        // test remove entries by index
+        //
+        // remove from noexist index
+        let got = p.remove_from(7)?;
+        assert_eq!(got, 0);
+        assert_eq!(6, p.last_index);
+        assert_eq!(6, p.last_term);
+        // remove last item
+        let got = p.remove_from(6)?;
+        assert_eq!(got, 1);
+        assert_eq!(5, p.last_index);
+        assert_eq!(5, p.last_term);
+        // remove from 3
+        let got = p.remove_from(3)?;
+        assert_eq!(got, 3);
+        assert_eq!(2, p.last_index);
+        assert_eq!(2, p.last_term);
 
         // test persister init with empty storage
         let s = new_storage(StorageType::Memory)?;

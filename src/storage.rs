@@ -62,25 +62,30 @@ pub trait Storage: Debug + Send + Sync {
         self.scan((start, end))
     }
 
-    fn delete(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    /// Removes a key from the storage, returning the value at the key if the key
+    /// was previously in the storage.
+    /// The key may be any borrowed form of the map's key type, but the ordering
+    /// on the borrowed form must match the ordering on the key type.
+    fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
-    fn delete_prefix(&mut self, prefix: &[u8]) -> Result<i32> {
+    /// Remove all keys starting with prefix, returning the values that are removed from.
+    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         let iter = self.scan_prefix(prefix);
         let keys = iter
             .map(|x| {
-                let (k, _) = x?;
+                let (k, value) = x?;
                 Ok(k)
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
 
-        let mut count = 0;
+        let mut values = vec![];
         for key in &keys {
-            let res = self.delete(&key)?;
-            if let Some(_) = res {
-                count += 1;
+            let res = self.remove(&key)?;
+            if let Some(val) = res {
+                values.push(val);
             }
         }
-        Ok(count)
+        Ok(values)
     }
 }
 
@@ -179,7 +184,7 @@ mod tests {
             Box::new(ScanIteratorNoop {})
         }
 
-        fn delete(&mut self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
+        fn remove(&mut self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
             Ok(None)
         }
     }
