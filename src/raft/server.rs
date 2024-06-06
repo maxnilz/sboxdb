@@ -181,7 +181,7 @@ impl Server {
         timeout: Option<Duration>,
     ) -> Result<CommandResult> {
         let (tx, rx) = oneshot::channel();
-        let req = Request { command: Some(command), timeout, tx };
+        let req = Request { command: command.into(), timeout, tx };
         if let Err(_) = self.command_tx.send(req) {
             return Err(Error::internal("command channel is closed or dropped"));
         }
@@ -444,30 +444,30 @@ mod tests {
             Ok((n, ans))
         }
 
-        // do a complete agreement, since our raft implementation would forward
-        // command to the leader as long as the election is done. so we always
-        // send the commend to raft via the first server. the command might get
-        // drop because of the leader election or leader change, we have to re-submit
-        // the command in this case. keep retrying in 10 seconds before entirely
-        // giving up.
+        // do a complete agreement. since our raft implementation would forward
+        // command to the leader as long as the election is done. so we try to
+        // send the command to raft to each of servers in a loop. the command
+        // might get drop because of the leader election or leader change, we have
+        // to re-submit the command in this case. keep retrying in 10 seconds before
+        // entirely giving up.
         // if retry == ture, we may submit the command multiple times, in case a
         // leader fails just after submit.
         // if retry == false, just do a success submit only once.
         fn one(&self, command: Vec<u8>, n: u8, retry: bool) -> Result<Index> {
+            let mut ind = 0;
             let tm = SystemTime::now().add(Duration::from_secs(10));
             loop {
-                // since our raft implementation would forward command
-                // to the leader as long as the election is done. so
-                // try to send a command to first server as a client,
-                // if we get Command Dropped back, we need to retry.
-                let server = &self.servers[0];
+                let server = &self.servers[ind];
                 // set the agreement timeout to be 3 times of round trip interval
                 let timeout = TICK_INTERVAL.mul(3 * ROUND_TRIP_INTERVAL as u32);
                 let res = server.execute_command(command.clone(), Some(timeout))?;
                 match res {
                     CommandResult::Dropped => {
+                        // command get dropped by raft, sleep a while
+                        // then continue with another server.
                         std::thread::sleep(Duration::from_millis(50));
-                        continue; // command get dropped by raft, continue
+                        ind = (ind + 1) % self.servers.len();
+                        continue;
                     }
                     CommandResult::Ongoing(index) => {
                         // somebody claimed to be the leader and to have
@@ -487,18 +487,19 @@ mod tests {
                         // the cluster think the command is replicated/logged to
                         // majority.
                         // wait a while to for the follower to apply the command.
-                        let d = TICK_INTERVAL.mul(3 * ROUND_TRIP_INTERVAL as u32);
+                        let d = max_election_timeout();
                         let until = SystemTime::now().add(d);
-                        let mut m: u8 = 0;
-                        let mut cmd: Option<Command> = None;
+                        let mut m: u8;
+                        let mut cmd: Option<Command>;
                         loop {
                             (m, cmd) = self.napplied(index)?;
-                            if m >= n && cmd == Some(Some(command.clone())) {
+                            if m >= n && cmd == Some(command.clone().into()) {
                                 return Ok(index);
                             }
                             if SystemTime::now().gt(&until) {
                                 break;
                             }
+                            std::thread::sleep(Duration::from_millis(50));
                         }
                         #[rustfmt::skip]
                         return Err(Error::internal(format!("failed to reach agreement {:?} at index {}, {}/{}, {:?}", command, index, m, n, cmd)));
@@ -524,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_initial_election() -> Result<()> {
+    fn test_initial_election_r1() -> Result<()> {
         env_logger::builder().init();
 
         let mut cluster = Cluster::new(3)?;
@@ -550,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_re_election() -> Result<()> {
+    fn test_re_election_r1() -> Result<()> {
         env_logger::builder().init();
 
         let num_nodes = 3;
@@ -594,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_many_election() -> Result<()> {
+    fn test_many_election_r1() -> Result<()> {
         env_logger::builder().init();
 
         let num_nodes = 7;
@@ -633,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_agree() -> Result<()> {
+    fn test_basic_agree_r2() -> Result<()> {
         env_logger::builder().init();
 
         let num_nodes = 3;
@@ -646,6 +647,97 @@ mod tests {
             let got = cluster.one(vec![index as u8], num_nodes, false)?;
             assert_eq!(index, got, "got index {}, expected {}", got, index);
         }
+
+        cluster.close();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fail_agree_r2() -> Result<()> {
+        env_logger::builder().init();
+
+        // a follower participates first, then disconnect and reconnect.
+
+        let num_nodes = 3;
+        let mut cluster = Cluster::new(num_nodes)?;
+        cluster.start();
+
+        cluster.one(vec![0x0b], num_nodes, false)?;
+
+        // disconnect one follower from the network.
+        let leader = cluster.check_one_leader()?;
+        cluster.disconnect((leader + 1) % num_nodes);
+
+        // the leader and the reaming follower should be
+        // able to agree despite the disconnected follower.
+        cluster.one(vec![0x0c], num_nodes - 1, false)?;
+        cluster.one(vec![0x0d], num_nodes - 1, false)?;
+        std::thread::sleep(max_election_timeout());
+        cluster.one(vec![0x0e], num_nodes - 1, false)?;
+        cluster.one(vec![0x0f], num_nodes - 1, false)?;
+
+        // reconnect the disconnected follower.
+        cluster.connect((leader + 1) % num_nodes);
+
+        // the full set of servers should preserve previous
+        // agreements, and be able to agree on new commands.
+        cluster.one(vec![0x10], num_nodes - 1, true)?;
+        std::thread::sleep(max_election_timeout());
+        cluster.one(vec![0x11], num_nodes - 1, true)?;
+
+        cluster.close();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fail_no_agree_r2() -> Result<()> {
+        env_logger::builder().init();
+
+        // no agreement if too many followers disconnect
+
+        let num_nodes = 5;
+        let mut cluster = Cluster::new(num_nodes)?;
+        cluster.start();
+
+        cluster.one(vec![0x01], num_nodes, false)?;
+
+        // 3 of 5 followers disconnect.
+        let leader = cluster.check_one_leader()?;
+        cluster.disconnect((leader + 1) % num_nodes);
+        cluster.disconnect((leader + 2) % num_nodes);
+        cluster.disconnect((leader + 3) % num_nodes);
+
+        let server = &cluster.servers[leader as usize];
+
+        // check no agreement can be made.
+        let server = Arc::clone(server);
+        let timeout = max_election_timeout();
+        let res = server.execute_command(vec![0x02], Some(timeout))?;
+        assert_eq!(res, CommandResult::Ongoing(2), "should block on index #2");
+
+        std::thread::sleep(max_election_timeout());
+
+        let (m, _) = cluster.napplied(2)?;
+        assert_eq!(m, 0, "should have no apply");
+
+        // repair
+        cluster.connect((leader + 1) % num_nodes);
+        cluster.connect((leader + 2) % num_nodes);
+        cluster.connect((leader + 3) % num_nodes);
+
+        let leader = cluster.check_one_leader()?;
+        let res = server.execute_command(vec![0x03], Some(timeout))?;
+        assert_eq!(
+            res,
+            CommandResult::Applied { index: 2, result: Ok(vec![0x03].into()) },
+            "command should applied at index 2 or 3"
+        );
+
+        cluster.one(vec![0x04], num_nodes, false)?;
+
+        cluster.close();
 
         Ok(())
     }

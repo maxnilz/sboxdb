@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::fmt::{format, write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
 use rand::Rng;

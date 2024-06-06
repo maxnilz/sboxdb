@@ -73,7 +73,7 @@ pub trait Storage: Debug + Send + Sync {
         let iter = self.scan_prefix(prefix);
         let keys = iter
             .map(|x| {
-                let (k, value) = x?;
+                let (k, _) = x?;
                 Ok(k)
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;

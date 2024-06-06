@@ -149,6 +149,30 @@ pub enum ProposalResult {
     Applied { index: Index, result: Result<Command> },
 }
 
+impl Display for ProposalResult {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProposalResult::Dropped => {
+                write!(f, "Dropped")
+            }
+            ProposalResult::Ongoing(index) => {
+                write!(f, "Ongoing({})", index)
+            }
+            ProposalResult::Applied { index, result } => {
+                write!(f, "Applied{{index:{}", index)?;
+                match result {
+                    Ok(cmd) => {
+                        write!(f, ", Ok:{}}}", cmd)
+                    }
+                    Err(err) => {
+                        write! {f, ", Err:{}}}", err}
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl From<ProposalResult> for CommandResult {
     fn from(value: ProposalResult) -> Self {
         match value {
@@ -163,15 +187,9 @@ impl Display for Event {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Event::AppendEntries(ae) => {
-                write!(
-                    f,
-                    "AppendEntries: {} prev:{}/{} len:{} c:{}",
-                    ae.seq,
-                    ae.prev_log_index,
-                    ae.prev_log_term,
-                    ae.entries.len(),
-                    ae.leader_commit,
-                )
+                #[rustfmt::skip]
+                write!(f, "AppendEntries: {} prev:{}/{} len:{} c:{}",
+                       ae.seq, ae.prev_log_index, ae.prev_log_term, ae.entries.len(), ae.leader_commit)
             }
             Event::EntriesAccepted(index) => {
                 write!(f, "EntriesAccepted: match_index:{}", index)
@@ -188,11 +206,11 @@ impl Display for Event {
             Event::VoteRejected => {
                 write!(f, "VoteRejected")
             }
-            Event::ProposalRequest { id, .. } => {
-                write!(f, "ProposeCommand: {}", id)
+            Event::ProposalRequest { id, command, .. } => {
+                write!(f, "PropReq: {} {}", id, command)
             }
             Event::ProposalResponse { id, result } => {
-                write!(f, "ProposalResponse: {}, {:?}", id, result)
+                write!(f, "PropRsp: {} {}", id, result)
             }
         }
     }

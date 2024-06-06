@@ -1,4 +1,3 @@
-use std::cmp::max;
 use std::collections::HashMap;
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
@@ -150,9 +149,18 @@ impl Leader {
         // known to be replicated to majority peers, i.e.,
         // the new commit index.
         let quorum_index = match_index[pos as usize];
+
+        #[rustfmt::skip]
+        debug!(self.rn, "match_index: {:?}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);
+
         // if there is no entries are considered as committed
         // by comparing with the latest commit index, do nothing.
-        if quorum_index == self.rn.commit_index {
+        // quorum_index maybe less than commit_index, because
+        // match_index can be reset if the role of a node transit
+        // as: leader -> follower -> leader, in which case, the
+        // match_index will need wait at least majority peers
+        // echo back to be in sync properly.
+        if quorum_index <= self.rn.commit_index {
             return Ok(());
         }
 

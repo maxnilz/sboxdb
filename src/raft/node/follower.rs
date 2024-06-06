@@ -165,22 +165,30 @@ impl Node for Follower {
                     return Ok(self.reset());
                 }
 
-                // entries are accepted
+                // we have a valid append entry request onwards.
+
+                let (last_index0, _) = self.rn.persister.last();
+                // keep the log entries upto prev_log_index(inclusive),
+                // discard any entries from prev_log_index+1(inclusive).
+                //
+                // e.g., if the follower was a leader previously, it had
+                // some uncommitted commands were append to the log(because
+                // of network partition, it can't assemble majority), later,
+                // A new leader with a shorter index shows up after the network
+                // recover, we should discard those entries.
+                let discard = self.rn.persister.remove_from(ae.prev_log_index + 1)?;
+
+                // append entries if any
                 let num = ae.entries.len();
-                if num > 0 {
-                    // keep the log entries upto prev_log_index(inclusive),
-                    // discard any entries from prev_log_index+1 inclusively.
-                    self.rn.persister.remove_from(ae.prev_log_index + 1)?;
-                    // append entries
-                    for entry in ae.entries {
-                        self.rn.persister.append(entry.term, entry.command)?;
-                    }
+                for entry in ae.entries {
+                    self.rn.persister.append(entry.term, entry.command)?;
                 }
 
                 let (last_index, _) = self.rn.persister.last();
 
                 #[rustfmt::skip]
-                info!(self.rn, "accept {} entries from {}, last_index: {}, c: {}/{}", num, msg.from, last_index, ae.leader_commit, self.rn.commit_index);
+                info!(self.rn, "accept {} entries from {}, discard: {}/{}, last_index: {}, c: {}/{}",
+                    num, msg.from, discard, last_index0, last_index, ae.leader_commit, self.rn.commit_index);
 
                 // check if we have entries need to apply to state machine.
                 assert_eq!(ae.leader_commit >= self.rn.commit_index, true);

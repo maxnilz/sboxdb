@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::codec::{bincodec, keycodec};
 use crate::error::Result;
 use crate::raft::node::NodeId;
-use crate::raft::{Index, Term};
+use crate::raft::{Command, Index, Term};
 use crate::storage::Storage;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub index: Index,
     pub term: Term,
-    pub command: Option<Vec<u8>>,
+    pub command: Command,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -87,7 +87,7 @@ impl Persister {
         Ok(ans)
     }
 
-    pub fn append(&mut self, term: Term, command: Option<Vec<u8>>) -> Result<Index> {
+    pub fn append(&mut self, term: Term, command: Command) -> Result<Index> {
         let index = self.last_index + 1;
 
         let entry = Entry { index, term, command };
@@ -207,12 +207,12 @@ mod tests {
 
         // append entries
         let entries = vec![
-            Entry { index: 0, term: 0, command: Some(vec![0]) },
-            Entry { index: 1, term: 1, command: Some(vec![1]) },
-            Entry { index: 2, term: 2, command: Some(vec![2]) },
-            Entry { index: 3, term: 3, command: Some(vec![3]) },
-            Entry { index: 4, term: 4, command: Some(vec![4]) },
-            Entry { index: 5, term: 5, command: Some(vec![5]) },
+            Entry { index: 0, term: 0, command: vec![0].into() },
+            Entry { index: 1, term: 1, command: vec![1].into() },
+            Entry { index: 2, term: 2, command: vec![2].into() },
+            Entry { index: 3, term: 3, command: vec![3].into() },
+            Entry { index: 4, term: 4, command: vec![4].into() },
+            Entry { index: 5, term: 5, command: vec![5].into() },
         ];
         for entry in &entries {
             p.append_entry(entry.clone())?;
@@ -221,6 +221,10 @@ mod tests {
         // scan from beginning
         let got = p.scan_from(0)?;
         assert_eq!(got, entries);
+
+        // scan [2, 2)
+        let got = p.scan_entries(2, 2)?;
+        assert_eq!(got, vec![]);
 
         // scan [2, 4)
         let got = p.scan_entries(2, 4)?;
@@ -232,10 +236,10 @@ mod tests {
 
         // append more with append
         let entries = vec![
-            Entry { index: 6, term: 6, command: Some(vec![6]) },
-            Entry { index: 7, term: 7, command: Some(vec![7]) },
-            Entry { index: 8, term: 8, command: Some(vec![8]) },
-            Entry { index: 9, term: 9, command: Some(vec![9]) },
+            Entry { index: 6, term: 6, command: vec![6].into() },
+            Entry { index: 7, term: 7, command: vec![7].into() },
+            Entry { index: 8, term: 8, command: vec![8].into() },
+            Entry { index: 9, term: 9, command: vec![9].into() },
         ];
         for entry in &entries {
             p.append(entry.term, entry.command.clone())?;
@@ -250,7 +254,7 @@ mod tests {
         assert_eq!(9, p.last_term);
 
         // truncate append
-        let entry = Entry { index: 6, term: 6, command: Some(vec![6, 6, 6]) };
+        let entry = Entry { index: 6, term: 6, command: vec![6, 6, 6].into() };
         p.append_entry(entry.clone())?;
 
         // get entry by index
