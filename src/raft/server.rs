@@ -132,7 +132,7 @@ impl Server {
                                 }
                             }
                         }
-                        _ => return Err(Error::internal(format!("unexpected message to localhost {:?}", msg)))
+                        _ => return Err(Error::internal(format!("unexpected message to localhost {}", msg)))
                     }
                 },
 
@@ -177,11 +177,11 @@ impl Server {
 
     pub fn execute_command(
         &self,
-        command: Vec<u8>,
+        command: Command,
         timeout: Option<Duration>,
     ) -> Result<CommandResult> {
         let (tx, rx) = oneshot::channel();
-        let req = Request { command: command.into(), timeout, tx };
+        let req = Request { command, timeout, tx };
         if let Err(_) = self.command_tx.send(req) {
             return Err(Error::internal("command channel is closed or dropped"));
         }
@@ -214,37 +214,94 @@ mod tests {
         TICK_INTERVAL.mul(ticks as u32)
     }
 
+    type Log = HashMap<Index, Command>;
     #[derive(Debug)]
-    struct Inner {
-        states: HashMap<Index, Command>,
-        messages: Vec<ApplyMsg>,
+    struct States {
+        logs: Mutex<Vec<Log>>,
+    }
+
+    impl States {
+        fn new(n: u8) -> Self {
+            let mut logs = vec![];
+            for _ in 0..n {
+                logs.push(HashMap::new());
+            }
+            Self { logs: Mutex::new(logs) }
+        }
+
+        fn apply(&self, id: NodeId, msg: ApplyMsg) -> Result<Command> {
+            let mut logs = self.logs.lock().unwrap();
+
+            // check if any server has already applied a different command at given index.
+            let (index, command) = (msg.index, msg.command);
+            for i in 0..logs.len() {
+                let log = &logs[i];
+                if let Some(cmd) = log.get(&index) {
+                    if command != *cmd {
+                        #[rustfmt::skip]
+                        let msg = format!("inconsistent command applied at {}, {}/{} {}/{}",
+                            index, id, command, i, *cmd);
+                        return Err(Error::internal(msg));
+                    }
+                }
+            }
+
+            // check if there is a gap, i.e., if prev index is applied or not
+            let prev = index - 1;
+            if prev > 0 {
+                let log = &logs[id as usize];
+                if !log.contains_key(&prev) {
+                    let msg = format!("server {} apply out of order at {}", id, index);
+                    return Err(Error::internal(msg));
+                }
+            }
+
+            // apply the msg to log
+            let log = &mut logs[id as usize];
+            log.insert(msg.index, command.clone());
+
+            Ok(command)
+        }
+
+        fn napplied(&self, index: Index) -> Result<(u8, Option<Command>)> {
+            let logs = self.logs.lock().unwrap();
+            let mut n = 0;
+            let mut ans: Option<Command> = None;
+            for log in logs.iter() {
+                let cmd = log.get(&index);
+                if cmd.is_none() {
+                    continue;
+                }
+                let cur = cmd.unwrap();
+                #[rustfmt::skip]
+                if let Some(prev) = &ans && n > 1 {
+                    if *prev != *cur {
+                        let msg= format!("applied values do not match: index {}, {}, {}", index, *prev, *cur);
+                        return Err(Error::internal(msg));
+                    }
+                }
+                n += 1;
+                ans = Some(cur.clone());
+            }
+            Ok((n, ans))
+        }
     }
 
     #[derive(Debug)]
     struct KvState {
-        inner: Mutex<Inner>,
+        id: NodeId,
+        states: Arc<States>,
     }
 
     impl KvState {
-        fn new() -> KvState {
-            let inner = Inner { states: HashMap::new(), messages: Vec::new() };
-            KvState { inner: Mutex::new(inner) }
-        }
-    }
-
-    impl KvState {
-        fn get_command(&self, index: Index) -> Option<Command> {
-            let gard = self.inner.lock().unwrap();
-            gard.states.get(&index).cloned()
+        fn new(id: NodeId, states: Arc<States>) -> KvState {
+            KvState { id, states }
         }
     }
 
     impl State for Arc<KvState> {
         fn apply(&mut self, msg: ApplyMsg) -> Result<Command> {
-            let mut gard = self.inner.lock().unwrap();
-            gard.messages.push(msg.clone());
-            gard.states.insert(msg.index, msg.command.clone());
-            Ok(msg.command)
+            self.states.apply(self.id, msg)
         }
     }
 
@@ -266,7 +323,7 @@ mod tests {
     struct Cluster {
         nodes: Vec<NodeId>,
         net_mesh: LabNetMesh,
-        states: Vec<Arc<KvState>>,
+        states: Arc<States>,
         servers: Vec<Arc<Server>>,
 
         threads: HashMap<NodeId, (broadcast::Sender<()>, std::thread::JoinHandle<()>)>,
@@ -279,14 +336,17 @@ mod tests {
                 // node id is equal to the index of array.
                 nodes.push(i as NodeId);
             }
+            let states = Arc::new(States::new(n));
+
             let net_mesh = LabNetMesh::new(nodes.clone());
-            let mut states = Vec::new();
             let mut servers = Vec::new();
             for &id in nodes.iter() {
+                let states = Arc::clone(&states);
+                let state = Arc::new(KvState::new(id, states));
+
                 let peers: Vec<_> =
                     nodes.iter().filter_map(|&x| if x == id { None } else { Some(x) }).collect();
-                let state = Arc::new(KvState::new());
-                states.push(Arc::clone(&state));
+
                 let server = new_server(id, peers, &net_mesh, Arc::clone(&state))?;
                 servers.push(Arc::new(server));
             }
@@ -423,25 +483,7 @@ mod tests {
 
         // how many servers think a log entry is applied at the given index
         fn napplied(&self, index: Index) -> Result<(u8, Option<Command>)> {
-            let mut n = 0;
-            let mut ans: Option<Command> = None;
-            for &id in &self.nodes {
-                let state = &self.states[id as usize];
-                let cmd = state.get_command(index);
-                if cmd.is_none() {
-                    continue;
-                }
-                let cmd = cmd.unwrap();
-                #[rustfmt::skip]
-                if let Some(c) = &ans && n > 1 {
-                    if *c != cmd {
-                        return Err(Error::internal(format!("applied values do not match: index {}, {:?}, {:?}", index, *c, cmd)));
-                    }
-                }
-                n += 1;
-                ans = Some(cmd);
-            }
-            Ok((n, ans))
+            self.states.napplied(index)
         }
 
         // do a complete agreement. since our raft implementation would forward
@@ -453,18 +495,23 @@ mod tests {
         // if retry == ture, we may submit the command multiple times, in case a
         // leader fails just after submit.
         // if retry == false, just do a success submit only once.
-        fn one(&self, command: Vec<u8>, n: u8, retry: bool) -> Result<Index> {
+        fn one(&self, cmd: Vec<u8>, n: u8, retry: bool) -> Result<Index> {
+            let command = Command::from(cmd);
             let mut ind = 0;
             let tm = SystemTime::now().add(Duration::from_secs(10));
             loop {
+                if !self.is_connected(ind as NodeId) {
+                    ind = (ind + 1) % self.servers.len();
+                    continue;
+                }
                 let server = &self.servers[ind];
                 // set the agreement timeout to be 3 times of round trip interval
                 let timeout = TICK_INTERVAL.mul(3 * ROUND_TRIP_INTERVAL as u32);
                 let res = server.execute_command(command.clone(), Some(timeout))?;
                 match res {
                     CommandResult::Dropped => {
-                        // command get dropped by raft, sleep a while
-                        // then continue with another server.
+                        // command get dropped by raft in case of election,
+                        // sleep a while then continue with another server.
                         std::thread::sleep(Duration::from_millis(50));
                         ind = (ind + 1) % self.servers.len();
                         continue;
@@ -477,11 +524,15 @@ mod tests {
                         // check if we have retry setup, otherwise consider this
                         // as fail to agreement and return err.
                         if retry == false {
-                            #[rustfmt::skip]
-                            return Err(Error::internal(format!( "failed to reach agreement {:?} at index {}", command, index)));
+                            let msg =
+                                format!("failed to reach agreement {} at index {}", command, index);
+                            return Err(Error::internal(msg));
                         }
                     }
-                    CommandResult::Applied { index, .. } => {
+                    CommandResult::Applied { index, result } => {
+                        if let Err(err) = result {
+                            return Err(err);
+                        }
                         // since we will get applied response back as soon as the
                         // leader applied the command to the state machine after
                         // the cluster think the command is replicated/logged to
@@ -493,7 +544,7 @@ mod tests {
                         let mut cmd: Option<Command>;
                         loop {
                             (m, cmd) = self.napplied(index)?;
-                            if m >= n && cmd == Some(command.clone().into()) {
+                            if m >= n && cmd == Some(command.clone()) {
                                 return Ok(index);
                             }
                             if SystemTime::now().gt(&until) {
@@ -501,8 +552,11 @@ mod tests {
                             }
                             std::thread::sleep(Duration::from_millis(50));
                         }
+
                         #[rustfmt::skip]
-                        return Err(Error::internal(format!("failed to reach agreement {:?} at index {}, {}/{}, {:?}", command, index, m, n, cmd)));
+                        let msg = format!("failed to reach agreement {} at index {}, {}/{}, {}",
+                            command, index, m, n, cmd.unwrap_or(Command(None)));
+                        return Err(Error::internal(msg));
                     }
                 };
 
@@ -511,6 +565,15 @@ mod tests {
                 }
             }
             Err(Error::internal(format!("failed to reach agreement {:?}", command)))
+        }
+
+        fn exec_command(
+            &self,
+            id: NodeId,
+            cmd: Vec<u8>,
+            timeout: Option<Duration>,
+        ) -> Result<CommandResult> {
+            self.servers[id as usize].execute_command(cmd.into(), timeout)
         }
 
         fn disconnect(&mut self, id: NodeId) {
@@ -522,14 +585,27 @@ mod tests {
             debug!("connect {}", id);
             self.net_mesh.connect(id).unwrap()
         }
+
+        fn is_connected(&self, id: NodeId) -> bool {
+            self.net_mesh.is_connected(id)
+        }
     }
 
+    macro_rules! setup {
+        ($name:ident, $input:expr) => {
+            let _ = env_logger::builder().try_init();
+            let mut $name = Cluster::new($input)?;
+            $name.start();
+        };
+    }
+    macro_rules! teardown {
+        ($name:ident) => {
+            $name.close();
+        };
+    }
     #[test]
     fn test_initial_election_r1() -> Result<()> {
-        env_logger::builder().init();
-
-        let mut cluster = Cluster::new(3)?;
-        cluster.start();
+        setup!(cluster, 3);
 
         // check if a leader elected.
         let leader1 = cluster.check_one_leader()?;
@@ -546,18 +622,14 @@ mod tests {
         let leader2 = cluster.check_one_leader()?;
         assert_eq!(leader1, leader2);
 
-        cluster.close();
+        teardown!(cluster);
         Ok(())
     }
 
     #[test]
     fn test_re_election_r1() -> Result<()> {
-        env_logger::builder().init();
-
         let num_nodes = 3;
-
-        let mut cluster = Cluster::new(num_nodes)?;
-        cluster.start();
+        setup!(cluster, num_nodes);
 
         let leader1 = cluster.check_one_leader()?;
 
@@ -590,19 +662,14 @@ mod tests {
         cluster.connect(leader2);
         cluster.check_one_leader()?;
 
-        cluster.close();
+        teardown!(cluster);
         Ok(())
     }
 
     #[test]
     fn test_many_election_r1() -> Result<()> {
-        env_logger::builder().init();
-
         let num_nodes = 7;
-        let mut cluster = Cluster::new(num_nodes)?;
-        cluster.start();
-
-        cluster.check_one_leader()?;
+        setup!(cluster, num_nodes);
 
         let iters = 10;
         for i in 0..iters {
@@ -628,18 +695,15 @@ mod tests {
 
         cluster.check_one_leader()?;
 
-        cluster.close();
+        teardown!(cluster);
 
         Ok(())
     }
 
     #[test]
     fn test_basic_agree_r2() -> Result<()> {
-        env_logger::builder().init();
-
         let num_nodes = 3;
-        let mut cluster = Cluster::new(num_nodes)?;
-        cluster.start();
+        setup!(cluster, num_nodes);
 
         for index in 1..=3 {
             let (n, _) = cluster.napplied(index)?;
@@ -648,20 +712,16 @@ mod tests {
             assert_eq!(index, got, "got index {}, expected {}", got, index);
         }
 
-        cluster.close();
+        teardown!(cluster);
 
         Ok(())
     }
 
     #[test]
     fn test_fail_agree_r2() -> Result<()> {
-        env_logger::builder().init();
-
         // a follower participates first, then disconnect and reconnect.
-
         let num_nodes = 3;
-        let mut cluster = Cluster::new(num_nodes)?;
-        cluster.start();
+        setup!(cluster, num_nodes);
 
         cluster.one(vec![0x0b], num_nodes, false)?;
 
@@ -686,20 +746,16 @@ mod tests {
         std::thread::sleep(max_election_timeout());
         cluster.one(vec![0x11], num_nodes - 1, true)?;
 
-        cluster.close();
+        teardown!(cluster);
 
         Ok(())
     }
 
     #[test]
     fn test_fail_no_agree_r2() -> Result<()> {
-        env_logger::builder().init();
-
         // no agreement if too many followers disconnect
-
         let num_nodes = 5;
-        let mut cluster = Cluster::new(num_nodes)?;
-        cluster.start();
+        setup!(cluster, num_nodes);
 
         cluster.one(vec![0x01], num_nodes, false)?;
 
@@ -709,12 +765,9 @@ mod tests {
         cluster.disconnect((leader + 2) % num_nodes);
         cluster.disconnect((leader + 3) % num_nodes);
 
-        let server = &cluster.servers[leader as usize];
-
         // check no agreement can be made.
-        let server = Arc::clone(server);
         let timeout = max_election_timeout();
-        let res = server.execute_command(vec![0x02], Some(timeout))?;
+        let res = cluster.exec_command(leader, vec![0x02], Some(timeout))?;
         assert_eq!(res, CommandResult::Ongoing(2), "should block on index #2");
 
         std::thread::sleep(max_election_timeout());
@@ -728,17 +781,165 @@ mod tests {
         cluster.connect((leader + 3) % num_nodes);
 
         let leader = cluster.check_one_leader()?;
-        let res = server.execute_command(vec![0x03], Some(timeout))?;
-        assert_eq!(
-            res,
-            CommandResult::Applied { index: 2, result: Ok(vec![0x03].into()) },
-            "command should applied at index 2 or 3"
-        );
+        let res = cluster.exec_command(leader, vec![0x03], Some(timeout))?;
+        #[rustfmt::skip]
+        assert_eq!(res, CommandResult::Applied { index: 2, result: Ok(vec![0x03].into()) }, "command should applied at index 2");
 
         cluster.one(vec![0x04], num_nodes, false)?;
 
-        cluster.close();
+        teardown!(cluster);
 
         Ok(())
     }
+
+    #[test]
+    fn test_concurrent_cmd_r2() -> Result<()> {
+        let num_nodes = 5;
+        setup!(cluster, num_nodes);
+
+        let leader = cluster.check_one_leader()?;
+        let server = &cluster.servers[leader as usize];
+
+        let mut expect = vec![];
+        let mut threads = vec![];
+        for i in 0..10 {
+            expect.push(vec![i]);
+            let server = Arc::clone(server);
+            let th =
+                std::thread::spawn(move || server.execute_command(Command::from(vec![i]), None));
+            threads.push(th);
+        }
+
+        let mut got = vec![];
+        for th in threads {
+            let res = th.join().unwrap();
+            if let Ok(CommandResult::Applied { result, .. }) = res {
+                got.push(result?.unwrap());
+            }
+        }
+        assert_eq!(expect.len(), got.len());
+
+        got.sort();
+        assert_eq!(expect, got);
+
+        teardown!(cluster);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rejoin_r2() -> Result<()> {
+        let num_nodes = 3;
+        setup!(cluster, num_nodes);
+
+        cluster.one(vec![0x01], num_nodes, false)?;
+
+        // leader network failure
+        let leader = cluster.check_one_leader()?;
+        cluster.disconnect(leader);
+
+        // make old leader try to agree on some entries
+        cluster.exec_command(leader, vec![0x02], Some(Duration::from_millis(0)))?;
+        cluster.exec_command(leader, vec![0x03], Some(Duration::from_millis(0)))?;
+        cluster.exec_command(leader, vec![0x04], Some(Duration::from_millis(0)))?;
+
+        // new leader commit in majority, also for index=2
+        cluster.one(vec![0x05], num_nodes - 1, true)?;
+
+        // new leader network failure, old leader connected.
+        let leader1 = cluster.check_one_leader()?;
+        cluster.disconnect(leader1);
+        cluster.connect(leader);
+
+        cluster.one(vec![0x06], num_nodes - 1, true)?;
+
+        // all together now
+        cluster.connect(leader1);
+
+        cluster.one(vec![0x06], num_nodes, true)?;
+
+        teardown!(cluster);
+        Ok(())
+    }
+
+    #[test]
+    fn test_backup_r2() -> Result<()> {
+        let num_nodes = 5;
+        setup!(cluster, num_nodes);
+
+        cluster.one(rand_cmd(), num_nodes, true)?;
+
+        // put leader and one follower in a partition
+        let leader1 = cluster.check_one_leader()?;
+        cluster.disconnect((leader1 + 2) % num_nodes);
+        cluster.disconnect((leader1 + 3) % num_nodes);
+        cluster.disconnect((leader1 + 4) % num_nodes);
+
+        // submit lots of command that won't commit
+        for _ in 0..50 {
+            cluster.exec_command(leader1, rand_cmd(), Some(Duration::from_millis(0)))?;
+        }
+
+        std::thread::sleep(max_election_timeout());
+
+        // disable leader and the follower, put the partition on
+        cluster.disconnect((leader1 + 0) % num_nodes);
+        cluster.disconnect((leader1 + 1) % num_nodes);
+
+        cluster.connect((leader1 + 2) % num_nodes);
+        cluster.connect((leader1 + 3) % num_nodes);
+        cluster.connect((leader1 + 4) % num_nodes);
+
+        // lots of successful commands to new group.
+        for _ in 0..50 {
+            cluster.one(rand_cmd(), 3, true)?;
+        }
+
+        // now another partitioned leader and one follower
+        let leader2 = cluster.check_one_leader()?;
+        let mut other = (leader1 + 2) % num_nodes;
+        if other == leader2 {
+            other = (leader2 + 1) % num_nodes;
+        }
+        cluster.disconnect(other);
+
+        // submit lots of command that won't commit
+        for _ in 0..50 {
+            cluster.exec_command(leader2, rand_cmd(), Some(Duration::from_millis(0)))?;
+        }
+
+        std::thread::sleep(max_election_timeout());
+
+        // bring original leader back to life
+        for i in 0..num_nodes {
+            cluster.disconnect(i);
+        }
+        cluster.connect((leader1 + 0) % num_nodes);
+        cluster.connect((leader1 + 1) % num_nodes);
+        cluster.connect(other);
+
+        // lots of successful commands to new group.
+        for _ in 0..50 {
+            cluster.one(rand_cmd(), 3, true)?;
+        }
+
+        // now everyone back to life
+        for i in 0..num_nodes {
+            cluster.connect(i);
+        }
+
+        cluster.one(rand_cmd(), num_nodes, true)?;
+
+        teardown!(cluster);
+        Ok(())
+    }
+
+    fn rand_cmd() -> Vec<u8> {
+        let ans = thread_rng().gen_range(0..0xffffffffu32);
+        ans.to_be_bytes().into()
+    }
+
+    // TODO:
+    //  0. network error injection...
+    //  1. single node cluster
 }

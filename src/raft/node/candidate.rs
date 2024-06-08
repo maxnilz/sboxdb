@@ -88,7 +88,7 @@ impl Node for Candidate {
                 let votes: Vec<NodeId> = self.votes.iter().map(|&x| x).collect();
                 info!(self.rn, "receive yes vote from {}, votes: {:?}", msg.from, votes);
 
-                let granted_votes = self.votes.len() as u8;
+                let granted_votes = self.votes.len();
                 if granted_votes >= self.rn.quorum_size() {
                     // save hard state before the transition.
                     let term = self.rn.term;

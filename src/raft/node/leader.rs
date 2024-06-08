@@ -143,12 +143,12 @@ impl Leader {
 
         let mut match_index: Vec<_> =
             self.rn.peers.iter().map(|&x| self.match_index[x as usize]).collect();
-        match_index.select_nth_unstable(pos as usize);
+        match_index.select_nth_unstable(pos);
 
         // quorum index is the index of highest log entry
         // known to be replicated to majority peers, i.e.,
         // the new commit index.
-        let quorum_index = match_index[pos as usize];
+        let quorum_index = match_index[pos];
 
         #[rustfmt::skip]
         debug!(self.rn, "match_index: {:?}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);

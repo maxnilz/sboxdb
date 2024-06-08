@@ -181,9 +181,9 @@ impl RawNode {
         Ok(rn)
     }
 
-    pub fn quorum_size(&self) -> u8 {
+    pub fn quorum_size(&self) -> usize {
         let total = self.peers.len() + 1;
-        total as u8 / 2 + 1
+        total / 2 + 1
     }
 
     pub fn save_hard_state(&mut self, term: Term, voted_for: Option<NodeId>) -> Result<()> {

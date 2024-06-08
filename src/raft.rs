@@ -8,6 +8,12 @@ pub type Term = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Command(Option<Vec<u8>>);
 
+impl Command {
+    fn unwrap(self) -> Vec<u8> {
+        self.0.unwrap()
+    }
+}
+
 impl From<Vec<u8>> for Command {
     fn from(cmd: Vec<u8>) -> Self {
         Self(Some(cmd))
