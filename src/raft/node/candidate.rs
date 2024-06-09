@@ -30,6 +30,7 @@ impl Candidate {
         let (term, voted_for) = (self.rn.term + 1, Some(self.rn.id));
         self.rn.save_hard_state(term, voted_for)?;
 
+        // vote for myself first before sending request.
         self.votes.insert(voted_for.unwrap());
 
         info!(self.rn, "requesting vote as candidate");
@@ -91,8 +92,7 @@ impl Node for Candidate {
                 let granted_votes = self.votes.len();
                 if granted_votes >= self.rn.quorum_size() {
                     // save hard state before the transition.
-                    let term = self.rn.term;
-                    let voted_for = None;
+                    let (term, voted_for) = (self.rn.term, None);
                     self.rn.save_hard_state(term, voted_for)?;
                     // transit to leader
                     let leader: Leader = self.rn.try_into()?;

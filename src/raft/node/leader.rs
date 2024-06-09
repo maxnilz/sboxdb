@@ -35,7 +35,7 @@ pub struct Leader {
     // peer NodeId as array index.
     next_index: Vec<Index>,
     // for each peer, index of highest log entry known to be replicated
-    // on the peer, initialized to 0, increases monotonically
+    // on the peer, initialized to 0, increases monotonically.
     // peer NodeId as array index.
     match_index: Vec<Index>,
     // tickets for the proposals that are in progress, once the proposal
@@ -99,8 +99,8 @@ impl Leader {
     fn may_send_append_entries(&self, peer: NodeId) -> Result<()> {
         let seq = self.rn.seq.get() + 1;
 
-        // TODO: we are reading same data again and again and
-        //  sending too much data over wire to peer.
+        // TODO: we are reading/sending the same data again and again
+        //  in case of log synchronization, this might be too much overhead.
 
         // gather entries to be appended to peer
         let from = self.next_index[peer as usize];
@@ -136,22 +136,28 @@ impl Leader {
     }
 
     fn maybe_commit_and_apply(&mut self) -> Result<()> {
-        let pos = self.rn.quorum_size() - 1;
-
-        // TODO: quorum size could be one in a single node cluster,
-        //  the peers array can be empty and the `pos` here is zero.
-
-        let mut match_index: Vec<_> =
-            self.rn.peers.iter().map(|&x| self.match_index[x as usize]).collect();
-        match_index.select_nth_unstable(pos);
-
         // quorum index is the index of highest log entry
         // known to be replicated to majority peers, i.e.,
         // the new commit index.
-        let quorum_index = match_index[pos];
+        let (quorum_index, match_index) = if self.rn.peers.is_empty() {
+            // we are a single node cluster, set quorum_index
+            // to the last index.
+            let (last_index, _) = self.rn.persister.last();
+            (last_index, vec![])
+        } else {
+            let mut match_index = vec![];
+            for &peer in &self.rn.peers {
+                match_index.push(self.match_index[peer as usize]);
+            }
+            let n = self.rn.quorum_size() - 1;
+            // the k index in the array, from left to right in desc order.
+            let k = n - 1;
+            match_index.select_nth_unstable_by(k, |a, b| b.cmp(a));
+            (match_index[k], match_index)
+        };
 
         #[rustfmt::skip]
-        debug!(self.rn, "match_index: {:?}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);
+        debug!(self.rn, "match_index: {:?}/{}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);
 
         // if there is no entries are considered as committed
         // by comparing with the latest commit index, do nothing.
@@ -285,6 +291,12 @@ impl Node for Leader {
 
             Event::ProposalRequest { id, command, timeout } => {
                 let index = self.rn.persister.append(self.rn.term, command)?;
+                if self.rn.peers.is_empty() {
+                    // we are a single node cluster, no
+                    // need to do any replication.
+                    self.maybe_commit_and_apply()?;
+                    return Ok(self);
+                }
 
                 // send append entries to the peers
                 for &peer in &self.rn.peers {
@@ -328,7 +340,7 @@ impl TryFrom<RawNode> for Leader {
 
     fn try_from(rn: RawNode) -> Result<Leader> {
         let leader = Leader::new(rn);
-        debug!(leader.rn, "become leader");
+        info!(leader.rn, "become leader");
         leader.heartbeat()?;
         Ok(leader)
     }

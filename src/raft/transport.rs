@@ -241,18 +241,17 @@ pub mod tests {
                         debug!("connection from {} to {} are disconnected", from, id)
                         // drop message quietly.
                     }
-                    SocketState::Unstable((loss, delay)) => {
+                    SocketState::Unstable(noise) => {
                         // mimic the packet loss ratio
                         let rng = rand::thread_rng().gen_range(0..100);
-                        if rng < loss {
+                        if rng < noise.loss_ratio {
                             // drop message quietly.
                             continue;
                         }
 
                         // mimic the package delay
-                        let rng = rand::thread_rng()
-                            .gen_range(delay.start.as_millis()..delay.end.as_millis());
-                        tokio::time::sleep(Duration::from_millis(rng as u64)).await;
+                        let rng = rand::thread_rng().gen_range(noise.delay_ms);
+                        tokio::time::sleep(Duration::from_millis(rng)).await;
 
                         tx.send(message.clone()).await?
                     }
@@ -263,12 +262,35 @@ pub mod tests {
     }
 
     #[derive(Debug, Clone)]
+    pub struct Noise {
+        // package loss ratio in percentage: [0, 100]
+        loss_ratio: u8,
+        delay_ms: Range<u64>,
+    }
+
+    impl Noise {
+        pub fn new(loss_ratio: u8, delay_ms: Range<u64>) -> Self {
+            Self { loss_ratio, delay_ms }
+        }
+    }
+
+    #[derive(Debug, Clone)]
     enum SocketState {
         Connected,
         Disconnected,
         // the wire between two peers are connected but unstable
         // with the given the packet loss ratio and range of delay.
-        Unstable((u8, Range<Duration>)),
+        Unstable(Noise),
+    }
+
+    impl SocketState {
+        fn from_noise(noise: Option<Noise>) -> SocketState {
+            if noise.is_none() {
+                SocketState::Connected
+            } else {
+                SocketState::Unstable(noise.clone().unwrap())
+            }
+        }
     }
 
     struct LabNet {
@@ -295,6 +317,8 @@ pub mod tests {
 
     pub struct LabNetMesh {
         nodes: Vec<NodeId>,
+        // noise setup
+        noise: Option<Noise>,
         // assuming node id is equal to the index of array.
         connected: Vec<bool>,
 
@@ -305,7 +329,7 @@ pub mod tests {
     }
 
     impl LabNetMesh {
-        pub fn new(nodes: Vec<NodeId>) -> Self {
+        pub fn new(nodes: Vec<NodeId>, noise: Option<Noise>) -> Self {
             let mut rxs = HashMap::new();
             let mut txs = HashMap::new();
             for &id in &nodes {
@@ -316,8 +340,9 @@ pub mod tests {
             let mut sockets = HashMap::new();
             for &from in &nodes {
                 for &to in &nodes {
-                    // init the socket state with connected.
-                    sockets.insert((from, to), SocketState::Connected);
+                    // init the socket state with connected or being noisy.
+                    let state = SocketState::from_noise(noise.clone());
+                    sockets.insert((from, to), state);
                 }
             }
 
@@ -326,7 +351,7 @@ pub mod tests {
 
             let net = LabNet { sockets: Arc::new(RwLock::new(sockets)) };
             let net = Arc::new(net);
-            Self { nodes, connected, txs, rxs, net }
+            Self { nodes, noise, connected, txs, rxs, net }
         }
 
         pub fn get(&self, id: NodeId) -> Result<LabTransport> {
@@ -361,14 +386,16 @@ pub mod tests {
         }
 
         pub fn connect(&mut self, id: NodeId) -> Result<()> {
+            // get connecting state with the mesh noise setup
+            let state = SocketState::from_noise(self.noise.clone());
             for &peer in &self.nodes {
                 if id != peer && self.connected[peer as usize] == false {
                     continue;
                 }
                 // connect outgoing
-                self.net.set(id, peer, SocketState::Connected)?;
+                self.net.set(id, peer, state.clone())?;
                 // connect incoming
-                self.net.set(peer, id, SocketState::Connected)?;
+                self.net.set(peer, id, state.clone())?;
             }
             // update connected state
             // assuming node id is equal to the index of array.

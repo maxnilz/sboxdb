@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use crate::error::Result;
 use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult, RequestVote};
 use crate::raft::node::candidate::Candidate;
+use crate::raft::node::leader::Leader;
 use crate::raft::node::{rand_election_timeout, Node, NodeState, ProposalId};
 use crate::raft::node::{RawNode, Ticks};
 use crate::raft::Index;
@@ -114,6 +115,16 @@ impl Follower {
 
 impl Node for Follower {
     fn tick(mut self: Box<Self>) -> Result<Box<dyn Node>> {
+        if self.rn.peers.is_empty() {
+            // single node cluster, transit to leader directly.
+            //
+            // save hard state before the transition.
+            let (term, voted_for) = (self.rn.term + 1, None);
+            self.rn.save_hard_state(term, voted_for)?;
+            // transit to leader
+            let leader: Leader = self.rn.try_into()?;
+            return Ok(Box::new(leader));
+        }
         self.tick += 1;
         if self.tick >= self.timeout {
             self.drop_forwarded()?;

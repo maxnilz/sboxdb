@@ -11,6 +11,7 @@ use tokio_stream::StreamExt as _;
 use crate::error::{Error, Result};
 use crate::raft::message::{Address, Event, Message};
 use crate::raft::node::follower::Follower;
+use crate::raft::node::leader::Leader;
 use crate::raft::node::{Node, NodeId, NodeState, ProposalId, RawNode, TICK_INTERVAL};
 use crate::raft::persister::Persister;
 use crate::raft::transport::Transport;
@@ -79,7 +80,7 @@ impl Server {
     ) -> Result<Server> {
         let (node_tx, node_rx) = mpsc::unbounded_channel();
         let rn = RawNode::new(id, peers, persister, node_tx, state)?;
-        // create server as follower at the very beginning.
+        // init server as follower at the very beginning.
         let follower = Follower::new(rn);
         let node: Box<dyn Node> = Box::new(follower);
         let (state_tx, state_rx) = mpsc::unbounded_channel();
@@ -196,12 +197,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
 
-    use log::{debug, error};
+    use log::{debug, error, info};
     use rand::{thread_rng, Rng};
 
     use crate::error::Result;
     use crate::raft::node::{ELECTION_TIMEOUT_RANGE, HEARTBEAT_INTERVAL, ROUND_TRIP_INTERVAL};
-    use crate::raft::transport::tests::LabNetMesh;
+    use crate::raft::transport::tests::{LabNetMesh, Noise};
     use crate::raft::Index;
     use crate::raft::Term;
     use crate::storage::state::ApplyMsg;
@@ -330,7 +331,7 @@ mod tests {
     }
 
     impl Cluster {
-        fn new(n: u8) -> Result<Self> {
+        fn new(n: u8, noise: Option<Noise>) -> Result<Self> {
             let mut nodes = Vec::new();
             for i in 0..n {
                 // node id is equal to the index of array.
@@ -338,7 +339,7 @@ mod tests {
             }
             let states = Arc::new(States::new(n));
 
-            let net_mesh = LabNetMesh::new(nodes.clone());
+            let net_mesh = LabNetMesh::new(nodes.clone(), noise);
             let mut servers = Vec::new();
             for &id in nodes.iter() {
                 let states = Arc::clone(&states);
@@ -470,12 +471,16 @@ mod tests {
                 }
                 let server = &self.servers[id as usize];
                 let ns = server.get_state().unwrap();
+                if ns.leader.is_none() {
+                    continue; // no leader yet.
+                }
                 if term == 0 {
                     term = ns.term;
                     continue;
                 }
                 if term != ns.term {
-                    return Err(Error::internal("servers disagree on term"));
+                    #[rustfmt::skip]
+                    return Err(Error::internal(format!("servers disagree on term, {}/{}", term, ns.term)));
                 }
             }
             Ok(term)
@@ -592,37 +597,50 @@ mod tests {
     }
 
     macro_rules! setup {
-        ($name:ident, $input:expr) => {
+        ($name:ident, $sz:expr) => {
             let _ = env_logger::builder().try_init();
-            let mut $name = Cluster::new($input)?;
+            let mut $name = Cluster::new($sz, None)?;
+            $name.start();
+        };
+        ($name:ident, $sz:expr, $noise:expr) => {
+            let _ = env_logger::builder().try_init();
+            let mut $name = Cluster::new($sz, Some($noise))?;
             $name.start();
         };
     }
+
     macro_rules! teardown {
         ($name:ident) => {
             $name.close();
         };
     }
+
     #[test]
     fn test_initial_election_r1() -> Result<()> {
-        setup!(cluster, 3);
+        let cases = vec![1, 2, 3, 4, 5, 6];
+        for num_nodes in cases {
+            setup!(cluster, num_nodes);
 
-        // check if a leader elected.
-        let leader1 = cluster.check_one_leader()?;
+            info!("test initial election with cluster size {}", num_nodes);
 
-        // check all servers agree on a same term
-        let term1 = cluster.check_terms()?;
+            // check if a leader elected.
+            let leader1 = cluster.check_one_leader()?;
 
-        // does the leader+term stay the same if there is no network failure?
-        std::thread::sleep(max_election_timeout());
-        // the term should be the same
-        let term2 = cluster.check_terms()?;
-        assert_eq!(term1, term2);
-        // the leader should be the same
-        let leader2 = cluster.check_one_leader()?;
-        assert_eq!(leader1, leader2);
+            // check all servers agree on a same term
+            let term1 = cluster.check_terms()?;
 
-        teardown!(cluster);
+            // does the leader+term stay the same if there is no network failure?
+            std::thread::sleep(max_election_timeout());
+            // the term should be the same
+            let term2 = cluster.check_terms()?;
+            assert_eq!(term1, term2);
+            // the leader should be the same
+            let leader2 = cluster.check_one_leader()?;
+            assert_eq!(leader1, leader2);
+
+            teardown!(cluster);
+        }
+
         Ok(())
     }
 
@@ -697,6 +715,28 @@ mod tests {
 
         teardown!(cluster);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_election_over_noise_net_r1() -> Result<()> {
+        setup!(cluster, 3, Noise::new(20, 100..500));
+
+        // check if a leader elected.
+        let leader1 = cluster.check_one_leader()?;
+
+        // check all servers agree on a same term
+        let term1 = cluster.check_terms()?;
+
+        std::thread::sleep(max_election_timeout());
+        // since we are in an unstable net, the term might
+        // be the different, but shouldn't be backward.
+        let term2 = cluster.check_terms()?;
+        assert!(term1 <= term2);
+        // we can still leader elected out.
+        cluster.check_one_leader()?;
+
+        teardown!(cluster);
         Ok(())
     }
 
@@ -938,8 +978,4 @@ mod tests {
         let ans = thread_rng().gen_range(0..0xffffffffu32);
         ans.to_be_bytes().into()
     }
-
-    // TODO:
-    //  0. network error injection...
-    //  1. single node cluster
 }
