@@ -101,7 +101,6 @@ pub fn new_storage(typ: StorageType) -> Result<Box<dyn Storage>> {
 }
 
 mod memory;
-pub mod state;
 
 #[cfg(test)]
 mod tests {

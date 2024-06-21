@@ -28,9 +28,9 @@ enum Key {
 }
 
 impl Key {
-    fn encode(&self, ns: &str) -> Result<Vec<u8>> {
+    fn encode(&self, id: NodeId) -> Result<Vec<u8>> {
         let bytes = keycodec::serialize(self)?;
-        let mut ans = ns.as_bytes().to_vec();
+        let mut ans = id.to_be_bytes().to_vec();
         ans.extend(bytes);
         Ok(ans)
     }
@@ -42,7 +42,7 @@ impl Key {
 // raft log.
 #[derive(Debug)]
 pub struct Persister {
-    ns: String,
+    id: NodeId,
     storage: Box<dyn Storage>,
 
     last_index: Index,
@@ -50,8 +50,8 @@ pub struct Persister {
 }
 
 impl Persister {
-    pub fn new(ns: String, storage: Box<dyn Storage>) -> Result<Persister> {
-        let prefix = Key::Entry(0).encode(&ns)?;
+    pub fn new(id: NodeId, storage: Box<dyn Storage>) -> Result<Persister> {
+        let prefix = Key::Entry(0).encode(id)?;
         let last = storage.scan_prefix(&prefix).last();
         let (last_index, last_term) = if let Some(x) = last {
             let (_, v) = x?;
@@ -60,7 +60,7 @@ impl Persister {
         } else {
             (0, 0)
         };
-        Ok(Persister { ns, storage, last_index, last_term })
+        Ok(Persister { id, storage, last_index, last_term })
     }
 
     pub fn last(&self) -> (Index, Term) {
@@ -68,14 +68,14 @@ impl Persister {
     }
 
     pub fn save_hard_state(&mut self, state: HardState) -> Result<()> {
-        let key = Key::State.encode(&self.ns)?;
+        let key = Key::State.encode(self.id)?;
         let value = bincodec::serialize(&state)?;
         self.storage.set(&key, value)?;
         Ok(())
     }
 
     pub fn get_hard_state(&self) -> Result<Option<HardState>> {
-        let key = Key::State.encode(&self.ns)?;
+        let key = Key::State.encode(self.id)?;
         let value = self.storage.get(&key)?;
         let ans = match value {
             None => None,
@@ -99,10 +99,10 @@ impl Persister {
     pub fn append_entry(&mut self, entry: Entry) -> Result<()> {
         if entry.index < self.last_index {
             // truncate entries
-            let from = Key::Entry(entry.index).encode(&self.ns)?;
+            let from = Key::Entry(entry.index).encode(self.id)?;
             self.storage.remove_prefix(&from)?;
         }
-        let key = Key::Entry(entry.index).encode(&self.ns)?;
+        let key = Key::Entry(entry.index).encode(self.id)?;
         let value = bincodec::serialize(&entry)?;
         self.storage.set(&key, value)?;
 
@@ -113,7 +113,7 @@ impl Persister {
     }
 
     pub fn get_entry(&self, index: Index) -> Result<Option<Entry>> {
-        let key = Key::Entry(index).encode(&self.ns)?;
+        let key = Key::Entry(index).encode(self.id)?;
         let result = self.storage.get(&key)?;
         match result {
             None => Ok(None),
@@ -126,8 +126,8 @@ impl Persister {
 
     // scan entries by range [from, to).
     pub fn scan_entries(&self, from: Index, to: Index) -> Result<Vec<Entry>> {
-        let from = Key::Entry(from).encode(&self.ns)?;
-        let to = Key::Entry(to).encode(&self.ns)?;
+        let from = Key::Entry(from).encode(self.id)?;
+        let to = Key::Entry(to).encode(self.id)?;
         let range = (Bound::Included(from), Bound::Excluded(to));
         let result = self.storage.scan(range);
         // map results Vec<Result<Entry, Error>, the collect do the
@@ -143,7 +143,7 @@ impl Persister {
     }
 
     pub fn scan_from(&self, from: Index) -> Result<Vec<Entry>> {
-        let from = Key::Entry(from).encode(&self.ns)?;
+        let from = Key::Entry(from).encode(self.id)?;
         let result = self.storage.scan_prefix(&from);
         result
             .map(|x| {
@@ -158,7 +158,7 @@ impl Persister {
         let prev = from - 1;
 
         // remove entries from the given index.
-        let from = Key::Entry(from).encode(&self.ns)?;
+        let from = Key::Entry(from).encode(self.id)?;
         let values = self.storage.remove_prefix(&from)?;
         if values.is_empty() {
             return Ok(0);
@@ -181,9 +181,9 @@ mod tests {
 
     #[test]
     fn test_persister_simple() -> Result<()> {
+        let id = 0;
         let s = new_storage(StorageType::Memory)?;
-        let ns = "raft".to_string();
-        let mut p = Persister { ns: ns.clone(), storage: s, last_index: 0, last_term: 0 };
+        let mut p = Persister { id, storage: s, last_index: 0, last_term: 0 };
 
         // state ops
 
@@ -273,7 +273,7 @@ mod tests {
         // test persister init
 
         // test persister init with non-empty storage
-        let mut p = Persister::new(ns.clone(), p.storage)?;
+        let mut p = Persister::new(id, p.storage)?;
         assert_eq!(6, p.last_index);
         assert_eq!(6, p.last_term);
 
@@ -297,7 +297,7 @@ mod tests {
 
         // test persister init with empty storage
         let s = new_storage(StorageType::Memory)?;
-        let p = Persister::new(ns.clone(), s)?;
+        let p = Persister::new(id, s)?;
         assert_eq!(0, p.last_index);
         assert_eq!(0, p.last_term);
 

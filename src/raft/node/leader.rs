@@ -6,8 +6,8 @@ use crate::error::{Error, Result};
 use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult};
 use crate::raft::node::{Node, NodeId, NodeState, ProposalId, MAX_NODE_ID};
 use crate::raft::node::{RawNode, Ticks, HEARTBEAT_INTERVAL};
+use crate::raft::ApplyMsg;
 use crate::raft::{Index, Term};
-use crate::storage::state::ApplyMsg;
 
 struct Ticket {
     from: Address,
@@ -157,7 +157,7 @@ impl Leader {
         };
 
         #[rustfmt::skip]
-        debug!(self.rn, "match_index: {:?}/{}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);
+        debug!(self.rn, "match_index: {:?}, c/q: {}/{}", match_index, self.rn.commit_index, quorum_index);
 
         // if there is no entries are considered as committed
         // by comparing with the latest commit index, do nothing.

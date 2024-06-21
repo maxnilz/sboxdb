@@ -11,8 +11,8 @@ use crate::error::Result;
 use crate::raft::message::{Address, Event, Message};
 use crate::raft::node::follower::Follower;
 use crate::raft::persister::{HardState, Persister};
+use crate::raft::State;
 use crate::raft::{Index, Term};
-use crate::storage::state::State;
 
 macro_rules! log {
     ($rn:expr, $lvl:expr, $($arg:tt)+) => {

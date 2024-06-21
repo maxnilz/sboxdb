@@ -7,8 +7,8 @@ use crate::raft::node::candidate::Candidate;
 use crate::raft::node::leader::Leader;
 use crate::raft::node::{rand_election_timeout, Node, NodeState, ProposalId};
 use crate::raft::node::{RawNode, Ticks};
+use crate::raft::ApplyMsg;
 use crate::raft::Index;
-use crate::storage::state::ApplyMsg;
 
 pub struct Follower {
     rn: RawNode,

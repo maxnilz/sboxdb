@@ -1,15 +1,17 @@
+use std::fmt::{Debug, Display, Formatter};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
 
 use crate::error::Result;
 
 pub type Index = u64;
 pub type Term = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Command(Option<Vec<u8>>);
+pub struct Command(pub Option<Vec<u8>>);
 
 impl Command {
-    fn unwrap(self) -> Vec<u8> {
+    pub fn unwrap(self) -> Vec<u8> {
         self.0.unwrap()
     }
 }
@@ -42,8 +44,28 @@ pub enum CommandResult {
     Applied { index: Index, result: Result<Command> },
 }
 
-mod message;
-mod node;
+// A message that passed from raft to state machine
+// over the apply channel.
+#[derive(Debug, Clone)]
+pub struct ApplyMsg {
+    pub index: Index,
+    pub command: Command,
+}
+
+pub trait State: Debug + Send {
+    fn apply(&self, msg: ApplyMsg) -> Result<Command>;
+}
+
+impl<T: State + Send + Sync> State for Arc<T> {
+    fn apply(&self, msg: ApplyMsg) -> Result<Command> {
+        (**self).apply(msg)
+    }
+}
+
 mod persister;
-mod server;
-mod transport;
+
+pub mod message;
+pub mod node;
+
+pub mod server;
+pub mod transport;

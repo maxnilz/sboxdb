@@ -29,4 +29,5 @@ A distributed SQL database, written as a learning project about my journey on th
 
 ## Reference
 
+- https://github.com/cmu-db/bustub
 - https://github.com/erikgrinaker/toydb
