@@ -6,7 +6,7 @@ use crate::codec::{bincodec, keycodec};
 use crate::error::Result;
 use crate::raft::node::NodeId;
 use crate::raft::{Command, Index, Term};
-use crate::storage::Storage;
+use crate::storage::kv::KvStorage;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Entry {
@@ -43,14 +43,14 @@ impl Key {
 #[derive(Debug)]
 pub struct Persister {
     id: NodeId,
-    storage: Box<dyn Storage>,
+    storage: Box<dyn KvStorage>,
 
     last_index: Index,
     last_term: Term,
 }
 
 impl Persister {
-    pub fn new(id: NodeId, storage: Box<dyn Storage>) -> Result<Persister> {
+    pub fn new(id: NodeId, storage: Box<dyn KvStorage>) -> Result<Persister> {
         let prefix = Key::Entry(0).encode(id)?;
         let last = storage.scan_prefix(&prefix).last();
         let (last_index, last_term) = if let Some(x) = last {
@@ -175,7 +175,7 @@ impl Persister {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::{new_storage, StorageType};
+    use crate::storage::kv::{new_storage, StorageType};
 
     use super::*;
 

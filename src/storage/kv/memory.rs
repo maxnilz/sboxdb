@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use crate::error::Result;
-use crate::storage::{ScanIterator, Storage};
+use crate::storage::kv::{KvStorage, ScanIterator};
 
 #[derive(Debug, Clone)]
 pub struct Memory {
@@ -16,7 +16,7 @@ impl Memory {
     }
 }
 
-impl Storage for Memory {
+impl KvStorage for Memory {
     fn flush(&self) -> Result<()> {
         Ok(())
     }
