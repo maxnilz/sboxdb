@@ -13,7 +13,7 @@ A distributed SQL database, written as a learning project about my journey on th
     - consider buffer pool manager later
     - consider heap files, clustered B+ tree or LSM for OLTP later
     - consider parquet files for OLAP later
-- [ ] **Replication:** Raft-based replicated state machine
+- [x] **Replication:** Raft-based replicated state machine
     - no cluster membership config change support.
 - [ ] **SQL parser:** A handcraft SQL parser without yacc/bison.
     - **Data Types:** null, boolean, i64, double, utf-8 string
