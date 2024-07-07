@@ -16,7 +16,7 @@ use crate::raft::persister::Persister;
 use crate::raft::transport::Transport;
 use crate::raft::State;
 use crate::raft::{Command, CommandResult};
-use crate::storage::Storage;
+use crate::storage::kv::KvStorage;
 
 struct Request {
     command: Command,
@@ -76,7 +76,7 @@ impl Server {
     pub fn new(
         id: NodeId,
         peers: Vec<NodeId>,
-        storage: Box<dyn Storage>,
+        storage: Box<dyn KvStorage>,
         transport: Box<dyn Transport>,
         state: Box<dyn State>,
     ) -> Result<Server> {

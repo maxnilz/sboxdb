@@ -14,7 +14,7 @@ use sboxdb::raft::node::TICK_INTERVAL;
 use sboxdb::raft::node::{NodeId, NodeState};
 use sboxdb::raft::server::Server;
 use sboxdb::raft::{Command, CommandResult, Index, State, Term};
-use sboxdb::storage::{new_storage, StorageType};
+use sboxdb::storage::kv::{new_storage, StorageType};
 
 use crate::raft::state::{KvState, States};
 use crate::raft::transport::{LabNetMesh, Noise};
