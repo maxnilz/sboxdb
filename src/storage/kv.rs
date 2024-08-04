@@ -1,4 +1,4 @@
-use crate::error;
+use crate::error::Result;
 use serde::Deserialize;
 use std::collections::Bound;
 use std::fmt::Debug;
@@ -6,10 +6,7 @@ use std::iter::once;
 
 mod memory;
 
-pub trait ScanIterator<'a>:
-    DoubleEndedIterator<Item = error::Result<(Vec<u8>, Vec<u8>)>> + 'a
-{
-}
+pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a {}
 
 // A blanket implementation to ensure that any type T that satisfies the
 // constraints of being a DoubleEndedIterator with an item type of
@@ -21,7 +18,7 @@ pub trait ScanIterator<'a>:
 // this by automatically making many potential iterator types available as
 // ScanIterator instances without additional code.
 impl<'a, T> ScanIterator<'a> for T where
-    T: DoubleEndedIterator<Item = error::Result<(Vec<u8>, Vec<u8>)>> + 'a
+    T: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a
 {
 }
 
@@ -35,13 +32,13 @@ impl<'a, T> ScanIterator<'a> for T where
 /// instead of a generic involved type `std::ops::RangeBounds`.
 pub trait KvStorage: Debug + Send + Sync {
     /// Flushes any buffered data to underlying storage medium.
-    fn flush(&self) -> error::Result<()>;
+    fn flush(&self) -> Result<()>;
 
     /// Sets a value for a key, overwrite the existing value if any.
-    fn set(&mut self, key: &[u8], value: Vec<u8>) -> error::Result<()>;
+    fn set(&mut self, key: &[u8], value: Vec<u8>) -> Result<()>;
 
     /// Gets the value with a given key.
-    fn get(&self, key: &[u8]) -> error::Result<Option<Vec<u8>>>;
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
     /// Iterates over the key/values pares with the given key range
     /// by returning a trait object of `ScanIterator` we are using the dynamic
@@ -69,17 +66,17 @@ pub trait KvStorage: Debug + Send + Sync {
     /// was previously in the storage.
     /// The key may be any borrowed form of the map's key type, but the ordering
     /// on the borrowed form must match the ordering on the key type.
-    fn remove(&mut self, key: &[u8]) -> error::Result<Option<Vec<u8>>>;
+    fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
     /// Remove all keys starting with prefix, returning the values that are removed from.
-    fn remove_prefix(&mut self, prefix: &[u8]) -> error::Result<Vec<Vec<u8>>> {
+    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         let iter = self.scan_prefix(prefix);
         let keys = iter
             .map(|x| {
                 let (k, _) = x?;
                 Ok(k)
             })
-            .collect::<error::Result<Vec<Vec<u8>>>>()?;
+            .collect::<Result<Vec<Vec<u8>>>>()?;
 
         let mut values = vec![];
         for key in &keys {
@@ -97,7 +94,7 @@ pub enum StorageType {
     Memory,
 }
 
-pub fn new_storage(typ: StorageType) -> error::Result<Box<dyn KvStorage>> {
+pub fn new_storage(typ: StorageType) -> Result<Box<dyn KvStorage>> {
     match typ {
         StorageType::Memory => Ok(Box::new(memory::Memory::new())),
     }
@@ -105,8 +102,7 @@ pub fn new_storage(typ: StorageType) -> error::Result<Box<dyn KvStorage>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::kv::{memory, KvStorage, ScanIterator, StorageType};
-    use crate::storage::*;
+    use super::*;
 
     fn fn1<E: KvStorage>(s: E) -> Result<()> {
         s.flush()
