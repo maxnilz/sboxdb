@@ -13,6 +13,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Internal(String),
     Value(String),
+    BufferPoolNoAvailableFrame,
     Abort,
 }
 
@@ -32,6 +33,9 @@ impl Display for Error {
             Error::Abort => write!(f, "Operation aborted"),
             Error::Internal(s) | Error::Value(s) => {
                 write!(f, "{}", s)
+            }
+            err => {
+                write!(f, "{:?}", err)
             }
         }
     }
