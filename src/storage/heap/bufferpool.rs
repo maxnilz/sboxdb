@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
-use crate::storage::buffer::replacer::SyncLRUKReplacer;
-use crate::storage::buffer::FrameId;
-use crate::storage::buffer::Replacer;
 use crate::storage::kv::KvStorage;
-use crate::storage::page::{Key, Page, PageId};
+
+use super::page::{FrameId, Key, Page, PageId};
+use super::replacer::Replacer;
+use super::replacer::SyncLRUKReplacer;
 
 /// The buffer pool is responsible for moving physical pages back and forth
 /// from main memory to disk. It allows a DBMS to support databases that are

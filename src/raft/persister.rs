@@ -2,11 +2,12 @@ use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{bincodec, keycodec};
 use crate::error::Result;
-use crate::raft::node::NodeId;
-use crate::raft::{Command, Index, Term};
+use crate::storage::kv::codec::{bincodec, keycodec};
 use crate::storage::kv::KvStorage;
+
+use super::node::NodeId;
+use super::{Command, Index, Term};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Entry {

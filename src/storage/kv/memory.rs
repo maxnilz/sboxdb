@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use crate::error::Result;
-use crate::storage::kv::{KvStorage, ScanIterator};
+
+use super::{KvStorage, ScanIterator};
 
 #[derive(Debug, Clone)]
 pub struct Memory {

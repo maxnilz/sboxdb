@@ -8,13 +8,12 @@ A distributed SQL database, written as a learning project about my journey on th
 
 - [ ] **KV Storage:**
     - [x] in memory based key-value storage
-    - [ ] disk based key-value storage
-    - [ ] add LSM based storage for OLTP
+    - [ ] add LSM based kv storage for OLTP
     - [ ] add parquet based storage for OLAP
+    - ~~[ ] buffer pool manager with lru-k replacer~~
 - [x] **Replication:** Raft-based replicated state machine
     - no cluster membership config change support.
 - [ ] **Transactional Storage:** transactional mvcc storage
-    - [ ] buffer pool manager with lru-k replacer
     - [ ] concurrency control with MVCC+2PL
     - [ ] add Write-Ahead-Log support
     - [ ] add ARIES recovery support
@@ -31,7 +30,8 @@ A distributed SQL database, written as a learning project about my journey on th
         * `DELETE FROM [TABLE] WHERE ...`
         * `SELECT ... FROM ... WHERE ... ORDER BY ...`
         * `EXPLAIN SELECT ...`
-- [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and joins.
+- [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
+  joins.
     - [ ] Executors
     - [ ] Planner & optimizer
 
