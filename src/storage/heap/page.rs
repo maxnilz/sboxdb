@@ -3,10 +3,12 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::codec::keycodec;
+use crate::storage::kv::codec::keycodec;
 use crate::error::Result;
 
 pub type PageId = i64;
+
+pub type FrameId = usize;
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub enum Key {

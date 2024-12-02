@@ -14,8 +14,9 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::error::Error;
 use crate::error::Result;
-use crate::raft::message::{Address, Message};
-use crate::raft::node::NodeId;
+
+use super::message::{Address, Message};
+use super::node::NodeId;
 
 // Transport act as the message exchange(send, receive) among
 // raft peers.

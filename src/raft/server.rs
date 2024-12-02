@@ -9,14 +9,15 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
 use crate::error::{Error, Result};
-use crate::raft::message::{Address, Event, Message};
-use crate::raft::node::follower::Follower;
-use crate::raft::node::{Node, NodeId, NodeState, ProposalId, RawNode, TICK_INTERVAL};
-use crate::raft::persister::Persister;
-use crate::raft::transport::Transport;
-use crate::raft::State;
-use crate::raft::{Command, CommandResult};
 use crate::storage::kv::KvStorage;
+
+use super::message::{Address, Event, Message};
+use super::node::follower::Follower;
+use super::node::{Node, NodeId, NodeState, ProposalId, RawNode, TICK_INTERVAL};
+use super::persister::Persister;
+use super::transport::Transport;
+use super::State;
+use super::{Command, CommandResult};
 
 struct Request {
     command: Command,

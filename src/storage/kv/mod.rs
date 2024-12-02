@@ -1,26 +1,10 @@
-use crate::error::Result;
-use serde::Deserialize;
 use std::collections::Bound;
 use std::fmt::Debug;
 use std::iter::once;
 
-mod memory;
+use serde::Deserialize;
 
-pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a {}
-
-// A blanket implementation to ensure that any type T that satisfies the
-// constraints of being a DoubleEndedIterator with an item type of
-// Result<(Vec<u8>, Vec<u8>)> and having a lifetime 'a, automatically
-// qualifies as an implementation of ScanIterator<'a>.
-// Without this blanket implementation, anyone defining a new type that
-// they want to use as a ScanIterator would need to manually implement the
-// ScanIterator trait for each type. The blanket implementation simplifies
-// this by automatically making many potential iterator types available as
-// ScanIterator instances without additional code.
-impl<'a, T> ScanIterator<'a> for T where
-    T: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a
-{
-}
+use crate::error::Result;
 
 /// A key/value storage engine, where both keys and values are arbitrary byte
 /// strings. stored in lexicographical key order. Writes are only guaranteed
@@ -88,6 +72,25 @@ pub trait KvStorage: Debug + Send + Sync {
         Ok(values)
     }
 }
+
+pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a {}
+
+// A blanket implementation to ensure that any type T that satisfies the
+// constraints of being a DoubleEndedIterator with an item type of
+// Result<(Vec<u8>, Vec<u8>)> and having a lifetime 'a, automatically
+// qualifies as an implementation of ScanIterator<'a>.
+// Without this blanket implementation, anyone defining a new type that
+// they want to use as a ScanIterator would need to manually implement the
+// ScanIterator trait for each type. The blanket implementation simplifies
+// this by automatically making many potential iterator types available as
+// ScanIterator instances without additional code.
+impl<'a, T> ScanIterator<'a> for T where
+    T: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a
+{
+}
+
+pub mod codec;
+pub mod memory;
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum StorageType {
