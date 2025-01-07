@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 
-use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult, RequestVote};
+use crate::raft::message::{Address, Event, Message, ProposalResult, RequestVote};
 
 use super::leader::Leader;
 use super::NodeId;
@@ -61,14 +61,10 @@ impl Node for Candidate {
         // receive a stale message, drop it.
         if msg.term < self.rn.term {
             debug!(self.rn, "drop stale msg");
-            match msg.event {
+            if let Event::ProposalRequest {id, ..} = msg.event {
                 // drop any command proposal explicitly
-                Event::ProposalRequest { id, .. } => {
-                    let event = Event::ProposalResponse { id, result: ProposalResult::Dropped };
-                    self.rn.send_message(msg.from, event)?;
-                }
-                // drop any other message quietly.
-                _ => {}
+                let event = Event::ProposalResponse { id, result: ProposalResult::Dropped };
+                self.rn.send_message(msg.from, event)?;
             }
             return Ok(self);
         }
@@ -88,7 +84,7 @@ impl Node for Candidate {
             Event::VoteGranted => {
                 self.votes.insert(msg.from.unwrap_node_id());
 
-                let votes: Vec<NodeId> = self.votes.iter().map(|&x| x).collect();
+                let votes: Vec<NodeId> = self.votes.iter().copied().collect();
                 info!(self.rn, "receive yes vote from {}, votes: {:?}", msg.from, votes);
 
                 let granted_votes = self.votes.len();

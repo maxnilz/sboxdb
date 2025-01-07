@@ -19,11 +19,11 @@ pub enum Error {
 
 impl Error {
     pub fn internal<E: ToString>(msg: E) -> Error {
-        return Error::Internal(msg.to_string());
+        Error::Internal(msg.to_string())
     }
 
     pub fn value<E: ToString>(msg: E) -> Error {
-        return Error::Value(msg.to_string());
+        Error::Value(msg.to_string())
     }
 }
 
@@ -135,6 +135,18 @@ impl<T> From<std::sync::PoisonError<T>> for Error {
 
 impl From<tokio::sync::oneshot::error::RecvError> for Error {
     fn from(err: tokio::sync::oneshot::error::RecvError) -> Self {
+        Error::internal(err)
+    }
+}
+
+impl From<Vec<u8>> for Error {
+    fn from(err: Vec<u8>) -> Self {
+        Error::internal(format!("{:?}", err))
+    }
+}
+
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Self {
         Error::internal(err)
     }
 }

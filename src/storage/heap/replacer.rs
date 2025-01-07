@@ -155,7 +155,7 @@ impl LRUKReplacer {
     /// Return the frame id if a frame is evicted successfully, None if no frames can be evicted.
     fn evict(&mut self) -> Option<FrameId> {
         let mut distances = vec![];
-        for (_, &ref node) in &self.nodes {
+        for node in self.nodes.values() {
             if !node.is_evictable {
                 continue;
             }
@@ -173,7 +173,7 @@ impl LRUKReplacer {
         let evicted = self.nodes.remove(&dist.frame_id).unwrap();
         self.current_size -= 1;
 
-        return Some(evicted.frame_id);
+        Some(evicted.frame_id)
     }
 
     /// Toggle whether a frame is evictable or non-evictable. this function also control replacer
@@ -236,7 +236,7 @@ impl LRUKReplacer {
     }
 
     fn size(&self) -> usize {
-        return self.current_size;
+        self.current_size
     }
 }
 

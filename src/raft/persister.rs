@@ -2,9 +2,12 @@ use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
 
+use crate::key;
+
 use crate::error::Result;
+use crate::storage::kv;
 use crate::storage::kv::codec::{bincodec, keycodec};
-use crate::storage::kv::KvStorage;
+use crate::storage::kv::Storage;
 
 use super::node::NodeId;
 use super::{Command, Index, Term};
@@ -44,16 +47,16 @@ impl Key {
 #[derive(Debug)]
 pub struct Persister {
     id: NodeId,
-    storage: Box<dyn KvStorage>,
+    storage: Box<dyn Storage>,
 
     last_index: Index,
     last_term: Term,
 }
 
 impl Persister {
-    pub fn new(id: NodeId, storage: Box<dyn KvStorage>) -> Result<Persister> {
-        let prefix = Key::Entry(0).encode(id)?;
-        let last = storage.scan_prefix(&prefix).last();
+    pub fn new(id: NodeId, storage: Box<dyn Storage>) -> Result<Persister> {
+        let range = Persister::range_from(id, 0);
+        let last = storage.scan(range).last();
         let (last_index, last_term) = if let Some(x) = last {
             let (_, v) = x?;
             let entry: Entry = bincodec::deserialize(&v)?;
@@ -64,6 +67,12 @@ impl Persister {
         Ok(Persister { id, storage, last_index, last_term })
     }
 
+    fn range_from(node_id: NodeId, from: Index) -> (Bound<kv::Key>, Bound<kv::Key>) {
+        let from = Key::Entry(from).encode(node_id).unwrap();
+        let to = Key::Entry(u64::MAX).encode(node_id).unwrap();
+        (Bound::Included(key!(from)), Bound::Excluded(key!(to)))
+    }
+
     pub fn last(&self) -> (Index, Term) {
         (self.last_index, self.last_term)
     }
@@ -71,13 +80,13 @@ impl Persister {
     pub fn save_hard_state(&mut self, state: HardState) -> Result<()> {
         let key = Key::State.encode(self.id)?;
         let value = bincodec::serialize(&state)?;
-        self.storage.set(&key, value)?;
+        self.storage.set(key!(key), value)?;
         Ok(())
     }
 
     pub fn get_hard_state(&self) -> Result<Option<HardState>> {
         let key = Key::State.encode(self.id)?;
-        let value = self.storage.get(&key)?;
+        let value = self.storage.get(key!(key))?;
         let ans = match value {
             None => None,
             Some(bs) => {
@@ -100,12 +109,11 @@ impl Persister {
     pub fn append_entry(&mut self, entry: Entry) -> Result<()> {
         if entry.index < self.last_index {
             // truncate entries
-            let from = Key::Entry(entry.index).encode(self.id)?;
-            self.storage.remove_prefix(&from)?;
+            self.truncate(entry.index)?;
         }
         let key = Key::Entry(entry.index).encode(self.id)?;
         let value = bincodec::serialize(&entry)?;
-        self.storage.set(&key, value)?;
+        self.storage.set(key!(key), value)?;
 
         self.last_index = entry.index;
         self.last_term = entry.term;
@@ -113,9 +121,21 @@ impl Persister {
         Ok(())
     }
 
+    pub fn truncate(&mut self, index: Index) -> Result<()> {
+        let range = Persister::range_from(self.id, index);
+        let res = self.storage.remove_range(range);
+        let last = res.last().transpose()?;
+        if let Some((_, v)) = last {
+            let entry: Entry = bincodec::deserialize(&v)?;
+            self.last_index = entry.index;
+            self.last_term = entry.term;
+        }
+        Ok(())
+    }
+
     pub fn get_entry(&self, index: Index) -> Result<Option<Entry>> {
         let key = Key::Entry(index).encode(self.id)?;
-        let result = self.storage.get(&key)?;
+        let result = self.storage.get(key!(key))?;
         match result {
             None => Ok(None),
             Some(value) => {
@@ -129,7 +149,7 @@ impl Persister {
     pub fn scan_entries(&self, from: Index, to: Index) -> Result<Vec<Entry>> {
         let from = Key::Entry(from).encode(self.id)?;
         let to = Key::Entry(to).encode(self.id)?;
-        let range = (Bound::Included(from), Bound::Excluded(to));
+        let range = (Bound::Included(key!(from)), Bound::Excluded(key!(to)));
         let result = self.storage.scan(range);
         // map results Vec<Result<Entry, Error>, the collect do the
         // transformation to Result<Vec<Entry, Error>(provided by std).
@@ -144,8 +164,8 @@ impl Persister {
     }
 
     pub fn scan_from(&self, from: Index) -> Result<Vec<Entry>> {
-        let from = Key::Entry(from).encode(self.id)?;
-        let result = self.storage.scan_prefix(&from);
+        let range = Persister::range_from(self.id, from);
+        let result = self.storage.scan(range);
         result
             .map(|x| {
                 let (_, value) = x?;
@@ -159,8 +179,9 @@ impl Persister {
         let prev = from - 1;
 
         // remove entries from the given index.
-        let from = Key::Entry(from).encode(self.id)?;
-        let values = self.storage.remove_prefix(&from)?;
+        let range = Persister::range_from(self.id, from);
+        let result = self.storage.remove_range(range);
+        let values = result.map(|x| x.map(|(_, v)| v)).collect::<Result<Vec<Vec<u8>>>>()?;
         if values.is_empty() {
             return Ok(0);
         }

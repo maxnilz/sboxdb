@@ -49,7 +49,9 @@ pub struct Leader {
 }
 
 impl Leader {
-    pub fn new(mut rn: RawNode) -> Self {
+    pub fn new(mut rn: RawNode) -> Result<Self> {
+        // truncate the log to the commit index
+        rn.persister.truncate(rn.commit_index + 1)?;
         // init index array
         let (last_index, _) = rn.persister.last();
         let next_index = vec![last_index + 1; MAX_NODE_ID as usize];
@@ -57,14 +59,14 @@ impl Leader {
         // set leader to myself
         rn.leader = Some(rn.id);
         let proposals = HashMap::new();
-        Self {
+        Ok(Self {
             rn,
             tick: 0,
             timeout: HEARTBEAT_INTERVAL,
             next_index,
             match_index,
             tickets: proposals,
-        }
+        })
     }
 
     fn heartbeat(&self) -> Result<()> {
@@ -341,7 +343,7 @@ impl TryFrom<RawNode> for Leader {
     type Error = Error;
 
     fn try_from(rn: RawNode) -> Result<Leader> {
-        let leader = Leader::new(rn);
+        let leader = Leader::new(rn)?;
         info!(leader.rn, "become leader");
         leader.heartbeat()?;
         Ok(leader)

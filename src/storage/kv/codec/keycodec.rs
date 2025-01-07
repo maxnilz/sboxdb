@@ -7,23 +7,86 @@
 //! The encoding is not self-describing: the caller must provide a concrete type
 //! to decode into, and the binary key must conform to its structure.
 //!
-//! KeyCodec supports a subset of primitive data types, encoded as follows:
+//! #### Supported Data Types
 //!
-//! u64: Big-endian binary representation
-//! i64: Big-endian binary representation where the sign bit get flipped
-//! bytes(Vec<u8>): 0x00 is escaped as 0x00ff, terminated with 0x0000
-//! String: Same as the bytes(Vec<u8>)
+//! ##### Unsigned Integers
 //!
-//! lexicographical compare rules are:
+//! `u8`, `u16`, `u32`, and `u64` are encoded into 1, 2, 4, and 8 bytes of output, respectively.
+//! Order is preserved by encoding the bytes in big-endian (most-significant bytes first) format.
+//!
+//! ##### Signed Integers
+//!
+//! `i8`, `i16`, `i32`, and `i64` are encoded into 1, 2, 4, and 8 bytes of output, respectively.
+//! Order is preserved by flipping the sign bit of the most significant byte, such that negative
+//! numbers are ordered before positive numbers.
+//!
+//! ##### Strings
+//!
+//! Strings are encoded into their natural UTF8 representation plus a single null byte suffix.
+//! In general, strings should not contain null bytes. The encoder will not check for null bytes,
+//! however their presence will break lexicographic sorting.
+//!
+//! ##### Options
+//!
+//! An optional wrapper type adds a 1 byte overhead to the wrapped data type. `None` values will
+//! sort before `Some` values.
+//!
+//! #### Structs & Tuples
+//!
+//! Structs and tuples are encoded by serializing their consituent fields in order with no prefix,
+//! suffix, or padding bytes.
+//!
+//! ##### Enums
+//!
+//! Enums are encoded with a variable-length unsigned-integer variant tag, plus the consituent
+//! fields in the case of an enum-struct. This encoding allows more enum variants to be added
+//! in a backwards-compatible manner, as long as variants are not removed and the variant order
+//! does not change.
+//!
+//! #### Unsupported Data Types
+//!
+//! Character are unsupported at this time. Characters are not typically useful in keys.
+//!
+//! Floating Point Numbers are unsupported at this time. In general, it is
+//! unwise to use IEEE 754 floating point values in keys, because rounding errors are pervasive.
+//!
+//! Sequences and maps are unsupported at this time. Sequences and maps could probably be
+//! implemented with a single byte overhead per item, key, and value, but these types are not
+//! typically useful in keys.
+//!
+//! Raw byte arrays are unsupported out of box. The serde `Serializer`/`Deserializer` mechanism
+//! makes no distinction between byte arrays and sequences, and thus the overhead for encoding a
+//! raw byte array would be 1 byte per input byte. The theoretical best-case overhead for serializing
+//! a raw (null containing) byte array in order-preserving format is 1 bit per byte, or 9 bytes of
+//! output for every 8 bytes of input.
+//! In case of non-null containing byte vectors and slices such as Vec<u8> that is guaranteed to
+//! have no null bytes contained or the raw bytes does not to deserialize back, it can be wrapped
+//! with serde_bytes::ByteBuf or use the #[serde(with="serde_bytes")] attribute.
+//! See https://github.com/serde-rs/bytes
+//!
+//! NB: lexicographical compare rules are:
 //! 1. compare byte by byte from left to right
 //! 2. when all bytes in an array match the beginning of a longer string, the
 //!    shorter array is considered smaller. e.g., "app" smaller than "apple".
-
-use serde::de::value::U32Deserializer;
-use serde::de::{DeserializeSeed, EnumAccess, IntoDeserializer, VariantAccess, Visitor};
-use serde::ser;
+//!
+//! #### Type Evolution
+//!
+//! In general, the exact type of a serialized value must be known in order to correctly deserialize
+//! it. For structs and enums, the type is effectively frozen once any values of the type have been
+//! serialized: changes to the struct or enum will cause deserialization of already encoded values
+//! to fail or return incorrect values. The only exception is adding new variants to the end
+//! of an existing enum. Enum variants may *not* change type, be removed, or be reordered. All
+//! changes to structs, including adding, removing, reordering, or changing the type of a field are
+//! forbidden.
+//!
+//! Consider using an enum as a top-level wrapper type. This will allow us to seamlessly add a new
+//! variant when we need to change the key format in a backwards-compatible manner (the different
+//! key types will sort separately).
 
 use crate::error::{Error, Result};
+use serde::de;
+use serde::de::IntoDeserializer;
+use serde::ser;
 
 pub fn serialize<T: serde::Serialize>(key: &T) -> Result<Vec<u8>> {
     let mut serializer = Serializer { data: Vec::new() };
@@ -41,31 +104,135 @@ struct Serializer {
     data: Vec<u8>,
 }
 
-impl serde::Serializer for &mut Serializer {
+impl Serializer {
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        self.data.extend(bytes)
+    }
+
+    fn write_byte(&mut self, b: u8) {
+        self.data.push(b);
+    }
+}
+
+struct Compound<'a> {
+    ser: &'a mut Serializer,
+}
+impl ser::SerializeTuple for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + ser::Serialize,
+    {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeTupleStruct for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + ser::Serialize,
+    {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeTupleVariant for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + ser::Serialize,
+    {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeStruct for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T>(&mut self, _: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + ser::Serialize,
+    {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeStructVariant for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T>(&mut self, _: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + ser::Serialize,
+    {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> serde::Serializer for &'a mut Serializer {
     type Ok = ();
     type Error = Error;
     type SerializeSeq = ser::Impossible<(), Error>;
-    type SerializeTuple = ser::Impossible<(), Error>;
-    type SerializeTupleStruct = ser::Impossible<(), Error>;
-    type SerializeTupleVariant = ser::Impossible<(), Error>;
+    type SerializeTuple = Compound<'a>;
+    type SerializeTupleStruct = Compound<'a>;
+    type SerializeTupleVariant = Compound<'a>;
     type SerializeMap = ser::Impossible<(), Error>;
-    type SerializeStruct = ser::Impossible<(), Error>;
-    type SerializeStructVariant = ser::Impossible<(), Error>;
+    type SerializeStruct = Compound<'a>;
+    type SerializeStructVariant = Compound<'a>;
 
     fn serialize_bool(self, v: bool) -> Result<()> {
-        todo!()
+        let byte = if v { 1 } else { 0 };
+        self.write_byte(byte);
+        Ok(())
     }
 
-    fn serialize_i8(self, _: i8) -> Result<()> {
-        todo!()
+    fn serialize_i8(self, v: i8) -> Result<()> {
+        let mut byte: u8 = v.to_be_bytes()[0];
+        byte ^= 1 << 7; // flip sing bit to make negative number smaller
+        self.write_byte(byte);
+        Ok(())
     }
 
-    fn serialize_i16(self, _: i16) -> Result<()> {
-        todo!()
+    fn serialize_i16(self, v: i16) -> Result<()> {
+        let mut bytes = v.to_be_bytes();
+        bytes[0] ^= 1 << 7;
+        self.write_bytes(&bytes);
+        Ok(())
     }
 
-    fn serialize_i32(self, _: i32) -> Result<()> {
-        todo!()
+    fn serialize_i32(self, v: i32) -> Result<()> {
+        let mut bytes = v.to_be_bytes();
+        bytes[0] ^= 1 << 7;
+        self.write_bytes(&bytes);
+        Ok(())
     }
 
     /// i64 uses the big-endian two's completement encoding, but flips the
@@ -78,100 +245,100 @@ impl serde::Serializer for &mut Serializer {
     fn serialize_i64(self, v: i64) -> Result<()> {
         let mut bytes = v.to_be_bytes();
         bytes[0] ^= 1 << 7; // flip sign bit
-        self.data.extend(bytes);
+        self.write_bytes(&bytes);
         Ok(())
     }
 
-    fn serialize_u8(self, _: u8) -> Result<()> {
-        todo!()
+    fn serialize_u8(self, v: u8) -> Result<()> {
+        self.write_byte(v);
+        Ok(())
     }
 
-    fn serialize_u16(self, _: u16) -> Result<()> {
-        todo!()
+    fn serialize_u16(self, v: u16) -> Result<()> {
+        let bytes = v.to_be_bytes();
+        self.write_bytes(&bytes);
+        Ok(())
     }
 
-    fn serialize_u32(self, _: u32) -> Result<()> {
-        todo!()
+    fn serialize_u32(self, v: u32) -> Result<()> {
+        let bytes = v.to_be_bytes();
+        self.write_bytes(&bytes);
+        Ok(())
     }
 
     fn serialize_u64(self, v: u64) -> Result<()> {
-        self.data.extend(v.to_be_bytes());
+        let bytes = v.to_be_bytes();
+        self.write_bytes(&bytes);
         Ok(())
     }
 
     fn serialize_f32(self, _: f32) -> Result<()> {
-        todo!()
+        unimplemented!()
     }
 
     fn serialize_f64(self, _: f64) -> Result<()> {
-        todo!()
+        unimplemented!()
     }
 
-    fn serialize_char(self, _: char) -> Result<()> {
-        todo!()
+    fn serialize_char(self, v: char) -> Result<()> {
+        unimplemented!()
     }
 
     // Strings are encoded like bytes.
     fn serialize_str(self, v: &str) -> Result<()> {
-        self.serialize_bytes(v.as_bytes())
+        self.write_bytes(v.as_bytes());
+        self.write_byte(0x00);
+        Ok(())
     }
 
-    // Byte slices are terminated by 0x0000, escaping 0x00 as 0x00ff.
-    // Prefix-length encoding can't be used, since it violates ordering.
-    //
-    // By terminating with 0x0000 and escaping any 0x00 bytes as 0x00ff,
-    // the system ensures that the end of data markers do not appear in
-    // the data and that the data itself remains sortable in its natural
-    // order without interference from a length prefix.
-    //
-    // This approach allows data to be reliably and correctly ordered,
-    // retrieved, and processed based on its byte-wise contents.
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
-        let bytes = v
-            .iter()
-            .flat_map(|b| match b {
-                0x00 => vec![0x00, 0xff],
-                b => vec![*b],
-            })
-            .chain(vec![0x00, 0x00]);
-        self.data.extend(bytes);
+        self.write_bytes(v);
+        self.write_byte(0x00);
         Ok(())
     }
 
     fn serialize_none(self) -> Result<()> {
-        todo!()
-    }
-
-    fn serialize_some<T: ?Sized>(self, _: &T) -> Result<()>
-    where
-        T: serde::Serialize,
-    {
-        todo!()
-    }
-
-    fn serialize_unit(self) -> Result<()> {
-        todo!()
-    }
-
-    fn serialize_unit_struct(self, _: &'static str) -> Result<()> {
-        todo!()
-    }
-
-    fn serialize_unit_variant(self, _: &'static str, index: u32, _: &'static str) -> Result<()> {
-        let byte = u8::try_from(index)?;
-        self.data.push(byte);
+        self.write_byte(0x00);
         Ok(())
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(self, _: &'static str, _: &T) -> Result<()>
+    fn serialize_some<T>(self, v: &T) -> Result<()>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
-        todo!()
+        self.write_byte(0x01);
+        v.serialize(&mut *self)?;
+        Ok(())
     }
 
-    // Newtype variants are serialized using the variant index and inner type.
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_unit(self) -> Result<()> {
+        Ok(())
+    }
+
+    fn serialize_unit_struct(self, _: &'static str) -> Result<()> {
+        Ok(())
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _: &'static str,
+        variant_index: u32,
+        _: &'static str,
+    ) -> Result<()> {
+        let byte = u8::try_from(variant_index)?;
+        self.write_byte(byte);
+        Ok(())
+    }
+
+    fn serialize_newtype_struct<T>(self, _: &'static str, v: &T) -> Result<()>
+    where
+        T: ?Sized + serde::Serialize,
+    {
+        v.serialize(self)?;
+        Ok(())
+    }
+
+    fn serialize_newtype_variant<T>(
         self,
         name: &'static str,
         variant_index: u32,
@@ -179,19 +346,20 @@ impl serde::Serializer for &mut Serializer {
         value: &T,
     ) -> Result<()>
     where
-        T: serde::Serialize,
+        T: ?Sized + serde::Serialize,
     {
-        self.serialize_unit_variant(name, variant_index, variant)?;
+        let byte = u8::try_from(variant_index)?;
+        self.write_byte(byte);
         value.serialize(self)?;
         Ok(())
     }
 
     fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq> {
-        todo!()
+        unimplemented!()
     }
 
     fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple> {
-        todo!()
+        Ok(Compound { ser: self })
     }
 
     fn serialize_tuple_struct(
@@ -199,35 +367,39 @@ impl serde::Serializer for &mut Serializer {
         _: &'static str,
         _: usize,
     ) -> Result<Self::SerializeTupleStruct> {
-        todo!()
+        Ok(Compound { ser: self })
     }
 
     fn serialize_tuple_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        todo!()
+        let byte = u8::try_from(variant_index)?;
+        self.write_byte(byte);
+        Ok(Compound { ser: self })
     }
 
     fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap> {
-        todo!()
+        unimplemented!()
     }
 
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeStruct> {
-        todo!()
+        Ok(Compound { ser: self })
     }
 
     fn serialize_struct_variant(
         self,
-        _: &'static str,
-        _: u32,
-        _: &'static str,
-        _: usize,
+        _name: &'static str,
+        variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        todo!()
+        let byte = u8::try_from(variant_index)?;
+        self.write_byte(byte);
+        Ok(Compound { ser: self })
     }
 }
 
@@ -240,34 +412,38 @@ impl<'de> Deserializer<'de> {
         Deserializer { input }
     }
 
-    fn take_bytes(&mut self, length: usize) -> Result<&[u8]> {
-        if self.input.len() < length {
-            return Err(Error::internal(format!(
-                "insufficient bytes, except at least {} for {:x?}",
-                length, self.input
-            )));
+    fn take_byte(&mut self) -> Result<u8> {
+        let bytes = self.input;
+        if bytes.is_empty() {
+            return Err(Error::value("unexpected end of input"));
         }
-        let bytes = &self.input[..length];
-        self.input = &self.input[length..];
-        Ok(bytes)
+        let byte = bytes[0];
+        self.input = &bytes[1..];
+        Ok(byte)
     }
 
-    fn decode_next_bytes(&mut self) -> Result<Vec<u8>> {
-        let mut ans = Vec::new();
-        let mut iter = self.input.iter().enumerate();
-        let taken = loop {
-            match iter.next() {
-                Some((_, 0x00)) => match iter.next() {
-                    Some((i, 0x00)) => break i + 1,
-                    Some((_, 0xff)) => ans.push(0x00),
-                    _ => return Err(Error::value("invalid escape sequence")),
-                },
-                Some((_, b)) => ans.push(*b),
-                _ => return Err(Error::value("unexpected end of input")),
-            }
-        };
-        self.input = &self.input[taken..];
-        Ok(ans)
+    fn take_bytes(&mut self, n: usize) -> Result<&[u8]> {
+        let bytes = self.input;
+        if bytes.len() < n {
+            return Err(Error::value("unexpected end of input"));
+        }
+        let (head, tail) = bytes.split_at(n);
+        self.input = tail;
+        Ok(head)
+    }
+
+    fn decode_next_bytes(&mut self) -> Result<&[u8]> {
+        let bytes = self.input;
+        let mut len = 0;
+        while len < bytes.len() && bytes[len] != 0x00 {
+            len += 1;
+        }
+        if len == bytes.len() {
+            return Err(Error::value("unexpected end of input"));
+        }
+        let (head, tail) = bytes.split_at(len);
+        self.input = &tail[1..];
+        Ok(head)
     }
 }
 
@@ -276,73 +452,92 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
 
     fn deserialize_any<V>(self, _: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
-    fn deserialize_bool<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let byte = self.take_byte()?;
+        let bool = match byte {
+            0x00 => false,
+            0x01 => true,
+            b => return Err(Error::internal(format!("invalid boolean value {:?}", b))),
+        };
+        visitor.visit_bool(bool)
     }
 
-    fn deserialize_i8<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let mut byte = self.take_byte()?;
+        byte ^= 1 << 7; // flip sign bit
+        visitor.visit_i8(byte as i8)
     }
 
-    fn deserialize_i16<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let mut bytes = self.take_bytes(2)?.to_vec();
+        bytes[0] ^= 1 << 7;
+        let i16 = i16::from_be_bytes(bytes.try_into()?);
+        visitor.visit_i16(i16)
     }
 
-    fn deserialize_i32<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let mut bytes = self.take_bytes(4)?.to_vec();
+        bytes[0] ^= 1 << 7; // flip sign bit
+        let i32 = i32::from_be_bytes(bytes.try_into()?);
+        visitor.visit_i32(i32)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let mut bytes = self.take_bytes(8)?.to_vec();
         bytes[0] ^= 1 << 7; // flip sign bit
-        let i64 = i64::from_be_bytes(bytes.as_slice().try_into()?);
+        let i64 = i64::from_be_bytes(bytes.try_into()?);
         visitor.visit_i64(i64)
     }
 
-    fn deserialize_u8<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let byte = self.take_byte()?;
+        visitor.visit_u8(byte)
     }
 
-    fn deserialize_u16<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let bytes = self.take_bytes(2)?;
+        let u16 = u16::from_be_bytes(bytes.try_into()?);
+        visitor.visit_u16(u16)
     }
 
-    fn deserialize_u32<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let bytes = self.take_bytes(4)?;
+        let u32 = u32::from_be_bytes(bytes.try_into()?);
+        visitor.visit_u32(u32)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let bytes = self.take_bytes(8)?;
         let u64 = u64::from_be_bytes(bytes.try_into()?);
@@ -351,123 +546,154 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
 
     fn deserialize_f32<V>(self, _: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
     fn deserialize_f64<V>(self, _: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
-    fn deserialize_char<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!();
     }
 
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let bytes = self.decode_next_bytes()?;
-        visitor.visit_str(&String::from_utf8(bytes)?)
+        visitor.visit_str(std::str::from_utf8(bytes)?)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let bytes = self.decode_next_bytes()?;
-        visitor.visit_string(String::from_utf8(bytes)?)
+        visitor.visit_string(std::str::from_utf8(bytes)?.to_string())
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let bytes = self.decode_next_bytes()?;
-        visitor.visit_bytes(&bytes)
+        visitor.visit_bytes(bytes)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         let bytes = self.decode_next_bytes()?;
-        visitor.visit_byte_buf(bytes)
+        visitor.visit_byte_buf(bytes.to_vec())
     }
 
-    fn deserialize_option<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        let byte = self.take_byte()?;
+        match byte {
+            0x00 => visitor.visit_none(),
+            _ => visitor.visit_some(self),
+        }
     }
 
-    fn deserialize_unit<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        visitor.visit_unit()
     }
 
-    fn deserialize_unit_struct<V>(self, _: &'static str, _: V) -> Result<V::Value>
+    fn deserialize_unit_struct<V>(self, _: &'static str, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        visitor.visit_unit()
     }
 
-    fn deserialize_newtype_struct<V>(self, _: &'static str, _: V) -> Result<V::Value>
+    fn deserialize_newtype_struct<V>(self, _: &'static str, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
-    fn deserialize_tuple<V>(self, _: usize, _: V) -> Result<V::Value>
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        struct Access<'de, 'a> {
+            de: &'a mut Deserializer<'de>,
+            len: usize,
+        }
+
+        impl<'de> de::SeqAccess<'de> for Access<'de, '_> {
+            type Error = Error;
+
+            fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+            where
+                T: de::DeserializeSeed<'de>,
+            {
+                if self.len > 0 {
+                    self.len -= 1;
+                    let value = seed.deserialize(&mut *self.de)?;
+                    Ok(Some(value))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+
+        visitor.visit_seq(Access { de: self, len })
     }
 
-    fn deserialize_tuple_struct<V>(self, _: &'static str, _: usize, _: V) -> Result<V::Value>
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_tuple(len, visitor)
     }
 
     fn deserialize_map<V>(self, _: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
     fn deserialize_struct<V>(
         self,
-        _: &'static str,
-        _: &'static [&'static str],
-        _: V,
+        _name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
     ) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_tuple(fields.len(), visitor)
     }
 
     fn deserialize_enum<V>(
@@ -477,42 +703,41 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         visitor: V,
     ) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
         visitor.visit_enum(self)
     }
 
-    fn deserialize_identifier<V>(self, _: V) -> Result<V::Value>
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 
     fn deserialize_ignored_any<V>(self, _: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        unimplemented!()
     }
 }
 
-impl<'de> EnumAccess<'de> for &mut Deserializer<'de> {
+impl<'de> de::EnumAccess<'de> for &mut Deserializer<'de> {
     type Error = Error;
     type Variant = Self;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
     where
-        V: DeserializeSeed<'de>,
+        V: de::DeserializeSeed<'de>,
     {
-        let index = self.take_bytes(1)?[0] as u32;
-        let u32_deserializer: U32Deserializer<Error> = index.into_deserializer();
-        let value = seed.deserialize(u32_deserializer)?;
-        Ok((value, self))
+        let idx: u32 = self.take_byte()? as u32;
+        let val: Result<_> = seed.deserialize(idx.into_deserializer());
+        Ok((val?, self))
     }
 }
 
-impl<'de> VariantAccess<'de> for &mut Deserializer<'de> {
+impl<'de> de::VariantAccess<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {
@@ -521,41 +746,58 @@ impl<'de> VariantAccess<'de> for &mut Deserializer<'de> {
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
     where
-        T: DeserializeSeed<'de>,
+        T: de::DeserializeSeed<'de>,
     {
         seed.deserialize(self)
     }
 
     fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        de::Deserializer::deserialize_tuple(self, len, visitor)
     }
 
     fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
     where
-        V: Visitor<'de>,
+        V: de::Visitor<'de>,
     {
-        todo!()
+        de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use paste::paste;
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
 
-    use super::*;
-
     type Index = u64;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct Keyv {
+        key: String,
+        version: Option<u8>,
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     enum Key {
         Unit,
         NewType0(Index),
         NewType1(String),
+        Struct(Keyv),
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct MyStruct {
+        a: u8,
+        b: String,
+        k1: Keyv,
+        k2: Keyv,
+        c: u8,
+        k3: Key,
+        k4: Option<Keyv>,
     }
 
     fn hex(input: &[u8]) -> String {
@@ -564,13 +806,14 @@ mod tests {
     }
 
     macro_rules! test_codec {
-        ( $($name:ident: $input:expr => $expect:literal),* ) => {
+        ( $($name:ident: $input:expr => $expect:expr),* ) => {
             paste!{
             $(
                 #[test]
                 fn [< test_ $name >]() -> Result<()> {
                     let mut input = $input;
                     let expect = $expect;
+                    let expect = expect.replace(" ", "");
                     let output = serialize(&input)?;
                     assert_eq!(expect, hex(&output), "encode failed");
 
@@ -619,17 +862,31 @@ mod tests {
 
         index_0: 0u64 as Index => "0x0000000000000000",
 
-        bytes: ByteBuf::from(vec![0x01u8, 0xffu8]) => "0x01ff0000",
-        bytes_empty: ByteBuf::from(vec![]) => "0x0000",
-        bytes_escape: ByteBuf::from(vec![0x00, 0x01, 0x02]) => "0x00ff01020000",
+        // bytes codec
+        bytes: ByteBuf::from(vec![0x01u8, 0xffu8]) => "0x01ff00",
+        bytes_empty: ByteBuf::from(vec![]) => "0x00",
 
-        string: "foo".to_string() => "0x666f6f0000",
-        string_empty: "".to_string() => "0x0000",
-        string_escape: "foo\x00bar".to_string() => "0x666f6f00ff6261720000",
-        string_utf8: "👋".to_string() => "0xf09f918b0000",
+        // string codec
+        string: "foo".to_string() => "0x666f6f00",
+        string_empty: "".to_string() => "0x00",
+        string_utf8: "👋".to_string() => "0xf09f918b00",
 
+        // enum codec
         enum_unit: Key::Unit => "0x00",
         enum_newtype0: Key::NewType0(0u64 as Index) => "0x010000000000000000",
-        enum_newtype1: Key::NewType1("foo".to_string()) => "0x02666f6f0000",
+        enum_newtype1: Key::NewType1("foo".to_string()) => "0x02666f6f00",
+        enum_struct: Key::Struct(Keyv { key: "foo".to_string(), version: Some(0x01u8) }) => "0x03666f6f00 0101",
+
+        // struct codec
+        struct_keyv: Keyv { key: "foo".to_string(), version: Some(0x01u8) } => "0x666f6f00 0101",
+        struct_mystruct: MyStruct{
+            a: 0xaa,
+            b: "foo".to_string(),
+            k1: Keyv { key: "foo".to_string(), version: Some(0xbbu8) },
+            k2: Keyv { key: "bar".to_string(), version: None },
+            c: 0xdd,
+            k3: Key::NewType1("foo".to_string()),
+            k4: Some(Keyv { key: "bar".to_string(), version: Some(0xeeu8) }),
+        } => "0xaa 666f6f00 666f6f00 01bb 62617200 00 dd 02666f6f00 0162617200 01ee",
     }
 }

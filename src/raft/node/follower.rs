@@ -38,7 +38,7 @@ impl Follower {
         self.tick = 0;
         self.timeout = rand_election_timeout();
 
-        return self;
+        self
     }
 
     fn drop_forwarded(&mut self) -> Result<()> {
@@ -74,7 +74,7 @@ impl Follower {
             }
             return Ok((false, Some(xindex)));
         }
-        return Ok((true, None));
+        Ok((true, None))
     }
 
     fn is_votable(&self, req: &RequestVote) -> Result<bool> {
@@ -103,7 +103,7 @@ impl Follower {
     fn maybe_apply_entries(&mut self) -> Result<()> {
         let from = self.rn.last_applied + 1;
         let to = self.rn.commit_index + 1;
-        assert!(from < to);
+        assert!(from < to, "invalid apply range [{}, {})", from, to);
         let entries = self.rn.persister.scan_entries(from, to)?;
         info!(self.rn, "applying entries [{}, {}), {}", from, to, entries.len());
         for entry in entries {
@@ -200,11 +200,11 @@ impl Node for Follower {
                 let (last_index, _) = self.rn.persister.last();
 
                 #[rustfmt::skip]
-                info!(self.rn, "accept {} entries from {}, discard: {}/{}, last_index: {}, c: {}/{}",
+                info!(self.rn, "accept {} entries from {}, discard: {}, last_index: {}/{}, c: {}/{}",
                     num, msg.from, discard, last_index0, last_index, ae.leader_commit, self.rn.commit_index);
 
                 // check if we have entries need to apply to state machine.
-                assert_eq!(ae.leader_commit >= self.rn.commit_index, true);
+                assert!(ae.leader_commit >= self.rn.commit_index);
                 if ae.leader_commit > self.rn.commit_index {
                     // update commit index
                     let commit_index = min(ae.leader_commit, last_index);
