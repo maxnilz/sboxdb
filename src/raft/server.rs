@@ -9,7 +9,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
 use crate::error::{Error, Result};
-use crate::storage::kv::KvStorage;
+use crate::storage::kv::Storage;
 
 use super::message::{Address, Event, Message};
 use super::node::follower::Follower;
@@ -77,7 +77,7 @@ impl Server {
     pub fn new(
         id: NodeId,
         peers: Vec<NodeId>,
-        storage: Box<dyn KvStorage>,
+        storage: Box<dyn Storage>,
         transport: Box<dyn Transport>,
         state: Box<dyn State>,
     ) -> Result<Server> {
@@ -132,7 +132,7 @@ impl Server {
                         Message{to: Address::Broadcast, ..} => transport.send(msg).await?,
                         Message{to: Address::Localhost, event: Event::ProposalResponse {id,result}, ..} => {
                             if let Some(tx) = proposals.remove(&id) {
-                                if let Err(_) = tx.send(result.into()) {
+                                if tx.send(result.into()).is_err() {
                                     return Err(Error::internal("command oneshot receiver dropped"))
                                 }
                             }
@@ -143,7 +143,7 @@ impl Server {
 
                 Some((_, tx)) = state_rx.next() => {
                     let ns = node.get_state();
-                    if let Err(_) = tx.send(ns) {
+                    if tx.send(ns).is_err() {
                         return Err(Error::internal("state response receiver dropped"));
                     }
                 }
@@ -173,7 +173,7 @@ impl Server {
 
     pub fn get_state(&self) -> Result<NodeState> {
         let (tx, rx) = oneshot::channel();
-        if let Err(_) = self.state_tx.send(((), tx)) {
+        if self.state_tx.send(((), tx)).is_err() {
             return Err(Error::internal("state channel is closed or dropped"));
         }
         let ns = futures::executor::block_on(rx)?;
@@ -187,7 +187,7 @@ impl Server {
     ) -> Result<CommandResult> {
         let (tx, rx) = oneshot::channel();
         let req = Request { command, timeout, tx };
-        if let Err(_) = self.command_tx.send(req) {
+        if self.command_tx.send(req).is_err() {
             return Err(Error::internal("command channel is closed or dropped"));
         }
         Ok(futures::executor::block_on(rx)?)

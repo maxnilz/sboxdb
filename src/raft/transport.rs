@@ -30,6 +30,7 @@ pub trait Transport: Send {
 
 pub struct TcpTransport {
     me: (NodeId, IpAddr),
+    #[allow(unused)]
     peers: HashMap<NodeId, IpAddr>,
 
     /// outbound message first get buffered into
@@ -123,7 +124,7 @@ impl Transport for TcpTransport {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // TODO: close connection gracefully
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             match Self::serve(listener, tx).await {
                 Ok(()) => debug!("raft receiver {} stopped", addr),
                 Err(err) => error!("raft receiver {} error: {}", addr, err),

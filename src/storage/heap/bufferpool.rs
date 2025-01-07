@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
-use crate::storage::kv::KvStorage;
+use crate::key;
+use crate::storage::kv::Storage;
 
 use super::page::{FrameId, Key, Page, PageId};
 use super::replacer::Replacer;
@@ -17,9 +18,10 @@ use super::replacer::SyncLRUKReplacer;
 /// identifier (page_id) and it does not know whether that page is already in
 /// memory or whether the system has to retrieve it from disk.
 struct BufferPool {
+    #[allow(unused)]
     pool_size: usize,
     /// kv storage.
-    storage: Box<dyn KvStorage>,
+    storage: Box<dyn Storage>,
     /// array of buffer pool pages. use the array index as
     /// FrameId, i.e., the FrameId is in range: [0, pool_size).
     pages: Vec<Arc<Page>>,
@@ -35,7 +37,7 @@ struct BufferPool {
 }
 
 impl BufferPool {
-    fn new(storage: Box<dyn KvStorage>, pool_size: usize, replacer_k: usize) -> Self {
+    fn new(storage: Box<dyn Storage>, pool_size: usize, replacer_k: usize) -> Self {
         let mut pages = Vec::with_capacity(pool_size);
         let mut free_list = Vec::with_capacity(pool_size);
         let page_table = HashMap::new();
@@ -61,7 +63,7 @@ impl BufferPool {
     fn new_page(&mut self) -> Result<Arc<Page>> {
         let mut frame_id: Option<FrameId> = None;
         // check if we have free frame available
-        if self.free_list.len() > 0 {
+        if !self.free_list.is_empty() {
             frame_id = Some(self.free_list.pop().unwrap());
         }
         // we have no free frame available, try to evict one
@@ -82,7 +84,7 @@ impl BufferPool {
         // flush the in-memory page/frame as the storage page if it is dirty.
         if guard.is_dirty {
             let key = guard.as_key();
-            self.storage.set(&key, guard.data.to_vec())?;
+            self.storage.set(key!(key), guard.data.to_vec())?;
         }
         // clean page frame first
         guard.clear();
@@ -132,7 +134,7 @@ impl BufferPool {
 
         // page not found, try to pick a replacement the free list.
         let mut frame_id: Option<FrameId> = None;
-        if self.free_list.len() > 0 {
+        if !self.free_list.is_empty() {
             frame_id = Some(self.free_list.pop().unwrap());
         }
         // if no free frame in free list, try to pick one from replacer.
@@ -153,12 +155,12 @@ impl BufferPool {
         // flush the in-memory page/frame as the storage page if it is dirty.
         if guard.is_dirty {
             let key = guard.as_key();
-            self.storage.set(&key, guard.data.to_vec())?;
+            self.storage.set(key!(key), guard.data.to_vec())?;
         }
 
         // fetch page from disk
         let key = Key::PageId(page_id).encode()?;
-        let data = self.storage.get(&key)?;
+        let data = self.storage.get(key!(key))?;
         // clean page frame first
         guard.clear();
         guard.id = page_id;
@@ -194,10 +196,10 @@ impl BufferPool {
         let mut guard = page.write()?;
 
         let key = Key::PageId(guard.id).encode()?;
-        self.storage.set(&key, guard.data.to_vec())?;
+        self.storage.set(key!(key), guard.data.to_vec())?;
         guard.is_dirty = false;
 
-        return Ok(true);
+        Ok(true)
     }
 
     /// Flush all the pages in the buffer pool to storage.
@@ -207,7 +209,7 @@ impl BufferPool {
             let mut guard = page.write()?;
 
             let key = Key::PageId(guard.id).encode()?;
-            self.storage.set(&key, guard.data.to_vec())?;
+            self.storage.set(key!(key), guard.data.to_vec())?;
             guard.is_dirty = false;
         }
         Ok(())
@@ -232,12 +234,12 @@ impl BufferPool {
         // write lock to check the pin count.
         let mut guard = page.write()?;
         if guard.pin_count > 0 {
-            assert_eq!(true, self.replacer.is_evictable(frame_id));
+            assert!(self.replacer.is_evictable(frame_id));
             return Ok(false);
         }
         // delete the page from page storage
         let key = guard.as_key();
-        self.storage.remove(&key)?;
+        self.storage.remove(key!(key))?;
         // clean page frame first
         guard.clear();
         // remove from replacer
@@ -294,7 +296,7 @@ pub struct BufferPoolManager {
 }
 
 impl BufferPoolManager {
-    pub fn new(storage: Box<dyn KvStorage>, pool_size: usize, replacer_k: usize) -> Self {
+    pub fn new(storage: Box<dyn Storage>, pool_size: usize, replacer_k: usize) -> Self {
         let inner = BufferPool::new(storage, pool_size, replacer_k);
         BufferPoolManager { inner: Arc::new(Mutex::new(inner)) }
     }
@@ -339,8 +341,9 @@ impl BufferPoolManager {
     /// Decrement the pin count of a page. If the pin count reaches 0, the frame should
     /// be evictable by the replacer. Also, set the dirty flag on the page to indicate if
     /// the page was modified.
+    #[allow(unused)]
     fn unpin_page(&self, page_id: PageId, is_dirty: bool) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap();
         inner.unpin_page(page_id, is_dirty)
     }
 }
@@ -373,13 +376,13 @@ mod tests {
         drop(guard);
 
         // Scenario: we should be able to create page until we fill up the buffer pool.
-        for i in 1..buffer_pool_size {
+        for _i in 1..buffer_pool_size {
             let page = bpm.new_page();
             assert!(page.is_ok())
         }
         // Scenario: Once the buffer pool is full, we should not be able to create any
         // new page.
-        for i in buffer_pool_size..buffer_pool_size * 2 {
+        for _i in buffer_pool_size..buffer_pool_size * 2 {
             let page = bpm.new_page();
             assert!(page.is_err())
         }
@@ -389,7 +392,7 @@ mod tests {
             let res = bpm.unpin_page(i, true);
             assert_eq!(true, res);
         }
-        for i in 0..4 {
+        for _i in 0..4 {
             let page = bpm.new_page();
             assert!(page.is_ok())
         }

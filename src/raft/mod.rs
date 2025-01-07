@@ -25,11 +25,11 @@ impl From<Vec<u8>> for Command {
 impl Display for Command {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(cmd) = &self.0 {
-            for i in 0..cmd.len() {
+            for (i, it) in cmd.iter().enumerate() {
                 if i == 0 {
                     write!(f, "0x")?;
                 }
-                write!(f, "{:02x}", cmd[i])?;
+                write!(f, "{:02x}", it)?;
             }
             return Ok(());
         }
