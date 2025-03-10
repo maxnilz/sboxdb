@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
-use crate::key;
 use crate::storage::kv::Storage;
 
 use super::page::{FrameId, Key, Page, PageId};
@@ -84,7 +83,7 @@ impl BufferPool {
         // flush the in-memory page/frame as the storage page if it is dirty.
         if guard.is_dirty {
             let key = guard.as_key();
-            self.storage.set(key!(key), guard.data.to_vec())?;
+            self.storage.set(&key, guard.data.to_vec())?;
         }
         // clean page frame first
         guard.clear();
@@ -155,12 +154,12 @@ impl BufferPool {
         // flush the in-memory page/frame as the storage page if it is dirty.
         if guard.is_dirty {
             let key = guard.as_key();
-            self.storage.set(key!(key), guard.data.to_vec())?;
+            self.storage.set(&key, guard.data.to_vec())?;
         }
 
         // fetch page from disk
         let key = Key::PageId(page_id).encode()?;
-        let data = self.storage.get(key!(key))?;
+        let data = self.storage.get(&key)?;
         // clean page frame first
         guard.clear();
         guard.id = page_id;
@@ -196,7 +195,7 @@ impl BufferPool {
         let mut guard = page.write()?;
 
         let key = Key::PageId(guard.id).encode()?;
-        self.storage.set(key!(key), guard.data.to_vec())?;
+        self.storage.set(&key, guard.data.to_vec())?;
         guard.is_dirty = false;
 
         Ok(true)
@@ -209,7 +208,7 @@ impl BufferPool {
             let mut guard = page.write()?;
 
             let key = Key::PageId(guard.id).encode()?;
-            self.storage.set(key!(key), guard.data.to_vec())?;
+            self.storage.set(&key, guard.data.to_vec())?;
             guard.is_dirty = false;
         }
         Ok(())
@@ -239,7 +238,7 @@ impl BufferPool {
         }
         // delete the page from page storage
         let key = guard.as_key();
-        self.storage.remove(key!(key))?;
+        self.storage.remove(&key)?;
         // clean page frame first
         guard.clear();
         // remove from replacer

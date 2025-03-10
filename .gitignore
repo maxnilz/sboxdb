@@ -1,5 +1,9 @@
 .idea
 /target
+/docs
+
 rustfmt0.toml
 
 *.log
+*.bkp
+*.swp
