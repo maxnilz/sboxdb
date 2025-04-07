@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+pub mod codec;
+pub mod memory;
+
 /// A key/value storage engine, where both keys and values are arbitrary byte
 /// strings. stored in lexicographical key order. Writes are only guaranteed
 /// durable after calling flush().
@@ -78,9 +81,6 @@ impl<'a, T> ScanIterator<'a> for T where
     T: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a
 {
 }
-
-pub mod codec;
-pub mod memory;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum StorageType {
