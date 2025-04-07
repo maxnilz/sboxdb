@@ -1,0 +1,40 @@
+KV state:
+NextVersion = 3
+Version("deleted", 1) = 0x01
+Version("deleted", 2) = None
+Version("foo", 1) = 0x01
+Version("key", 1) = 0x01
+Version("tombstone", 1) = None
+Version("updated", 1) = 0x01
+Version("updated", 2) = 0x02
+
+T1: begin → v3 read-write active={}
+    set NextVersion = 4
+    set TxnActive(3) = []
+
+T1: set "foo" = 0x02
+    set Version("foo", 3) = 0x02
+    set TxnWrite(3, "foo") = []
+
+T1: get "foo" → 0x02
+
+T1: get "key" → 0x01
+
+T1: get "updated" → 0x02
+
+T1: get "deleted" → None
+
+T1: get "tombstone" → None
+
+KV state:
+NextVersion = 4
+TxnActive(3) = []
+TxnWrite(3, "foo") = []
+Version("deleted", 1) = 0x01
+Version("deleted", 2) = None
+Version("foo", 1) = 0x01
+Version("foo", 3) = 0x02
+Version("key", 1) = 0x01
+Version("tombstone", 1) = None
+Version("updated", 1) = 0x01
+Version("updated", 2) = 0x02

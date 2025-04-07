@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 
+use super::{Node, NodeId, NodeState, ProposalId, MAX_NODE_ID};
+use super::{RawNode, Ticks, HEARTBEAT_INTERVAL};
 use crate::error::{Error, Result};
-
 use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult};
 use crate::raft::ApplyMsg;
 use crate::raft::{Index, Term};
-
-use super::{Node, NodeId, NodeState, ProposalId, MAX_NODE_ID};
-use super::{RawNode, Ticks, HEARTBEAT_INTERVAL};
 
 struct Ticket {
     from: Address,

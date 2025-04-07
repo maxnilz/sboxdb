@@ -1,16 +1,14 @@
 use std::cmp::min;
 use std::collections::HashMap;
 
-use crate::error::Result;
-
-use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult, RequestVote};
-use crate::raft::ApplyMsg;
-use crate::raft::Index;
-
 use super::candidate::Candidate;
 use super::leader::Leader;
 use super::{rand_election_timeout, Node, NodeState, ProposalId};
 use super::{RawNode, Ticks};
+use crate::error::Result;
+use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult, RequestVote};
+use crate::raft::ApplyMsg;
+use crate::raft::Index;
 
 pub struct Follower {
     rn: RawNode,

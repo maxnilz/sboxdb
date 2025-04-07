@@ -3,11 +3,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-
 use super::node::{NodeId, ProposalId};
 use super::persister::Entry;
 use super::{Command, CommandResult, Index, Term};
+use crate::error::Result;
 
 /// A message that passed between raft peers
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

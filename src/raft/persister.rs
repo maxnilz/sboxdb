@@ -2,12 +2,11 @@ use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
 
+use super::node::NodeId;
+use super::{Command, Index, Term};
 use crate::error::Result;
 use crate::storage::kv::codec::{bincodec, keycodec};
 use crate::storage::kv::Storage;
-
-use super::node::NodeId;
-use super::{Command, Index, Term};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Entry {
@@ -194,9 +193,8 @@ impl Persister {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::kv::{new_storage, StorageType};
-
     use super::*;
+    use crate::storage::kv::{new_storage, StorageType};
 
     #[test]
     fn test_persister_simple() -> Result<()> {

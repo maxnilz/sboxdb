@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use log::{debug, error};
-use tokio::sync::broadcast;
-
 use sboxdb::error::Error;
 use sboxdb::raft::node::ELECTION_TIMEOUT_RANGE;
 use sboxdb::raft::node::HEARTBEAT_INTERVAL;
@@ -15,6 +13,7 @@ use sboxdb::raft::node::{NodeId, NodeState};
 use sboxdb::raft::server::Server;
 use sboxdb::raft::{Command, CommandResult, Index, State, Term};
 use sboxdb::storage::kv::{new_storage, StorageType};
+use tokio::sync::broadcast;
 
 use crate::raft::state::{KvState, States};
 use crate::raft::transport::{LabNetMesh, Noise};

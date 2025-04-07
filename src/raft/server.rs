@@ -8,9 +8,6 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
-use crate::error::{Error, Result};
-use crate::storage::kv::Storage;
-
 use super::message::{Address, Event, Message};
 use super::node::follower::Follower;
 use super::node::{Node, NodeId, NodeState, ProposalId, RawNode, TICK_INTERVAL};
@@ -18,6 +15,8 @@ use super::persister::Persister;
 use super::transport::Transport;
 use super::State;
 use super::{Command, CommandResult};
+use crate::error::{Error, Result};
+use crate::storage::kv::Storage;
 
 struct Request {
     command: Command,

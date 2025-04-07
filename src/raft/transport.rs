@@ -12,11 +12,10 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::error::Error;
-use crate::error::Result;
-
 use super::message::{Address, Message};
 use super::node::NodeId;
+use crate::error::Error;
+use crate::error::Result;
 
 // Transport act as the message exchange(send, receive) among
 // raft peers.

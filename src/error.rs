@@ -15,6 +15,8 @@ pub enum Error {
     Value(String),
     BufferPoolNoAvailableFrame,
     Abort,
+    ReadOnly,
+    Serialization,
 }
 
 impl Error {
