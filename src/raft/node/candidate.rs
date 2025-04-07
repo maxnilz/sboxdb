@@ -1,13 +1,11 @@
 use std::collections::HashSet;
 
-use crate::error::{Error, Result};
-
-use crate::raft::message::{Address, Event, Message, ProposalResult, RequestVote};
-
 use super::leader::Leader;
 use super::NodeId;
 use super::{rand_election_timeout, RawNode, Ticks};
 use super::{Node, NodeState};
+use crate::error::{Error, Result};
+use crate::raft::message::{Address, Event, Message, ProposalResult, RequestVote};
 
 pub struct Candidate {
     rn: RawNode,
@@ -61,7 +59,7 @@ impl Node for Candidate {
         // receive a stale message, drop it.
         if msg.term < self.rn.term {
             debug!(self.rn, "drop stale msg");
-            if let Event::ProposalRequest {id, ..} = msg.event {
+            if let Event::ProposalRequest { id, .. } = msg.event {
                 // drop any command proposal explicitly
                 let event = Event::ProposalResponse { id, result: ProposalResult::Dropped };
                 self.rn.send_message(msg.from, event)?;

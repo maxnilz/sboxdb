@@ -34,9 +34,8 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::raft::Index;
-
     use super::*;
+    use crate::raft::Index;
 
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct Entry<T> {

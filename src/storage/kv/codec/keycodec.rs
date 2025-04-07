@@ -20,11 +20,15 @@
 //! Order is preserved by flipping the sign bit of the most significant byte, such that negative
 //! numbers are ordered before positive numbers.
 //!
+//! #### Vec<u8>
+//!
+//! 0x00 is escaped as 0x00ff, terminated with 0x0000. Prefix-length encoding can't be used,
+//! since it violates ordering.
+//!
 //! ##### Strings
 //!
-//! Strings are encoded into their natural UTF8 representation plus a single null byte suffix.
-//! In general, strings should not contain null bytes. The encoder will not check for null bytes,
-//! however their presence will break lexicographic sorting.
+//! Same as Vec<u8>, Strings are encoded into their natural UTF8 representation and terminated
+//! with 0x0000, 0x00 is escaped as 0x00ff
 //!
 //! ##### Options
 //!
@@ -33,12 +37,12 @@
 //!
 //! #### Structs & Tuples
 //!
-//! Structs and tuples are encoded by serializing their consituent fields in order with no prefix,
+//! Structs and tuples are encoded by serializing their constituent fields in order with no prefix,
 //! suffix, or padding bytes.
 //!
 //! ##### Enums
 //!
-//! Enums are encoded with a variable-length unsigned-integer variant tag, plus the consituent
+//! Enums are encoded with a variable-length unsigned-integer variant tag, plus the constituent
 //! fields in the case of an enum-struct. This encoding allows more enum variants to be added
 //! in a backwards-compatible manner, as long as variants are not removed and the variant order
 //! does not change.
@@ -83,10 +87,11 @@
 //! variant when we need to change the key format in a backwards-compatible manner (the different
 //! key types will sort separately).
 
-use crate::error::{Error, Result};
 use serde::de;
 use serde::de::IntoDeserializer;
 use serde::ser;
+
+use crate::error::{Error, Result};
 
 pub fn serialize<T: serde::Serialize>(key: &T) -> Result<Vec<u8>> {
     let mut serializer = Serializer { data: Vec::new() };
@@ -107,6 +112,19 @@ struct Serializer {
 impl Serializer {
     fn write_bytes(&mut self, bytes: &[u8]) {
         self.data.extend(bytes)
+    }
+
+    // Byte slices are terminated by 0x0000, escaping 0x00 as 0x00ff.
+    // Prefix-length encoding can't be used, since it violates ordering.
+    fn write_byte_slice(&mut self, bytes: &[u8]) {
+        for &c in bytes.iter() {
+            if c == 0x00 {
+                self.data.extend(vec![0x00, 0xff])
+            } else {
+                self.data.push(c)
+            }
+        }
+        self.data.extend(vec![0x00, 0x00])
     }
 
     fn write_byte(&mut self, b: u8) {
@@ -286,14 +304,11 @@ impl<'a> serde::Serializer for &'a mut Serializer {
 
     // Strings are encoded like bytes.
     fn serialize_str(self, v: &str) -> Result<()> {
-        self.write_bytes(v.as_bytes());
-        self.write_byte(0x00);
-        Ok(())
+        self.serialize_bytes(v.as_bytes())
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
-        self.write_bytes(v);
-        self.write_byte(0x00);
+        self.write_byte_slice(v);
         Ok(())
     }
 
@@ -432,18 +447,22 @@ impl<'de> Deserializer<'de> {
         Ok(head)
     }
 
-    fn decode_next_bytes(&mut self) -> Result<&[u8]> {
-        let bytes = self.input;
-        let mut len = 0;
-        while len < bytes.len() && bytes[len] != 0x00 {
-            len += 1;
-        }
-        if len == bytes.len() {
-            return Err(Error::value("unexpected end of input"));
-        }
-        let (head, tail) = bytes.split_at(len);
-        self.input = &tail[1..];
-        Ok(head)
+    fn decode_byte_slice(&mut self) -> Result<Vec<u8>> {
+        let mut output = Vec::new();
+        let mut iter = self.input.iter().enumerate();
+        let taken = loop {
+            match iter.next() {
+                Some((_, 0x00)) => match iter.next() {
+                    Some((i, 0x00)) => break i + 1,       // terminator
+                    Some((_, 0xff)) => output.push(0x00), // escaped 0x00
+                    _ => return Err(Error::value("invalid escape sequence")),
+                },
+                Some((_, &c)) => output.push(c),
+                None => return Err(Error::value("unexpected end of input")),
+            }
+        };
+        self.input = &self.input[taken..];
+        Ok(output)
     }
 }
 
@@ -569,32 +588,32 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        let bytes = self.decode_next_bytes()?;
-        visitor.visit_str(std::str::from_utf8(bytes)?)
+        let bytes = self.decode_byte_slice()?;
+        visitor.visit_str(std::str::from_utf8(&bytes)?)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        let bytes = self.decode_next_bytes()?;
-        visitor.visit_string(std::str::from_utf8(bytes)?.to_string())
+        let bytes = self.decode_byte_slice()?;
+        visitor.visit_string(std::str::from_utf8(&bytes)?.to_string())
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        let bytes = self.decode_next_bytes()?;
-        visitor.visit_bytes(bytes)
+        let bytes = self.decode_byte_slice()?;
+        visitor.visit_bytes(&bytes)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        let bytes = self.decode_next_bytes()?;
-        visitor.visit_byte_buf(bytes.to_vec())
+        let bytes = self.decode_byte_slice()?;
+        visitor.visit_byte_buf(bytes)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -768,10 +787,11 @@ impl<'de> de::VariantAccess<'de> for &mut Deserializer<'de> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use paste::paste;
     use serde::{Deserialize, Serialize};
     use serde_bytes::ByteBuf;
+
+    use super::*;
 
     type Index = u64;
 
@@ -832,6 +852,9 @@ mod tests {
     }
 
     test_codec! {
+        bool_false: false => "0x00",
+        bool_true: true => "0x01",
+
         i64_min: i64::MIN => "0x0000000000000000",
         i64_neg_65535: -65535i64 => "0x7fffffffffff0001",
         i64_neg_1: -1i64 => "0x7fffffffffffffff",
@@ -863,22 +886,23 @@ mod tests {
         index_0: 0u64 as Index => "0x0000000000000000",
 
         // bytes codec
-        bytes: ByteBuf::from(vec![0x01u8, 0xffu8]) => "0x01ff00",
-        bytes_empty: ByteBuf::from(vec![]) => "0x00",
+        bytes: ByteBuf::from(vec![0x01u8, 0xffu8]) => "0x01ff 0000",
+        bytes_empty: ByteBuf::from(vec![]) => "0x0000",
+        bytes_escape: ByteBuf::from(vec![0x00, 0x01, 0x02]) => "0x00ff 01 02 0000",
 
         // string codec
-        string: "foo".to_string() => "0x666f6f00",
-        string_empty: "".to_string() => "0x00",
-        string_utf8: "👋".to_string() => "0xf09f918b00",
+        string: "foo".to_string() => "0x666f6f 0000",
+        string_empty: "".to_string() => "0x0000",
+        string_utf8: "👋".to_string() => "0xf09f918b 0000",
 
         // enum codec
         enum_unit: Key::Unit => "0x00",
         enum_newtype0: Key::NewType0(0u64 as Index) => "0x010000000000000000",
-        enum_newtype1: Key::NewType1("foo".to_string()) => "0x02666f6f00",
-        enum_struct: Key::Struct(Keyv { key: "foo".to_string(), version: Some(0x01u8) }) => "0x03666f6f00 0101",
+        enum_newtype1: Key::NewType1("foo".to_string()) => "0x02666f6f0000",
+        enum_struct: Key::Struct(Keyv { key: "foo".to_string(), version: Some(0x01u8) }) => "0x03666f6f0000 0101",
 
         // struct codec
-        struct_keyv: Keyv { key: "foo".to_string(), version: Some(0x01u8) } => "0x666f6f00 0101",
+        struct_keyv: Keyv { key: "foo".to_string(), version: Some(0x01u8) } => "0x666f6f0000 0101",
         struct_mystruct: MyStruct{
             a: 0xaa,
             b: "foo".to_string(),
@@ -887,6 +911,6 @@ mod tests {
             c: 0xdd,
             k3: Key::NewType1("foo".to_string()),
             k4: Some(Keyv { key: "bar".to_string(), version: Some(0xeeu8) }),
-        } => "0xaa 666f6f00 666f6f00 01bb 62617200 00 dd 02666f6f00 0162617200 01ee",
+        } => "0xaa 666f6f0000 666f6f0000 01bb 6261720000 00 dd 02666f6f0000 016261720000 01ee",
     }
 }

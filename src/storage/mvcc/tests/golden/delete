@@ -1,0 +1,40 @@
+KV state:
+NextVersion = 2
+Version("key", 1) = 0x01
+Version("tombstone", 1) = None
+
+T1: begin → v2 read-write active={}
+    set NextVersion = 3
+    set TxnActive(2) = []
+
+T1: set "key" = 0x02
+    set Version("key", 2) = 0x02
+    set TxnWrite(2, "key") = []
+
+T1: del "key"
+    set Version("key", 2) = None
+    set TxnWrite(2, "key") = []
+
+T1: del "key"
+    set Version("key", 2) = None
+    set TxnWrite(2, "key") = []
+
+T1: del "tombstone"
+    set Version("tombstone", 2) = None
+    set TxnWrite(2, "tombstone") = []
+
+T1: del "missing"
+    set Version("missing", 2) = None
+    set TxnWrite(2, "missing") = []
+
+KV state:
+NextVersion = 3
+TxnActive(2) = []
+TxnWrite(2, "key") = []
+TxnWrite(2, "missing") = []
+TxnWrite(2, "tombstone") = []
+Version("key", 1) = 0x01
+Version("key", 2) = None
+Version("missing", 2) = None
+Version("tombstone", 1) = None
+Version("tombstone", 2) = None

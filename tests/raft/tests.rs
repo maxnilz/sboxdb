@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use log::{debug, info};
 use rand::{thread_rng, Rng};
-
 use sboxdb::error::Result;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::{Command, CommandResult};

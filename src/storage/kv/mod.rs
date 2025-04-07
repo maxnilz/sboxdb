@@ -60,7 +60,7 @@ pub trait Storage: Debug + Send + Sync {
     ) -> Box<dyn ScanIterator<'_> + '_>;
 
     /// Remove all keys starting with prefix, returning the values that are removed from.
-    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<Vec<u8>>>;
+    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
 
 pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a {}

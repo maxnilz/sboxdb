@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+pub mod message;
+pub mod node;
+
+pub mod server;
+pub mod transport;
+
+mod persister;
+
 pub type Index = u64;
 pub type Term = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,11 +69,3 @@ impl<T: State + Send + Sync> State for Arc<T> {
         (**self).apply(msg)
     }
 }
-
-mod persister;
-
-pub mod message;
-pub mod node;
-
-pub mod server;
-pub mod transport;

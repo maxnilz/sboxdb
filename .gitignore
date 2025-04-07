@@ -7,3 +7,8 @@ rustfmt0.toml
 *.log
 *.bkp
 *.swp
+
+a.rs
+a.json
+b.json
+gold.tmp

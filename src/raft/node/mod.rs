@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::error::Result;
-
 use crate::raft::message::{Address, Event, Message};
 use crate::raft::node::follower::Follower;
 use crate::raft::persister::{HardState, Persister};
@@ -38,6 +37,10 @@ macro_rules! error {
         log!($rn, ::log::Level::Error, $($arg)+)
     };
 }
+
+pub mod candidate;
+pub mod follower;
+pub mod leader;
 
 // A logical clock interval as number of ticks.
 pub type Ticks = u8;
@@ -204,7 +207,3 @@ impl RawNode {
         Ok(())
     }
 }
-
-pub mod candidate;
-pub mod follower;
-pub mod leader;

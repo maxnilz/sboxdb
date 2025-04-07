@@ -5,7 +5,7 @@ use std::ops::Bound;
 use super::{ScanIterator, Storage};
 use crate::error::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Memory {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -56,7 +56,7 @@ impl Storage for Memory {
         Box::new(OwnedRangeIterator { it: result })
     }
 
-    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let iter = self.scan_prefix(prefix);
         let keys = iter
             .map(|x| {
@@ -65,19 +65,19 @@ impl Storage for Memory {
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
 
-        let mut values = vec![];
+        let mut result = Vec::new();
         for key in &keys {
             let res = self.data.remove(key);
             if let Some(val) = res {
-                values.push(val);
+                result.push((key.to_vec(), val));
             }
         }
-        Ok(values)
+        Ok(result)
     }
 }
 
-struct OwnedRangeIterator {
-    it: VecDeque<(Vec<u8>, Vec<u8>)>,
+pub struct OwnedRangeIterator {
+    pub it: VecDeque<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Iterator for OwnedRangeIterator {
@@ -226,6 +226,47 @@ mod tests {
         let iter = m.scan((from, to));
         let values = iter.map(|it| it.unwrap().1).collect::<Vec<_>>();
         assert_eq!(vec![vec![8], vec![9]], values);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_range_scan_invariants() -> Result<()> {
+        let mut m = Memory::new();
+        m.set(b"a", vec![1])?;
+        m.set(b"b", vec![2])?;
+        m.set(b"c", vec![3])?;
+        m.set(b"d", vec![4])?;
+
+        let from = Bound::Included(b"a".to_vec());
+        let to = Bound::Included(b"d".to_vec());
+
+        let iter = m.scan((from.clone(), to.clone()));
+        let mut forward = iter.collect::<Result<Vec<_>>>()?;
+        forward.reverse();
+
+        let rev_iter = m.scan((from.clone(), to.clone())).rev();
+        let reverse = rev_iter.collect::<Result<Vec<_>>>()?;
+        assert_eq!(reverse, forward);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_prefix_scan_invariants() -> Result<()> {
+        let mut m = Memory::new();
+        m.set(b"a", vec![1])?;
+        m.set(b"b", vec![2])?;
+        m.set(b"c", vec![3])?;
+        m.set(b"d", vec![4])?;
+
+        let iter = m.scan_prefix(b"");
+        let mut forward = iter.collect::<Result<Vec<_>>>()?;
+        forward.reverse();
+
+        let rev_iter = m.scan_prefix(b"").rev();
+        let reverse = rev_iter.collect::<Result<Vec<_>>>()?;
+        assert_eq!(reverse, forward);
 
         Ok(())
     }
