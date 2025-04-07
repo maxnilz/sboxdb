@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::storage::kv::StorageType;
+use crate::storage::StorageType;
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub enum LogLevel {

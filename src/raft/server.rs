@@ -16,7 +16,7 @@ use super::transport::Transport;
 use super::State;
 use super::{Command, CommandResult};
 use crate::error::{Error, Result};
-use crate::storage::kv::Storage;
+use crate::storage::Storage;
 
 struct Request {
     command: Command,
