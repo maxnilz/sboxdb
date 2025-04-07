@@ -149,12 +149,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::storage::kv;
-use crate::storage::kv::codec::{bincodec, keycodec};
-use crate::storage::kv::Storage;
+use crate::storage;
+use crate::storage::codec::{bincodec, keycodec};
+use crate::storage::Storage;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_helper;
 
 /// An MVCC version represents a logical timestamp. The latest version
 /// is incremented when beginning each read-write transaction.
@@ -448,9 +450,9 @@ impl<KV: Storage> Transaction<KV> {
     pub fn scan_prefix(&self, prefix: Vec<u8>) -> Result<Scan<KV>> {
         // Normally, KeyPrefix::Version will only match all versions of the
         // exact given key. We want all keys matching the prefix, so we chop off
-        // the KeyCode byte slice terminator 0x00 at the end.
+        // the KeyCode byte slice terminator 0x0000 at the end.
         let mut prefix = KeyPrefix::Version(prefix.into()).encode()?;
-        prefix.truncate(prefix.len() - 1);
+        prefix.truncate(prefix.len() - 2);
         let kv = self.kv.lock()?;
         Ok(Scan::new_prefix(kv, &self.st, prefix))
     }
@@ -641,7 +643,7 @@ pub struct ScanIterator<'a> {
 }
 
 impl<'a> ScanIterator<'a> {
-    fn new(st: &'a TransactionState, it: Box<dyn kv::ScanIterator<'a>>) -> Self {
+    fn new(st: &'a TransactionState, it: Box<dyn storage::ScanIterator<'a>>) -> Self {
         let inner = VersionIterator::new(st, it).peekable();
         ScanIterator { inner, last_back: None }
     }
@@ -703,11 +705,11 @@ impl<'a> DoubleEndedIterator for ScanIterator<'a> {
 
 struct VersionIterator<'a> {
     st: &'a TransactionState,
-    inner: Box<dyn kv::ScanIterator<'a>>,
+    inner: Box<dyn storage::ScanIterator<'a>>,
 }
 
 impl<'a> VersionIterator<'a> {
-    fn new(st: &'a TransactionState, inner: Box<dyn kv::ScanIterator<'a>>) -> Self {
+    fn new(st: &'a TransactionState, inner: Box<dyn storage::ScanIterator<'a>>) -> Self {
         VersionIterator { st, inner }
     }
 

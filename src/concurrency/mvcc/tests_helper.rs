@@ -4,15 +4,12 @@ use std::io::Write;
 use std::ops::RangeBounds;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::error::Result;
-use crate::storage::kv::codec::bincodec;
-use crate::storage::kv::memory::{Memory, OwnedRangeIterator};
-use crate::storage::kv::{ScanIterator, Storage};
-use crate::storage::mvcc::{Key, Scan, Transaction, TransactionState, Version, MVCC};
+use crate::concurrency::mvcc::{Key, Scan, Transaction, TransactionState, Version, MVCC};
+use crate::storage::codec::bincodec;
+use crate::storage::memory::{Memory, OwnedRangeIterator};
+use crate::storage::{ScanIterator, Storage};
 
-mod tests;
-
-struct MVCCRecorder {
+pub struct MVCCRecorder {
     name: String,
     mvcc: MVCC<StorageRecorder<Memory>>,
     #[allow(unused)]
@@ -21,10 +18,10 @@ struct MVCCRecorder {
     next_id: u8,
 }
 
-const GOLDEN_DIR: &str = "src/storage/mvcc/tests/golden";
+const GOLDEN_DIR: &str = "src/concurrency/mvcc/golden";
 
 impl MVCCRecorder {
-    fn new(name: &str) -> Result<Self> {
+    pub fn new(name: &str) -> crate::error::Result<Self> {
         let memory = Memory::new();
         let storage = StorageRecorder::new(memory);
         let mvcc = MVCC::new(storage);
@@ -38,7 +35,10 @@ impl MVCCRecorder {
     /// assigned transaction IDs, nor are the writes logged, except for the
     /// initial engine state.
     #[allow(clippy::type_complexity)]
-    fn setup(&mut self, data: Vec<(&[u8], Version, Option<&[u8]>)>) -> Result<()> {
+    pub fn setup(
+        &mut self,
+        data: Vec<(&[u8], Version, Option<&[u8]>)>,
+    ) -> crate::error::Result<()> {
         // Segment the writes by version.
         let mut writes = HashMap::new();
         for (key, version, value) in data {
@@ -67,30 +67,30 @@ impl MVCCRecorder {
         Ok(())
     }
 
-    fn begin(&mut self) -> Result<TransactionRecorder> {
+    pub fn begin(&mut self) -> crate::error::Result<TransactionRecorder> {
         self.new_txn("begin", self.mvcc.begin())
     }
 
-    fn begin_read_only(&mut self) -> Result<TransactionRecorder> {
+    pub fn begin_read_only(&mut self) -> crate::error::Result<TransactionRecorder> {
         self.new_txn("begin read-only", self.mvcc.begin_read_only())
     }
 
-    fn begin_as_of(&mut self, version: Version) -> Result<TransactionRecorder> {
+    pub fn begin_as_of(&mut self, version: Version) -> crate::error::Result<TransactionRecorder> {
         self.new_txn(&format!("begin read-only {}", version), self.mvcc.begin_as_of(version))
     }
 
     fn new_txn(
         &mut self,
         name: &str,
-        result: Result<Transaction<StorageRecorder<Memory>>>,
-    ) -> Result<TransactionRecorder> {
+        result: crate::error::Result<Transaction<StorageRecorder<Memory>>>,
+    ) -> crate::error::Result<TransactionRecorder> {
         let id = self.next_id;
         self.next_id += 1;
         self.record_txn_begin(id, name, &result)?;
         result.map(|txn| TransactionRecorder { id, txn, file: Arc::clone(&self.file) })
     }
 
-    pub fn get_unversioned(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get_unversioned(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         let value = self.mvcc.get_unversioned(key)?;
         write!(
             self.file.lock()?,
@@ -101,7 +101,7 @@ impl MVCCRecorder {
         Ok(value)
     }
 
-    pub fn set_unversioned(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+    pub fn set_unversioned(&self, key: &[u8], value: Vec<u8>) -> crate::error::Result<()> {
         write!(
             self.file.lock()?,
             "T_: set unversioned {} = {}",
@@ -123,8 +123,8 @@ impl MVCCRecorder {
         &self,
         id: u8,
         name: &str,
-        result: &Result<Transaction<StorageRecorder<Memory>>>,
-    ) -> Result<()> {
+        result: &crate::error::Result<Transaction<StorageRecorder<Memory>>>,
+    ) -> crate::error::Result<()> {
         let mut f = self.file.lock()?;
         // For this to work, we have to have std::io::Write trait in the scope,
         // i.e., place `use std::io::Write` in the scope. because the expanded
@@ -142,7 +142,7 @@ impl MVCCRecorder {
         Ok(())
     }
 
-    fn record_kv_state(&mut self) -> Result<()> {
+    fn record_kv_state(&mut self) -> crate::error::Result<()> {
         let mut f = self.file.lock()?;
         let kv = self.mvcc.kv.lock()?;
         let mut scan = kv.scan((Bound::Unbounded, Bound::Unbounded));
@@ -159,7 +159,7 @@ impl MVCCRecorder {
     fn record_kv_writes(
         f: &mut MutexGuard<'_, File>,
         kv: &mut MutexGuard<'_, StorageRecorder<Memory>>,
-    ) -> Result<()> {
+    ) -> crate::error::Result<()> {
         let writes = kv.take_write_log();
         for (key, value) in &writes {
             let (fkey, fvalue) = format_key_value(key, value);
@@ -171,7 +171,7 @@ impl MVCCRecorder {
         Ok(())
     }
 
-    fn print_temp_goldenfile(&mut self, to: Option<&str>) -> Result<()> {
+    pub fn print_temp_goldenfile(&mut self, to: Option<&str>) -> crate::error::Result<()> {
         let mut file = self.file.lock()?;
         file.flush()?;
 
@@ -195,10 +195,10 @@ impl Drop for MVCCRecorder {
     }
 }
 
-struct TransactionRecorder {
+pub struct TransactionRecorder {
     id: u8,
     txn: Transaction<StorageRecorder<Memory>>,
-    file: Arc<Mutex<std::fs::File>>,
+    file: Arc<Mutex<File>>,
 }
 
 impl Clone for TransactionRecorder {
@@ -216,7 +216,7 @@ impl TransactionRecorder {
         self.txn.st.clone()
     }
 
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         let value = self.txn.get(key)?;
 
         // record get
@@ -232,7 +232,7 @@ impl TransactionRecorder {
         Ok(value)
     }
 
-    pub fn set(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+    pub fn set(&self, key: &[u8], value: Vec<u8>) -> crate::error::Result<()> {
         let result = self.txn.set(key, value.clone());
         self.record_mutation(
             &format!("set {} = {}", format_raw(key), format_raw(&value)),
@@ -241,25 +241,28 @@ impl TransactionRecorder {
         result
     }
 
-    pub fn delete(&self, key: &[u8]) -> Result<()> {
+    pub fn delete(&self, key: &[u8]) -> crate::error::Result<()> {
         let result = self.txn.delete(key);
         self.record_mutation(&format!("del {}", format_raw(key)), &result)?;
         result
     }
 
-    pub fn commit(self) -> Result<()> {
+    pub fn commit(self) -> crate::error::Result<()> {
         let result = self.clone().txn.commit(); // clone to retain self.txn for recording
         self.record_mutation("commit", &result)?;
         result
     }
 
-    pub fn rollback(self) -> Result<()> {
+    pub fn rollback(self) -> crate::error::Result<()> {
         let result = self.clone().txn.rollback(); // clone to retain self.txn for recording
         self.record_mutation("rollback", &result)?;
         result
     }
 
-    pub fn scan<R: RangeBounds<Vec<u8>>>(&self, range: R) -> Result<Scan<StorageRecorder<Memory>>> {
+    pub fn scan<R: RangeBounds<Vec<u8>>>(
+        &self,
+        range: R,
+    ) -> crate::error::Result<Scan<StorageRecorder<Memory>>> {
         let name = format!(
             "scan {}..{}",
             match range.start_bound() {
@@ -278,13 +281,16 @@ impl TransactionRecorder {
         Ok(scan)
     }
 
-    pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Scan<StorageRecorder<Memory>>> {
+    pub fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> crate::error::Result<Scan<StorageRecorder<Memory>>> {
         let scan = self.txn.scan_prefix(prefix.to_vec())?;
         self.record_scan(&format!("scan prefix {}", format_raw(prefix)), scan.to_vec()?)?;
         Ok(scan)
     }
 
-    fn record_scan(&self, name: &str, scan: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+    fn record_scan(&self, name: &str, scan: Vec<(Vec<u8>, Vec<u8>)>) -> crate::error::Result<()> {
         let mut f = self.file.lock()?;
         writeln!(f, "T{}: {}", self.id, name)?;
         for (key, value) in scan {
@@ -294,7 +300,11 @@ impl TransactionRecorder {
         Ok(())
     }
 
-    fn record_mutation(&self, name: &str, result: &Result<()>) -> Result<()> {
+    fn record_mutation(
+        &self,
+        name: &str,
+        result: &crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         let mut f = self.file.lock()?;
         write!(f, "T{}: {}", self.id, name)?;
         match result {
@@ -309,7 +319,7 @@ impl TransactionRecorder {
 
 /// A debug kv storage, which wraps the kv storage and logs mutations.
 #[derive(Debug)]
-struct StorageRecorder<KV: Storage> {
+pub struct StorageRecorder<KV: Storage> {
     /// The wrapped kv storage.
     inner: KV,
     /// Write log as key/value tuples. Value is None for deletes.
@@ -334,17 +344,17 @@ impl<KV: Storage> StorageRecorder<KV> {
 }
 
 impl<KV: Storage> Storage for StorageRecorder<KV> {
-    fn flush(&self) -> Result<()> {
+    fn flush(&self) -> crate::error::Result<()> {
         self.inner.flush()
     }
 
-    fn set(&mut self, key: &[u8], value: Vec<u8>) -> Result<()> {
+    fn set(&mut self, key: &[u8], value: Vec<u8>) -> crate::error::Result<()> {
         self.inner.set(key, value.clone())?;
         self.write_log.push((key.to_vec(), Some(value)));
         Ok(())
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.inner.get(key)
     }
 
@@ -352,7 +362,7 @@ impl<KV: Storage> Storage for StorageRecorder<KV> {
         self.inner.scan(range)
     }
 
-    fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn remove(&mut self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         let res = self.inner.remove(key)?;
         self.write_log.push((key.to_vec(), None));
         Ok(res)
@@ -373,7 +383,7 @@ impl<KV: Storage> Storage for StorageRecorder<KV> {
         Box::new(OwnedRangeIterator { it: out })
     }
 
-    fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    fn remove_prefix(&mut self, prefix: &[u8]) -> crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let result = self.inner.remove_prefix(prefix)?;
         for (ref key, _) in result.iter() {
             self.write_log.push((key.clone(), None));
@@ -454,15 +464,17 @@ fn format_key_value(key: &[u8], value: &Option<Vec<u8>>) -> (String, Option<Stri
 
 /// Asserts scan invariants.
 #[track_caller]
-fn assert_scan_invariants(scan: &mut Scan<StorageRecorder<Memory>>) -> Result<()> {
+pub fn assert_scan_invariants(
+    scan: &mut Scan<StorageRecorder<Memory>>,
+) -> crate::error::Result<()> {
     // Iterator and vec should yield same results.
     let result = scan.to_vec()?;
-    assert_eq!(scan.iter().collect::<Result<Vec<_>>>()?, result);
+    assert_eq!(scan.iter().collect::<crate::error::Result<Vec<_>>>()?, result);
 
     // Forward and reverse scans should give the same results.
     let mut forward = result.clone();
     forward.reverse();
-    let reverse = scan.iter().rev().collect::<Result<Vec<_>>>()?;
+    let reverse = scan.iter().rev().collect::<crate::error::Result<Vec<_>>>()?;
     assert_eq!(reverse, forward);
 
     // Alternating next/next_back calls should give the same results.

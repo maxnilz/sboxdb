@@ -30,7 +30,8 @@ T3: set "key" = 0x03
 
 T4: begin read-only 3 → v3 read-only active={1}
 
-T4: scan ..    "key" = 0x02
+T4: scan ..
+    "key" = 0x02
 
 T4: set "foo" = 0x01 → Error::ReadOnly
 
@@ -44,11 +45,13 @@ T3: commit
     del TxnWrite(3, "key")
     del TxnActive(3)
 
-T4: scan ..    "key" = 0x02
+T4: scan ..
+    "key" = 0x02
 
 T5: begin read-only 3 → v3 read-only active={1}
 
-T5: scan ..    "key" = 0x02
+T5: scan ..
+    "key" = 0x02
 
 T4: rollback
 
@@ -68,7 +71,8 @@ T6: commit
 
 T7: begin read-only 4 → v4 read-only active={}
 
-T7: scan ..    "key" = 0x03
+T7: scan ..
+    "key" = 0x03
     "other" = 0x01
 
 T8: begin read-only 5 → Error::Value("Version 5 does not exists")

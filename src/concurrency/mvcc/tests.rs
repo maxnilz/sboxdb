@@ -1,3 +1,4 @@
+use super::tests_helper::*;
 use super::*;
 use crate::error::Error;
 use crate::error::Result;
@@ -620,6 +621,8 @@ fn anomaly_phantom_read() -> Result<()> {
 
     let t1 = mvcc.begin()?;
     let t2 = mvcc.begin()?;
+
+    mvcc.print_temp_goldenfile(None)?;
 
     assert_scan!(t1.scan_prefix(b"b")? => {
         b"ba" => [0],
