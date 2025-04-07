@@ -154,9 +154,9 @@ use crate::storage::codec::{bincodec, keycodec};
 use crate::storage::Storage;
 
 #[cfg(test)]
-mod tests_helper;
-#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_helper;
 
 /// An MVCC version represents a logical timestamp. The latest version
 /// is incremented when beginning each read-write transaction.
