@@ -14,13 +14,14 @@ A distributed SQL database, written as a learning project about my journey on th
 - [x] **Replication:** Raft-based replicated state machine
     - no cluster membership config change support.
 - [ ] **Transactional Storage:** transactional mvcc storage
-    - [ ] concurrency control with MVCC+2PL
+    - [x] concurrency control with MVCC+OCC
     - [ ] add Write-Ahead-Log support
     - [ ] add ARIES recovery support
-- [ ] **SQL Transaction:**
-    - [ ] catalog related access methods
-    - [ ] tuple related CRUD access methods
-    - [ ] index based access methods
+- [x] **Transactional access method:**
+    - [x] catalog related access methods
+    - [x] tuple related CRUD access methods
+    - [x] index based access methods
+    - [ ] raft-backed access methods
 - [ ] **SQL parser:** A handcraft SQL parser without yacc/bison.
     - **Data Types:** null, boolean, i64, double, utf-8 string
     - **SQL syntax:**
