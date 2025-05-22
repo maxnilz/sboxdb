@@ -23,6 +23,7 @@ env_logger = "0.11.3"
 uuid = {version = "1.8.0", features = ["v4"]}
 goldenfile = "1.8.0"
 hex = "0.4.3"
+regex = "1.10.4"
 
 [dev-dependencies]
 tempfile = "3.19.1"

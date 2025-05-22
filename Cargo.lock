@@ -960,6 +960,7 @@ dependencies = [
  "log",
  "paste",
  "rand",
+ "regex",
  "serde",
  "serde_bytes",
  "tempfile",

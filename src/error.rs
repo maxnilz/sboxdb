@@ -152,3 +152,9 @@ impl From<std::str::Utf8Error> for Error {
         Error::internal(err)
     }
 }
+
+impl From<regex::Error> for Error {
+    fn from(err: regex::Error) -> Self {
+        Error::internal(err)
+    }
+}

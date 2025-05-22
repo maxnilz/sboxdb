@@ -1,18 +1,19 @@
-use std::collections::btree_map::Range;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
+use std::sync::{Arc, Mutex};
 
 use super::{ScanIterator, Storage};
 use crate::error::Result;
+use crate::storage;
 
 #[derive(Debug)]
 pub struct Memory {
-    data: BTreeMap<Vec<u8>, Vec<u8>>,
+    bm: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
 }
 
 impl Memory {
     pub fn new() -> Memory {
-        Memory { data: BTreeMap::new() }
+        Memory { bm: Arc::new(Mutex::new(BTreeMap::new())) }
     }
 }
 
@@ -23,51 +24,56 @@ impl Storage for Memory {
 
     fn set(&mut self, key: &[u8], value: Vec<u8>) -> Result<()> {
         let key = Vec::from(key);
-        self.data.insert(key, value);
+        let mut bm = self.bm.lock()?;
+        bm.insert(key, value);
         Ok(())
     }
 
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let value = self.data.get(key);
+        let bm = self.bm.lock()?;
+        let value = bm.get(key);
         Ok(value.cloned())
     }
 
     fn scan(&self, range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Box<dyn ScanIterator<'_> + '_> {
-        let result = self.data.range(range);
-        Box::new(RangeIterator { it: result })
+        let bm = self.bm.lock().unwrap();
+        let deque: VecDeque<(Vec<u8>, Vec<u8>)> =
+            bm.range(range).map(|(k, v)| (k.clone(), v.clone())).collect();
+        Box::new(VecDequeIterator { deque })
+    }
+
+    fn scan_prefix(&self, prefix: &[u8]) -> Box<dyn ScanIterator<'_> + '_> {
+        self.scan(storage::prefix_range(prefix))
     }
 
     fn remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.data.remove(key))
+        let mut bm = self.bm.lock()?;
+        Ok(bm.remove(key))
     }
 
     fn remove_range(
         &mut self,
         range: (Bound<Vec<u8>>, Bound<Vec<u8>>),
     ) -> Box<dyn ScanIterator<'_> + '_> {
-        let keys = self.data.range(range).map(|(k, _)| k.clone()).collect::<Vec<_>>();
+        let mut bm = self.bm.lock().unwrap();
+        let keys = bm.range(range).map(|(k, _)| k.clone()).collect::<Vec<_>>();
         let mut result: VecDeque<(Vec<u8>, Vec<u8>)> = VecDeque::new();
         for key in keys {
-            let value = self.data.remove(&key);
+            let value = bm.remove(&key);
             if let Some(val) = value {
                 result.push_back((key, val));
             }
         }
-        Box::new(OwnedRangeIterator { it: result })
+        Box::new(VecDequeIterator { deque: result })
     }
 
     fn remove_prefix(&mut self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let iter = self.scan_prefix(prefix);
-        let keys = iter
-            .map(|x| {
-                let (k, _) = x?;
-                Ok(k)
-            })
-            .collect::<Result<Vec<Vec<u8>>>>()?;
-
+        let mut bm = self.bm.lock()?;
+        let r = storage::prefix_range(prefix);
+        let keys: Vec<Vec<u8>> = bm.range(r).map(|(k, _)| k.clone()).collect();
         let mut result = Vec::new();
-        for key in &keys {
-            let res = self.data.remove(key);
+        for key in keys {
+            let res = bm.remove(&key);
             if let Some(val) = res {
                 result.push((key.to_vec(), val));
             }
@@ -76,44 +82,27 @@ impl Storage for Memory {
     }
 }
 
-pub struct OwnedRangeIterator {
-    pub it: VecDeque<(Vec<u8>, Vec<u8>)>,
+pub struct VecDequeIterator {
+    deque: VecDeque<(Vec<u8>, Vec<u8>)>,
 }
 
-impl Iterator for OwnedRangeIterator {
+impl VecDequeIterator {
+    pub fn new(deque: VecDeque<(Vec<u8>, Vec<u8>)>) -> VecDequeIterator {
+        VecDequeIterator { deque }
+    }
+}
+
+impl Iterator for VecDequeIterator {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.it.pop_front().map(Ok)
+        self.deque.pop_front().map(Ok)
     }
 }
 
-impl DoubleEndedIterator for OwnedRangeIterator {
+impl DoubleEndedIterator for VecDequeIterator {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.it.pop_back().map(Ok)
-    }
-}
-
-pub struct RangeIterator<'a> {
-    it: Range<'a, Vec<u8>, Vec<u8>>,
-}
-
-impl Iterator for RangeIterator<'_> {
-    type Item = Result<(Vec<u8>, Vec<u8>)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|item| {
-            let (k, v) = item;
-            Ok((k.clone(), v.clone()))
-        })
-    }
-}
-impl DoubleEndedIterator for RangeIterator<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.it.next_back().map(|item| {
-            let (k, v) = item;
-            Ok((k.clone(), v.clone()))
-        })
+        self.deque.pop_back().map(Ok)
     }
 }
 

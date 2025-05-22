@@ -249,24 +249,24 @@ impl<'a> KeyPrefix<'a> {
 }
 
 /// A raw key/value oriented MVCC-based transactional storage engine.
-pub struct MVCC<KV: Storage> {
-    kv: Arc<Mutex<KV>>,
+pub struct MVCC<T: Storage> {
+    kv: Arc<Mutex<T>>,
 }
 
-impl<KV: Storage> MVCC<KV> {
-    pub fn new(kv: KV) -> MVCC<KV> {
+impl<T: Storage> MVCC<T> {
+    pub fn new(kv: T) -> MVCC<T> {
         MVCC { kv: Arc::new(Mutex::new(kv)) }
     }
 
-    pub fn begin(&self) -> Result<Transaction<KV>> {
+    pub fn begin(&self) -> Result<Transaction<T>> {
         Transaction::begin(Arc::clone(&self.kv))
     }
 
-    pub fn begin_read_only(&self) -> Result<Transaction<KV>> {
+    pub fn begin_read_only(&self) -> Result<Transaction<T>> {
         Transaction::begin_read_only(Arc::clone(&self.kv), None)
     }
 
-    pub fn begin_as_of(&self, as_of: Version) -> Result<Transaction<KV>> {
+    pub fn begin_as_of(&self, as_of: Version) -> Result<Transaction<T>> {
         Transaction::begin_read_only(Arc::clone(&self.kv), Some(as_of))
     }
 
@@ -283,15 +283,15 @@ impl<KV: Storage> MVCC<KV> {
 }
 
 /// A raw key/value MVCC transaction.
-pub struct Transaction<KV: Storage> {
+pub struct Transaction<T: Storage> {
     /// The underlying kv storage, shared by all transactions.
-    kv: Arc<Mutex<KV>>,
+    kv: Arc<Mutex<T>>,
     /// The transaction state.
     st: TransactionState,
 }
 
-impl<KV: Storage> Transaction<KV> {
-    fn begin(kv: Arc<Mutex<KV>>) -> Result<Self> {
+impl<T: Storage> Transaction<T> {
+    fn begin(kv: Arc<Mutex<T>>) -> Result<Self> {
         let mut session = kv.lock()?;
 
         // Allocate a new version for the transaction.
@@ -323,7 +323,7 @@ impl<KV: Storage> Transaction<KV> {
     /// transaction at that version saw when it began.
     /// If the given version is empty, use the latest version and active set as the
     /// snapshot at the moment the request is being made.
-    fn begin_read_only(kv: Arc<Mutex<KV>>, as_of: Option<Version>) -> Result<Self> {
+    fn begin_read_only(kv: Arc<Mutex<T>>, as_of: Option<Version>) -> Result<Self> {
         let mut session = kv.lock()?;
 
         // Fetch the latest version
@@ -431,7 +431,7 @@ impl<KV: Storage> Transaction<KV> {
 
     /// Returns an iterator over the latest visible key/value pairs at the
     /// transaction's version.
-    pub fn scan(&self, range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Result<Scan<KV>> {
+    pub fn scan(&self, range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Result<Scan<T>> {
         let r0 = match range.0 {
             Bound::Included(key) => Bound::Included(Key::Version(key.into(), 0).encode()?),
             Bound::Excluded(key) => Bound::Excluded(Key::Version(key.into(), u64::MAX).encode()?),
@@ -447,7 +447,7 @@ impl<KV: Storage> Transaction<KV> {
     }
 
     /// Scans keys under a given prefix.
-    pub fn scan_prefix(&self, prefix: Vec<u8>) -> Result<Scan<KV>> {
+    pub fn scan_prefix(&self, prefix: Vec<u8>) -> Result<Scan<T>> {
         // Normally, KeyPrefix::Version will only match all versions of the
         // exact given key. We want all keys matching the prefix, so we chop off
         // the KeyCode byte slice terminator 0x0000 at the end.
@@ -501,20 +501,24 @@ impl<KV: Storage> Transaction<KV> {
         Ok(())
     }
 
-    fn scan_active(kv: &mut MutexGuard<KV>) -> Result<HashSet<Version>> {
+    pub fn state(&self) -> TransactionState {
+        self.st.clone()
+    }
+
+    fn scan_active(kv: &mut MutexGuard<T>) -> Result<HashSet<Version>> {
         let mut active = HashSet::new();
         let mut it = kv.scan_prefix(&KeyPrefix::TxnActive.encode()?);
         while let Some((k, _)) = it.next().transpose()? {
             match Key::decode(&k)? {
                 Key::TxnActive(version) => active.insert(version),
-                _ => return Err(Error::Internal(format!("Expected TxnActive key, got {:?}", k))),
+                _ => return Err(Error::internal(format!("Expected TxnActive key, got {:?}", k))),
             };
         }
         Ok(active)
     }
 }
 
-impl<KV: Storage> Display for Transaction<KV> {
+impl<T: Storage> Display for Transaction<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.st)
     }
@@ -592,25 +596,25 @@ enum ScanType {
     Prefix(Vec<u8>),
 }
 
-pub struct Scan<'a, KV: Storage + 'a> {
+pub struct Scan<'a, T: Storage + 'a> {
     /// Locked kv storage.
-    kv: MutexGuard<'a, KV>,
+    kv: MutexGuard<'a, T>,
     /// The transaction state, used for visibility check.
     st: &'a TransactionState,
     /// Scan type
     typ: ScanType,
 }
 
-impl<'a, KV: Storage + 'a> Scan<'a, KV> {
+impl<'a, T: Storage + 'a> Scan<'a, T> {
     fn new(
-        kv: MutexGuard<'a, KV>,
+        kv: MutexGuard<'a, T>,
         st: &'a TransactionState,
         range: (Bound<Vec<u8>>, Bound<Vec<u8>>),
     ) -> Self {
         Scan { kv, st, typ: ScanType::Range(range) }
     }
 
-    fn new_prefix(kv: MutexGuard<'a, KV>, st: &'a TransactionState, prefix: Vec<u8>) -> Self {
+    fn new_prefix(kv: MutexGuard<'a, T>, st: &'a TransactionState, prefix: Vec<u8>) -> Self {
         Scan { kv, st, typ: ScanType::Prefix(prefix) }
     }
 
@@ -628,12 +632,9 @@ impl<'a, KV: Storage + 'a> Scan<'a, KV> {
     }
 
     fn to_vec(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let mut result = Vec::new();
-        let mut iter = self.iter();
-        while let Some((k, v)) = iter.next().transpose()? {
-            result.push((k, v))
-        }
-        Ok(result)
+        self.iter()
+            .map(|it| it.and_then(|(k, v)| Ok((k, v))))
+            .collect::<Result<Vec<(Vec<u8>, Vec<u8>)>>>()
     }
 }
 

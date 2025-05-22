@@ -25,6 +25,9 @@ impl Storage for Heap {
     fn scan(&self, _range: (Bound<Vec<u8>>, Bound<Vec<u8>>)) -> Box<dyn ScanIterator<'_> + '_> {
         todo!()
     }
+    fn scan_prefix(&self, _prefix: &[u8]) -> Box<dyn ScanIterator<'_> + '_> {
+        todo!()
+    }
 
     fn remove(&mut self, _key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         todo!()
