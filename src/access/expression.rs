@@ -1,11 +1,13 @@
 use std::fmt::Formatter;
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use crate::access::value::Tuple;
 use crate::catalog::r#type::Value;
 use crate::error::{Error, Result};
 
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Expression {
     // Terminal operations
     Constant(Value),

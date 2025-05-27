@@ -10,17 +10,25 @@ use crate::catalog::index::{Index, Indexes};
 use crate::catalog::r#type::Value;
 use crate::catalog::table::{Table, Tables};
 use crate::concurrency::mvcc;
+use crate::concurrency::mvcc::TransactionState;
 use crate::error::{Error, Result};
 use crate::storage::codec::{bincodec, keycodec};
 use crate::storage::Storage;
 
-struct Kv<T: Storage> {
+/// A transactional access engine based on an underlying MVCC key/value store.
+#[derive(Debug)]
+pub struct Kv<T: Storage> {
     mvcc: mvcc::MVCC<T>,
 }
 
 impl<T: Storage> Kv<T> {
-    fn new(kv: T) -> Kv<T> {
+    pub fn new(kv: T) -> Kv<T> {
         Kv { mvcc: mvcc::MVCC::new(kv) }
+    }
+
+    pub fn resume(&self, state: TransactionState) -> Result<<Self as Engine>::Transaction> {
+        let txn = self.mvcc.resume(state)?;
+        Ok(KvTxn::new(txn))
     }
 }
 
@@ -104,21 +112,23 @@ impl<'a> KeyPrefix<'a> {
     }
 }
 
-struct KvTxn<T: Storage> {
+pub struct KvTxn<T: Storage> {
     txn: mvcc::Transaction<T>,
 }
 
 impl<T: Storage> KvTxn<T> {
-    fn new(txn: mvcc::Transaction<T>) -> Self {
+    pub fn new(txn: mvcc::Transaction<T>) -> Self {
         KvTxn { txn }
     }
-}
 
-impl<T: Storage> KvTxn<T> {
+    pub fn state(&self) -> TransactionState {
+        self.txn.state()
+    }
+
     fn get_tuples_by_pks(&self, tblname: &str, pks: Vec<PrimaryKey>) -> Result<Vec<Tuple>> {
         pks.iter()
             .map(|it| {
-                self.get(tblname, it)
+                self.read(tblname, it)
                     .and_then(|t| t.ok_or(Error::value(format!("Tuple with key {} not found", it))))
             })
             .collect::<Result<Vec<Tuple>>>()
@@ -126,7 +136,7 @@ impl<T: Storage> KvTxn<T> {
 }
 
 impl<T: Storage> Catalog for KvTxn<T> {
-    fn get_table(&self, tblname: &str) -> Result<Option<Table>> {
+    fn read_table(&self, tblname: &str) -> Result<Option<Table>> {
         let tblname = Cow::Borrowed(tblname);
         let key = Key::Table(tblname).encode()?;
         self.txn.get(&key)?.map(|it| bincodec::deserialize(&it)).transpose()
@@ -134,7 +144,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
 
     fn create_table(&self, table: Table) -> Result<()> {
         table.validate()?;
-        if self.get_table(&table.name)?.is_some() {
+        if self.read_table(&table.name)?.is_some() {
             return Err(Error::value(format!("Table {} already exits", &table.name)));
         }
         let tblname = Cow::Borrowed(table.name.as_str());
@@ -154,7 +164,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
 
     fn delete_table(&self, tblname: &str) -> Result<()> {
         // delete indexes
-        let indexes = self.get_table_indexes(tblname)?;
+        let indexes = self.scan_table_indexes(tblname)?;
         for index in indexes {
             self.delete_index(&index.name, &index.tblname)?
         }
@@ -180,14 +190,14 @@ impl<T: Storage> Catalog for KvTxn<T> {
         Ok(Box::new(iter))
     }
 
-    fn get_index(&self, indname: &str, tblname: &str) -> Result<Option<Index>> {
+    fn read_index(&self, indname: &str, tblname: &str) -> Result<Option<Index>> {
         let key = Key::Index(tblname.into(), indname.into()).encode()?;
         self.txn.get(&key)?.map(|it| bincodec::deserialize(&it)).transpose()
     }
 
     fn create_index(&self, index: Index) -> Result<()> {
         index.validate()?;
-        if self.get_index(&index.name, &index.tblname)?.is_some() {
+        if self.read_index(&index.name, &index.tblname)?.is_some() {
             return Err(Error::value(format!(
                 "Index {} on table {} already exists",
                 index.name, index.tblname
@@ -204,7 +214,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
 
     fn delete_index(&self, indname: &str, tblname: &str) -> Result<()> {
         // delete indexed entries
-        Transaction::delete_index_entries(self, tblname, indname)?;
+        self.delete_index_entries(tblname, indname)?;
 
         // delete index definition
         let tblame = Cow::Borrowed(tblname);
@@ -215,7 +225,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
         Ok(())
     }
 
-    fn get_table_indexes(&self, tblname: &str) -> Result<Indexes> {
+    fn scan_table_indexes(&self, tblname: &str) -> Result<Indexes> {
         let prefix = KeyPrefix::Index(tblname.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         scan.iter()
@@ -224,123 +234,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
     }
 }
 
-impl<T: Storage> Transaction for KvTxn<T> {
-    fn version(&self) -> u64 {
-        self.txn.state().version
-    }
-
-    fn read_only(&self) -> bool {
-        self.txn.state().read_only
-    }
-
-    fn commit(self) -> Result<()> {
-        self.txn.commit()
-    }
-
-    fn rollback(self) -> Result<()> {
-        self.txn.rollback()
-    }
-
-    fn insert(&mut self, tblname: &str, tuple: Tuple) -> Result<PrimaryKey> {
-        let table = self.must_get_table(tblname)?;
-        tuple.check_columns(&table.columns)?;
-        // Check if the pk exists
-        let pk = tuple.primary_key()?;
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
-        if self.txn.get(&key)?.is_some() {
-            return Err(Error::value(format!(
-                "Primary key {} already exits for table {}",
-                pk, tblname
-            )));
-        }
-        // Set the tuple value under primary key
-        self.txn.set(&key, bincodec::serialize(&tuple.values.as_ref())?)?;
-
-        // Update indexes
-        let indexes = self.get_table_indexes(tblname)?;
-        for index in indexes {
-            self.insert_index_entry(index, &tuple)?;
-        }
-        Ok(pk.clone())
-    }
-
-    fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()> {
-        let table = self.must_get_table(tblname)?;
-
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
-        let row = self.txn.get(&key)?;
-        if row.is_none() {
-            return Ok(());
-        }
-        let tuple = Tuple::new(bincodec::deserialize(&row.unwrap())?, table.columns)?;
-
-        // Delete tuple from index
-        let indexes = self.get_table_indexes(tblname)?;
-        for index in indexes {
-            let cols = &index.columns;
-            let keyv = tuple.get_values(&cols)?;
-            self.delete_index_entry(index, keyv, pk)?;
-        }
-
-        // Delete the tuple itself
-        self.txn.delete(&key)?;
-
-        Ok(())
-    }
-
-    fn get(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
-        let table = self.must_get_table(tblname)?;
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
-        let row = self.txn.get(&key)?;
-        if let Some(bytes) = row {
-            let tuple = Tuple::new(bincodec::deserialize(&bytes)?, table.columns)?;
-            return Ok(Some(tuple));
-        }
-        Ok(None)
-    }
-
-    fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan> {
-        let table = self.must_get_table(tblname)?;
-        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
-        let scan = self.txn.scan_prefix(prefix)?;
-        let iter = scan
-            .iter()
-            .map(|r| {
-                r.and_then(|(_, v)| {
-                    let values = bincodec::deserialize(&v)?;
-                    Tuple::new(values, table.columns.clone())
-                })
-            })
-            .filter_map(|r| match r {
-                Ok(t) => match &predicate {
-                    None => Some(Ok(t)),
-                    Some(p) => match p.evaluate(Some(&t)) {
-                        Ok(Value::Boolean(b)) if b => Some(Ok(t)),
-                        Ok(Value::Boolean(_)) => None,
-                        Ok(v) => Some(Err(Error::value(format!(
-                            "Expected boolean predicate, got {}",
-                            v
-                        )))),
-                        Err(err) => Some(Err(err)),
-                    },
-                },
-                err => Some(err),
-            })
-            .collect::<Vec<_>>()
-            .into_iter();
-        Ok(Box::new(iter))
-    }
-
-    fn drop(&self, tblname: &str) -> Result<()> {
-        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
-        let scan = self.txn.scan_prefix(prefix)?;
-        let mut iter = scan.iter();
-        while let Some((k, _)) = iter.next().transpose()? {
-            self.txn.delete(&k)?
-        }
-        Ok(())
-    }
-
+impl<T: Storage> KvTxn<T> {
     fn insert_index_entry(&mut self, index: Index, tuple: &Tuple) -> Result<()> {
         let pk = tuple.primary_key()?;
         let index_key = tuple.get_values(&index.columns)?;
@@ -391,7 +285,137 @@ impl<T: Storage> Transaction for KvTxn<T> {
         }
     }
 
-    fn get_index_entry(
+    fn delete_index_entries(&self, tblname: &str, indname: &str) -> Result<()> {
+        let tblame = Cow::Borrowed(tblname);
+        let name = Cow::Borrowed(indname);
+        let prefix = KeyPrefix::HashIndexEntry(tblame, name).encode()?;
+        let scan = self.txn.scan_prefix(prefix)?;
+        let mut iter = scan.iter();
+        while let Some((k, _)) = iter.next().transpose()? {
+            self.txn.delete(&k)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Storage> Transaction for KvTxn<T> {
+    fn version(&self) -> u64 {
+        self.txn.state().version
+    }
+
+    fn read_only(&self) -> bool {
+        self.txn.state().read_only
+    }
+
+    fn commit(self) -> Result<()> {
+        self.txn.commit()
+    }
+
+    fn rollback(self) -> Result<()> {
+        self.txn.rollback()
+    }
+
+    fn insert(&mut self, tblname: &str, tuple: Tuple) -> Result<PrimaryKey> {
+        let table = self.must_read_table(tblname)?;
+        tuple.check_columns(&table.columns)?;
+        // Check if the pk exists
+        let pk = tuple.primary_key()?;
+        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+        if self.txn.get(&key)?.is_some() {
+            return Err(Error::value(format!(
+                "Primary key {} already exits for table {}",
+                pk, tblname
+            )));
+        }
+        // Set the tuple value under primary key
+        self.txn.set(&key, bincodec::serialize(&tuple.values.as_ref())?)?;
+
+        // Update indexes
+        let indexes = self.scan_table_indexes(tblname)?;
+        for index in indexes {
+            self.insert_index_entry(index, &tuple)?;
+        }
+        Ok(pk.clone())
+    }
+
+    fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()> {
+        let table = self.must_read_table(tblname)?;
+
+        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+        let row = self.txn.get(&key)?;
+        if row.is_none() {
+            return Ok(());
+        }
+        let tuple = Tuple::new(bincodec::deserialize(&row.unwrap())?, table.columns)?;
+
+        // Delete tuple from index
+        let indexes = self.scan_table_indexes(tblname)?;
+        for index in indexes {
+            let cols = &index.columns;
+            let keyv = tuple.get_values(&cols)?;
+            self.delete_index_entry(index, keyv, pk)?;
+        }
+
+        // Delete the tuple itself
+        self.txn.delete(&key)?;
+
+        Ok(())
+    }
+
+    fn read(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
+        let table = self.must_read_table(tblname)?;
+        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+        let row = self.txn.get(&key)?;
+        if let Some(bytes) = row {
+            let tuple = Tuple::new(bincodec::deserialize(&bytes)?, table.columns)?;
+            return Ok(Some(tuple));
+        }
+        Ok(None)
+    }
+
+    fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan> {
+        let table = self.must_read_table(tblname)?;
+        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
+        let scan = self.txn.scan_prefix(prefix)?;
+        let iter = scan
+            .iter()
+            .map(|r| {
+                r.and_then(|(_, v)| {
+                    let values = bincodec::deserialize(&v)?;
+                    Tuple::new(values, table.columns.clone())
+                })
+            })
+            .filter_map(|r| match r {
+                Ok(t) => match &predicate {
+                    None => Some(Ok(t)),
+                    Some(p) => match p.evaluate(Some(&t)) {
+                        Ok(Value::Boolean(b)) if b => Some(Ok(t)),
+                        Ok(Value::Boolean(_)) => None,
+                        Ok(v) => Some(Err(Error::value(format!(
+                            "Expected boolean predicate, got {}",
+                            v
+                        )))),
+                        Err(err) => Some(Err(err)),
+                    },
+                },
+                err => Some(err),
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        Ok(Box::new(iter))
+    }
+
+    fn drop(&self, tblname: &str) -> Result<()> {
+        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
+        let scan = self.txn.scan_prefix(prefix)?;
+        let mut iter = scan.iter();
+        while let Some((k, _)) = iter.next().transpose()? {
+            self.txn.delete(&k)?
+        }
+        Ok(())
+    }
+
+    fn read_index_entry(
         &self,
         tblname: &str,
         indname: &str,
@@ -444,18 +468,6 @@ impl<T: Storage> Transaction for KvTxn<T> {
 
         Ok(Box::new(iter))
     }
-
-    fn delete_index_entries(&self, tblname: &str, indname: &str) -> Result<()> {
-        let tblame = Cow::Borrowed(tblname);
-        let name = Cow::Borrowed(indname);
-        let prefix = KeyPrefix::HashIndexEntry(tblame, name).encode()?;
-        let scan = self.txn.scan_prefix(prefix)?;
-        let mut iter = scan.iter();
-        while let Some((k, _)) = iter.next().transpose()? {
-            self.txn.delete(&k)?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -498,11 +510,11 @@ mod tests {
         t1.create_table(table.clone())?;
 
         // check table creation
-        let got = t1.get_table(&tblnname)?;
+        let got = t1.read_table(&tblnname)?;
         assert_eq!(got, Some(table));
 
         // An unique index should be created for unique column col3
-        let indexes = t1.get_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&tblnname)?;
         assert_eq!(indexes.len(), 1);
 
         // creat index
@@ -511,27 +523,27 @@ mod tests {
         t1.create_index(index.clone())?;
 
         // check the index creation
-        let got = t1.get_index(&indname, &tblnname)?;
+        let got = t1.read_index(&indname, &tblnname)?;
         assert_eq!(got, Some(index));
-        let indexes = t1.get_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&tblnname)?;
         assert_eq!(indexes.len(), 2);
 
         // delete index
         t1.delete_index(&indname, &tblnname)?;
 
         // check the index deletion
-        let got = t1.get_index(&indname, &tblnname)?;
+        let got = t1.read_index(&indname, &tblnname)?;
         assert_eq!(got, None);
-        let indexes = t1.get_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&tblnname)?;
         assert_eq!(indexes.len(), 1);
 
         // delete table
         t1.delete_table(&tblnname)?;
 
         // check table deletion
-        let got = t1.get_table(&tblnname)?;
+        let got = t1.read_table(&tblnname)?;
         assert_eq!(got, None);
-        let indexes = t1.get_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&tblnname)?;
         assert_eq!(indexes.len(), 0);
 
         t1.commit()?;
@@ -791,11 +803,11 @@ mod tests {
         // get by pk
         let tuple = &tuples[0];
         let pk = tuple.primary_key()?;
-        let got = t1.get(&tblname, pk)?;
+        let got = t1.read(&tblname, pk)?;
         assert_eq!(Some(tuple.clone()), got);
 
         // indexes
-        let indexes = t1.get_table_indexes(&tblname)?;
+        let indexes = t1.scan_table_indexes(&tblname)?;
         assert_eq!(1, indexes.len());
 
         let index = &indexes[0];
@@ -810,7 +822,7 @@ mod tests {
 
         // get by index_key
         let index_key = tuple.get_values(&index.columns)?;
-        let gots = t1.get_index_entry(&tblname, &index.name, index_key.clone())?;
+        let gots = t1.read_index_entry(&tblname, &index.name, index_key.clone())?;
         assert_ne!(None, gots);
         let gots = gots.unwrap();
         assert_eq!(1, gots.len());
@@ -820,9 +832,9 @@ mod tests {
         t1.delete(&tblname, pk)?;
 
         // check deletion
-        let tuple = t1.get(&tblname, pk)?;
+        let tuple = t1.read(&tblname, pk)?;
         assert_eq!(None, tuple);
-        let tuple = t1.get_index_entry(&tblname, &index.name, index_key)?;
+        let tuple = t1.read_index_entry(&tblname, &index.name, index_key)?;
         assert_eq!(None, tuple);
 
         // scan tables again

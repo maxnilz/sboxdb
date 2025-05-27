@@ -32,7 +32,7 @@ pub type PrimaryKey = Value;
 
 pub type IndexKey = Values;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tuple {
     pub values: Values,
     columns: Columns,

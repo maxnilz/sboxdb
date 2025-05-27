@@ -17,13 +17,17 @@ use super::node::NodeId;
 use crate::error::Error;
 use crate::error::Result;
 
-// Transport act as the message exchange(send, receive) among
-// raft peers.
+/// Transport act as the message exchange(send, receive) among
+/// raft peers.
 #[async_trait]
 pub trait Transport: Send {
-    // The Unpin constraint ensures that the stream type
-    // can be safely moved after being boxed.
+    /// Inspect the transport nodes topology info, returns
+    /// my node id and peers nodes id.
+    fn topology(&self) -> (NodeId, Vec<NodeId>);
+    /// The Unpin constraint ensures that the stream type
+    /// can be safely moved after being boxed.
     async fn receiver(&self) -> Result<Box<dyn Stream<Item = Message> + Unpin + Send>>;
+    /// Sends message to given address in message
     async fn send(&mut self, message: Message) -> Result<()>;
 }
 
@@ -117,6 +121,10 @@ impl TcpTransport {
 
 #[async_trait]
 impl Transport for TcpTransport {
+    fn topology(&self) -> (NodeId, Vec<NodeId>) {
+        (self.me.0, self.peers.iter().map(|(node_id, _)| *node_id).collect())
+    }
+
     async fn receiver(&self) -> Result<Box<dyn Stream<Item = Message> + Unpin + Send>> {
         let (_, addr) = self.me;
         let listener = TcpListener::bind(addr.to_string()).await?;

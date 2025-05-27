@@ -74,12 +74,11 @@ unsafe impl Sync for Server {}
 impl Server {
     /// Create a Raft server,
     pub fn new(
-        id: NodeId,
-        peers: Vec<NodeId>,
         storage: Box<dyn Storage>,
         transport: Box<dyn Transport>,
         state: Box<dyn State>,
     ) -> Result<Server> {
+        let (id, peers) = transport.topology();
         let persister = Persister::new(id, storage)?;
         let (node_tx, node_rx) = mpsc::unbounded_channel();
         let rn = RawNode::new(id, peers, persister, node_tx, state)?;

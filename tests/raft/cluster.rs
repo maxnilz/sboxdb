@@ -23,16 +23,11 @@ pub fn max_election_timeout() -> Duration {
     TICK_INTERVAL.mul(ticks as u32)
 }
 
-fn new_server(
-    id: NodeId,
-    peers: Vec<NodeId>,
-    mesh: &LabNetMesh,
-    state: Arc<KvState>,
-) -> sboxdb::error::Result<Server> {
+fn new_server(id: NodeId, mesh: &LabNetMesh, state: Arc<KvState>) -> sboxdb::error::Result<Server> {
     let storage = new_storage(StorageType::Memory)?;
     let transport = Box::new(mesh.get(id)?);
     let state: Box<dyn State> = Box::new(state);
-    let server = Server::new(id, peers, storage, transport, state)?;
+    let server = Server::new(storage, transport, state)?;
     Ok(server)
 }
 
@@ -59,11 +54,7 @@ impl Cluster {
         for &id in nodes.iter() {
             let states = Arc::clone(&states);
             let state = Arc::new(KvState::new(id, states));
-
-            let peers: Vec<_> =
-                nodes.iter().filter_map(|&x| if x == id { None } else { Some(x) }).collect();
-
-            let server = new_server(id, peers, &net_mesh, Arc::clone(&state))?;
+            let server = new_server(id, &net_mesh, Arc::clone(&state))?;
             servers.push(Arc::new(server));
         }
         Ok(Self { nodes, net_mesh, states, servers, threads: HashMap::new() })
@@ -277,7 +268,7 @@ impl Cluster {
                     }
 
                     #[rustfmt::skip]
-                        let msg = format!("failed to reach agreement {} at index {}, {}/{}, {}",
+                    let msg = format!("failed to reach agreement {} at index {}, {}/{}, {}",
                                           command, index, m, n, cmd.unwrap_or(Command(None)));
                     return Err(Error::internal(msg));
                 }

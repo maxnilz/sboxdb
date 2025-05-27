@@ -1,7 +1,6 @@
 use crate::access::expression::Expression;
 use crate::access::value::{IndexKey, PrimaryKey, Tuple};
 use crate::catalog::catalog::Catalog;
-use crate::catalog::index::Index;
 use crate::error::Result;
 
 /// The Transactional access engine interface
@@ -40,23 +39,14 @@ pub trait Transaction: Catalog {
     /// Deletes a table row
     fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()>;
     /// Reads a table row, if it exists
-    fn get(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
+    fn read(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
     /// Scan a table
     fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan>;
     /// drop table data
     fn drop(&self, tblname: &str) -> Result<()>;
 
-    /// Insert an index entry to the index
-    fn insert_index_entry(&mut self, index: Index, tuple: &Tuple) -> Result<()>;
-    /// Delete an index entry from index
-    fn delete_index_entry(
-        &mut self,
-        index: Index,
-        index_key: IndexKey,
-        pk: &PrimaryKey,
-    ) -> Result<()>;
-    /// Gets an index entry from index, if it exists
-    fn get_index_entry(
+    /// Reads an index entry from index, if it exists
+    fn read_index_entry(
         &self,
         tblname: &str,
         indname: &str,
@@ -64,7 +54,4 @@ pub trait Transaction: Catalog {
     ) -> Result<Option<Vec<Tuple>>>;
     /// Scan index entries
     fn scan_index_entries(&self, tblname: &str, indname: &str) -> Result<IndexScan>;
-
-    /// Delete index entries
-    fn delete_index_entries(&self, tblname: &str, indname: &str) -> Result<()>;
 }

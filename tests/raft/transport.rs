@@ -38,6 +38,10 @@ impl LabTransport {
 
 #[async_trait]
 impl Transport for LabTransport {
+    fn topology(&self) -> (NodeId, Vec<NodeId>) {
+        (self.id, self.peers.iter().map(|(node_id, _)| *node_id).collect())
+    }
+
     async fn receiver(&self) -> Result<Box<dyn Stream<Item = Message> + Unpin + Send>> {
         let (tx, rx) = mpsc::channel(100);
         let me = Arc::clone(&self.me);

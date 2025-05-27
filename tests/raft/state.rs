@@ -30,8 +30,7 @@ impl States {
             if let Some(cmd) = log.get(&index) {
                 if command != *cmd {
                     #[rustfmt::skip]
-                        let msg = format!("inconsistent command applied at {}, {}/{} {}/{}",
-                                          index, id, command, i, *cmd);
+                    let msg = format!("inconsistent command applied at {}, {}/{} {}/{}", index, id, command, i, *cmd);
                     return Err(Error::internal(msg));
                 }
             }

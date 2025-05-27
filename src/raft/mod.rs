@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub mod message;
 pub mod node;
@@ -21,6 +21,10 @@ pub struct Command(pub Option<Vec<u8>>);
 impl Command {
     pub fn unwrap(self) -> Vec<u8> {
         self.0.unwrap()
+    }
+
+    pub fn ok_or(self, err: Error) -> Result<Vec<u8>> {
+        self.0.ok_or(err)
     }
 }
 
@@ -65,6 +69,13 @@ pub trait State: Debug + Send {
 }
 
 impl<T: State + Send + Sync> State for Arc<T> {
+    /// Apply command to the state machine for replication
+    /// FIXME: to increase throughput, we need
+    ///  1. separate query and mutation from the command, have only the mutation go through
+    ///   the raft log and get applied to state machine. for query command, read from leader
+    ///   state without go through raft log is enough for linearizability.
+    ///  2. support batch apply, async apply...
+    ///  3. support command streaming...
     fn apply(&self, msg: ApplyMsg) -> Result<Command> {
         (**self).apply(msg)
     }

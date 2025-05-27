@@ -249,6 +249,7 @@ impl<'a> KeyPrefix<'a> {
 }
 
 /// A raw key/value oriented MVCC-based transactional storage engine.
+#[derive(Debug)]
 pub struct MVCC<T: Storage> {
     kv: Arc<Mutex<T>>,
 }
@@ -268,6 +269,10 @@ impl<T: Storage> MVCC<T> {
 
     pub fn begin_as_of(&self, as_of: Version) -> Result<Transaction<T>> {
         Transaction::begin_read_only(Arc::clone(&self.kv), Some(as_of))
+    }
+
+    pub fn resume(&self, state: TransactionState) -> Result<Transaction<T>> {
+        Transaction::resume(Arc::clone(&self.kv), state)
     }
 
     pub fn set_unversioned(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
@@ -351,6 +356,20 @@ impl<T: Storage> Transaction<T> {
         drop(session);
 
         let st = TransactionState::new(version, true, active);
+        Ok(Transaction { kv, st })
+    }
+
+    fn resume(kv: Arc<Mutex<T>>, st: TransactionState) -> Result<Self> {
+        if !st.read_only {
+            // For read-write transactions, verify that the transaction is still
+            // active before making further writes.
+            let session = kv.lock()?;
+            let key = Key::TxnActive(st.version).encode()?;
+            if session.get(&key)?.is_none() {
+                #[rustfmt::skip]
+                return Err(Error::internal(format!( "No active transaction at version {}", st.version )));
+            }
+        }
         Ok(Transaction { kv, st })
     }
 
