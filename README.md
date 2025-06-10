@@ -31,6 +31,7 @@ A distributed SQL database, written as a learning project about my journey on th
         * `DELETE FROM [TABLE] WHERE ...`
         * `SELECT ... FROM ... WHERE ... ORDER BY ...`
         * `EXPLAIN SELECT ...`
+    - **Full reference** at [here](src/sql/sql.md)
 - [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
   joins.
     - [ ] Executors
