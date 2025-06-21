@@ -17,6 +17,7 @@ pub enum Error {
     Abort,
     ReadOnly,
     Serialization,
+    Parse(String),
 }
 
 impl Error {
@@ -26,6 +27,10 @@ impl Error {
 
     pub fn value<E: ToString>(msg: E) -> Error {
         Error::Value(msg.to_string())
+    }
+
+    pub fn parse<E: ToString>(msg: E) -> Error {
+        Error::Parse(msg.to_string())
     }
 }
 

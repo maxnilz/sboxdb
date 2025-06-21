@@ -9,13 +9,19 @@ pub enum DataType {
     String,
 }
 
+impl Default for DataType {
+    fn default() -> Self {
+        Self::String
+    }
+}
+
 impl std::fmt::Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::Boolean => "BOOLEAN",
             Self::Integer => "INTEGER",
             Self::Float => "FLOAT",
-            Self::String => "STRING",
+            Self::String => "TEXT",
         })
     }
 }
