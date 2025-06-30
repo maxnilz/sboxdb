@@ -62,36 +62,27 @@ impl Display for SpaceOrNewline {
 
 /// A value that displays a separated list of values.
 /// When pretty-printed (using {:#}), it displays each value on a new line.
-pub struct DisplayCommaSeparated<'a, T: Display>(pub &'a [T]);
-
-impl<T: Display> Display for DisplayCommaSeparated<'_, T> {
-    fn fmt(&self, f: &mut Formatter) -> Result {
-        let mut first = true;
-        for t in self.0 {
-            if !first {
-                f.write_char(',')?;
-                SpaceOrNewline.fmt(f)?;
-            }
-            first = false;
-            t.fmt(f)?;
-        }
-        Ok(())
-    }
-}
-
 pub struct DisplaySeparated<'a, T>
 where
     T: Display,
 {
     slice: &'a [T],
-    sep: &'static str,
+    sep: Option<&'static str>,
+    inline: bool,
 }
 impl<'a, T: Display> Display for DisplaySeparated<'a, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        let mut delim = "";
+        let mut first = true;
         for t in self.slice {
-            f.write_str(delim)?;
-            delim = self.sep;
+            if !first {
+                if let Some(sep) = self.sep {
+                    f.write_str(sep)?;
+                }
+                if !self.inline {
+                    SpaceOrNewline.fmt(f)?;
+                }
+            }
+            first = false;
             t.fmt(f)?;
         }
         Ok(())
@@ -102,5 +93,26 @@ pub fn display_comma_separated<T>(slice: &[T]) -> DisplaySeparated<'_, T>
 where
     T: Display,
 {
-    DisplaySeparated { slice, sep: ", " }
+    DisplaySeparated { slice, sep: Some(","), inline: false }
+}
+
+pub fn display_dot_separated<T>(slice: &[T]) -> DisplaySeparated<'_, T>
+where
+    T: Display,
+{
+    DisplaySeparated { slice, sep: Some("."), inline: false }
+}
+
+pub fn display_inline_dot_separated<T>(slice: &[T]) -> DisplaySeparated<'_, T>
+where
+    T: Display,
+{
+    DisplaySeparated { slice, sep: Some("."), inline: true }
+}
+
+pub fn display_space_separated<T>(slice: &[T]) -> DisplaySeparated<'_, T>
+where
+    T: Display,
+{
+    DisplaySeparated { slice, sep: None, inline: false }
 }

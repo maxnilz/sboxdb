@@ -1,4 +1,3 @@
-use std::fmt::write;
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -8,7 +7,6 @@ use crate::error::{Error, Result};
 pub enum Token {
     EOF,
     Ident(String, bool),
-    CompoundIdent(String),
     Number(String),
     String(String),
     Keyword(Keyword),
@@ -28,6 +26,7 @@ pub enum Token {
     GtEq,
     Lt,
     LtEq,
+    Dot,
 }
 
 impl std::fmt::Display for Token {
@@ -41,7 +40,6 @@ impl std::fmt::Display for Token {
                     f.write_str(s)
                 }
             }
-            Token::CompoundIdent(s) => f.write_str(s),
             Token::Number(n) => f.write_str(n),
             Token::String(s) => f.write_str(s),
             Token::Keyword(k) => f.write_str(k.to_str()),
@@ -61,6 +59,7 @@ impl std::fmt::Display for Token {
             Token::GtEq => f.write_str(">="),
             Token::Lt => f.write_str("<"),
             Token::LtEq => f.write_str("<="),
+            Token::Dot => f.write_str("."),
         }
     }
 }
@@ -97,6 +96,35 @@ pub enum Keyword {
     Drop,
     Alter,
     Column,
+    Begin,
+    Read,
+    As,
+    Of,
+    Only,
+    Commit,
+    Rollback,
+    Insert,
+    Into,
+    Values,
+    Select,
+    From,
+    Inner,
+    Left,
+    Right,
+    Full,
+    Outer,
+    Join,
+    Where,
+    Group,
+    By,
+    Order,
+    Asc,
+    Desc,
+    Limit,
+    Offset,
+    Update,
+    Set,
+    Delete,
 }
 
 impl Keyword {
@@ -132,6 +160,35 @@ impl Keyword {
             "DROP" => Self::Drop,
             "ALTER" => Self::Alter,
             "COLUMN" => Self::Column,
+            "BEGIN" => Self::Begin,
+            "READ" => Self::Read,
+            "ONLY" => Self::Only,
+            "AS" => Self::As,
+            "OF" => Self::Of,
+            "COMMIT" => Self::Commit,
+            "ROLLBACK" => Self::Rollback,
+            "INSERT" => Self::Insert,
+            "INTO" => Self::Into,
+            "VALUES" => Self::Values,
+            "SELECT" => Self::Select,
+            "FROM" => Self::From,
+            "INNER" => Self::Inner,
+            "LEFT" => Self::Left,
+            "RIGHT" => Self::Right,
+            "FULL" => Self::Full,
+            "OUTER" => Self::Outer,
+            "JOIN" => Self::Join,
+            "WHERE" => Self::Where,
+            "GROUP" => Self::Group,
+            "BY" => Self::By,
+            "ORDER" => Self::Order,
+            "ASC" => Self::Asc,
+            "DESC" => Self::Desc,
+            "LIMIT" => Self::Limit,
+            "OFFSET" => Self::Offset,
+            "UPDATE" => Self::Update,
+            "SET" => Self::Set,
+            "DELETE" => Self::Delete,
             _ => return None,
         };
         Some(ans)
@@ -169,6 +226,35 @@ impl Keyword {
             Keyword::Drop => "DROP",
             Keyword::Alter => "ALTER",
             Keyword::Column => "COLUMN",
+            Keyword::Begin => "BEGIN",
+            Keyword::Read => "READ",
+            Keyword::Only => "ONLY",
+            Keyword::As => "AS",
+            Keyword::Of => "OF",
+            Keyword::Commit => "COMMIT",
+            Keyword::Rollback => "ROLLBACK",
+            Keyword::Insert => "INSERT",
+            Keyword::Into => "INTO",
+            Keyword::Values => "VALUES",
+            Keyword::Select => "SELECT",
+            Keyword::From => "FROM",
+            Keyword::Inner => "INNER",
+            Keyword::Left => "LEFT",
+            Keyword::Right => "RIGHT",
+            Keyword::Full => "FULL",
+            Keyword::Outer => "OUTER",
+            Keyword::Join => "JOIN",
+            Keyword::Where => "WHERE",
+            Keyword::Group => "GROUP",
+            Keyword::By => "BY",
+            Keyword::Order => "ORDER",
+            Keyword::Asc => "ASC",
+            Keyword::Desc => "DESC",
+            Keyword::Limit => "LIMIT",
+            Keyword::Offset => "OFFSET",
+            Keyword::Update => "UPDATE",
+            Keyword::Set => "SET",
+            Keyword::Delete => "DELETE",
         }
     }
 }
@@ -269,6 +355,7 @@ impl<'a> Lexer<'a> {
             '!' => Some(Token::Exclamation),
             '>' => Some(Token::Gt),
             '<' => Some(Token::Lt),
+            '.' => Some(Token::Dot),
             _ => None,
         })
         .map(|it| match it {
@@ -282,20 +369,13 @@ impl<'a> Lexer<'a> {
     /// Scans consecutive chars as keyword or unquoted identifier
     fn scan_alphabetic_chars(&mut self) -> Option<Token> {
         let mut name = self.next_if(|c| c.is_alphabetic())?.to_string();
-        let mut compound = false;
-        while let Some(c) = self.next_if(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+        while let Some(c) = self.next_if(|c| c.is_alphanumeric() || c == '_') {
             name.push(c);
-            if !compound && c == '.' {
-                compound = true
-            }
         }
         if let Some(keyword) = Keyword::from_str(&name) {
             return Some(Token::Keyword(keyword));
         }
-        if !name.contains('.') {
-            return Some(Token::Ident(name, false));
-        }
-        Some(Token::CompoundIdent(name))
+        Some(Token::Ident(name, false))
     }
 
     /// Scans consecutive regular numeric chars
@@ -368,9 +448,9 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::parser::display_utils::display_comma_separated;
 
     #[test]
     fn test_ddl_stmts() -> Result<()> {
@@ -402,7 +482,7 @@ mod tests {
             "###),
         ];
 
-        for (i, (sql)) in cases.iter().enumerate() {
+        for (i, sql) in cases.iter().enumerate() {
             let mut tokens = vec![];
             let mut lexer = Lexer::new(sql);
             while let Some(tok) = lexer.next().transpose()? {

@@ -5,8 +5,10 @@ use crate::catalog::r#type::DataType;
 use crate::error::Error;
 use crate::error::Result;
 use crate::sql::parser::ast::{
-    AlterTableOperation, BinaryOperator, Column, CreateIndex, Expr, Function, FunctionArg, Ident,
-    ObjectType, Precedence, Statement, UnaryOperator,
+    AlterTableOperation, Assignment, BinaryOperator, Column, CreateIndex, Expr, Function,
+    FunctionArg, Ident, Insert, InsertSource, Join, JoinConstraint, JoinOperator, LimitClause,
+    ObjectType, OrderByExpr, Precedence, SelectItem, Statement, TableFactor, TableWithJoins,
+    UnaryOperator, Update, Values, WildcardExpr,
 };
 use crate::sql::parser::ast::{Query, Value};
 use crate::sql::parser::lexer::{Keyword, Lexer, Token};
@@ -29,18 +31,125 @@ impl Parser {
         Ok(Parser { tokens, index: 0 })
     }
 
+    /// Parse potentially multiple statements
+    /// e.g., "SELECT * FROM foo; SELECT * FROM bar;"
+    fn parse_statements(&mut self) -> Result<Vec<Statement>> {
+        let mut stmts = Vec::new();
+        let mut expecting_statement_delimiter = false;
+        loop {
+            // ignore empty statements (between successive statement delimiters)
+            while self.consume_token(&Token::Semicolon) {
+                expecting_statement_delimiter = false;
+            }
+
+            match self.peek_token() {
+                Token::EOF => break,
+                _ => {}
+            }
+
+            if expecting_statement_delimiter {
+                return self.expected("end of statement", self.peek_token());
+            }
+
+            let statement = self.parse_statement()?;
+            stmts.push(statement);
+            expecting_statement_delimiter = true;
+        }
+        Ok(stmts)
+    }
+
     /// Parses the input string into an AST statement
     fn parse_statement(&mut self) -> Result<Statement> {
         let next_token = self.next_token();
         match &next_token {
             Token::Keyword(w) => match w {
+                Keyword::Begin => self.parse_begin(),
+                Keyword::Commit => Ok(Statement::Commit),
+                Keyword::Rollback => Ok(Statement::Rollback),
                 Keyword::Create => self.parse_ddl_create(),
                 Keyword::Drop => self.parse_ddl_drop(),
                 Keyword::Alter => self.parse_ddl_alter(),
+                Keyword::Select => {
+                    self.backup_token();
+                    self.parse_dml_select()
+                }
+                Keyword::Insert => self.parse_dml_insert(),
+                Keyword::Update => self.parse_dml_update(),
+                Keyword::Delete => self.parse_dml_delete(),
                 _ => self.expected("an SQL statement", next_token),
             },
             _ => self.expected("an SQL statement", next_token),
         }
+    }
+
+    fn parse_dml_delete(&mut self) -> Result<Statement> {
+        self.expect_keyword(&Keyword::From)?;
+        let table = self.parse_ident()?;
+        let selection =
+            if self.parse_keyword(Keyword::Where) { Some(self.parse_expr()?) } else { None };
+        Ok(Statement::Delete { table, selection })
+    }
+
+    fn parse_dml_update(&mut self) -> Result<Statement> {
+        let table = self.parse_ident()?;
+        self.expect_keyword(&Keyword::Set)?;
+        let assignments = self.parse_comma_separated(Parser::parse_assignment)?;
+        let selection =
+            if self.parse_keyword(Keyword::Where) { Some(self.parse_expr()?) } else { None };
+        Ok(Statement::Update(Update { table, assignments, selection }))
+    }
+
+    /// Parse a `var = expr` assignment, used in an UPDATE statement
+    pub fn parse_assignment(&mut self) -> Result<Assignment> {
+        let column = self.parse_ident()?;
+        self.expect_token(&Token::Eq)?;
+        let value = self.parse_expr()?;
+        Ok(Assignment { column, value })
+    }
+    fn parse_dml_insert(&mut self) -> Result<Statement> {
+        self.expect_keyword(&Keyword::Into)?;
+        let table = self.parse_ident()?;
+        self.expect_token(&Token::LParen)?;
+        let columns = self.parse_comma_separated(Parser::parse_ident)?;
+        self.expect_token(&Token::RParen)?;
+        let next_token = self.next_token();
+        let source = match next_token {
+            Token::Keyword(Keyword::Values) => {
+                let values = self.parse_values()?;
+                Ok(InsertSource::Values(values))
+            }
+            Token::Keyword(Keyword::Select) => {
+                self.backup_token();
+                let query = self.parse_query()?;
+                Ok(InsertSource::Select(query))
+            }
+            _ => self.expected("'(' or 'SELECT' after VALUES", next_token),
+        }?;
+        Ok(Statement::Insert(Insert { table, columns, source }))
+    }
+
+    fn parse_values(&mut self) -> Result<Values> {
+        let rows = self.parse_comma_separated(|parser| {
+            parser.expect_token(&Token::LParen)?;
+            let exprs = parser.parse_comma_separated(Parser::parse_expr)?;
+            parser.expect_token(&Token::RParen)?;
+            Ok(exprs)
+        })?;
+        Ok(Values { rows })
+    }
+
+    fn parse_begin(&mut self) -> Result<Statement> {
+        let read_only = self.parse_keywords(&[Keyword::Read, Keyword::Only]);
+        let as_of = if self.parse_keywords(&[Keyword::As, Keyword::Of]) {
+            let next_token = self.next_token();
+            match next_token {
+                Token::Number(s) => Ok(Some(s)),
+                _ => self.expected("as of version", next_token),
+            }
+        } else {
+            Ok(None)
+        }?;
+        Ok(Statement::Begin { read_only, as_of })
     }
 
     fn parse_ddl_alter(&mut self) -> Result<Statement> {
@@ -126,7 +235,7 @@ impl Parser {
     fn parse_columns(&mut self) -> Result<Vec<Column>> {
         let mut columns = vec![];
         if !self.consume_token(&Token::LParen) || self.consume_token(&Token::RParen) {
-            return Ok((columns));
+            return Ok(columns);
         }
         loop {
             columns.push(self.parse_ddl_column_spec()?);
@@ -284,8 +393,7 @@ impl Parser {
 
     fn parse_in(&mut self, expr: Expr, negated: bool) -> Result<Expr> {
         self.expect_token(&Token::LParen)?;
-        let prec = self.prec_unknown();
-        let in_op = match self.maybe_parse(|p| p.parse_query_body(prec))? {
+        let in_op = match self.maybe_parse(|p| p.parse_query())? {
             Some(subquery) => Expr::InSubquery { expr: Box::new(expr), subquery, negated },
             None => {
                 let list = self.parse_comma_separated(Parser::parse_expr)?;
@@ -322,17 +430,22 @@ impl Parser {
     fn parse_prefix(&mut self) -> Result<Expr> {
         let next_token = self.next_token();
         let expr = match &next_token {
+            Token::Keyword(w) if w == &Keyword::True => Ok(Expr::Value(Value::Boolean(true))),
+            Token::Keyword(w) if w == &Keyword::False => Ok(Expr::Value(Value::Boolean(false))),
             Token::Keyword(w) if w == &Keyword::Not => self.parse_not(),
             Token::Keyword(w) if w == &Keyword::Null => Ok(Expr::Value(Value::Null)),
             Token::Keyword(w) if w == &Keyword::Exists => self.parse_exists_expr(false),
-            Token::Ident(s, _) => match self.peek_token() {
-                Token::LParen => self.parse_function(s.to_string()),
-                _ => Ok(Expr::Identifier(s.to_string())),
+            tok @ Token::Ident(_, _) => match self.peek_token() {
+                Token::LParen => self.parse_function(Ident::from_ident_token(tok)),
+                _ => {
+                    let ident = Ident::from_ident_token(tok);
+                    if let Some(idents) = self.try_parse_compound_idents(ident.clone())? {
+                        Ok(Expr::CompoundIdentifier(idents))
+                    } else {
+                        Ok(Expr::Identifier(ident))
+                    }
+                }
             },
-            Token::CompoundIdent(s) => {
-                let idents = s.split('.').map(|it| it.to_string()).collect();
-                Ok(Expr::CompoundIdentifier(idents))
-            }
             Token::Number(s) => Ok(Expr::Value(Value::Number(s.clone()))),
             Token::String(s) => Ok(Expr::Value(Value::String(s.clone()))),
             tok @ Token::Plus | tok @ Token::Minus => {
@@ -379,12 +492,12 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_function(&mut self, func_name: String) -> Result<Expr> {
+    fn parse_function(&mut self, func_name: Ident) -> Result<Expr> {
         let func = self.parse_function_call(func_name)?;
         Ok(Expr::Function(func))
     }
 
-    fn parse_function_call(&mut self, func_name: String) -> Result<Function> {
+    fn parse_function_call(&mut self, func_name: Ident) -> Result<Function> {
         self.expect_token(&Token::LParen)?;
         if self.consume_token(&Token::RParen) {
             return Ok(Function { name: func_name, args: vec![] });
@@ -399,37 +512,257 @@ impl Parser {
         let next_token = self.next_token();
         match &next_token {
             Token::Mul => Ok(FunctionArg::Asterisk),
-            Token::Ident(s, _) => match self.peek_token() {
-                Token::LParen => {
-                    Ok(FunctionArg::Function(self.parse_function_call(s.to_string())?))
-                }
-                _ => Ok(FunctionArg::Identifier(s.to_string())),
+            tok @ Token::Ident(_, _) => match self.peek_token() {
+                Token::LParen => Ok(FunctionArg::Function(
+                    self.parse_function_call(Ident::from_ident_token(tok))?,
+                )),
+                _ => Ok(FunctionArg::Identifier(Ident::from_ident_token(tok))),
             },
-            Token::CompoundIdent(s) => {
-                let idents = s.split('.').map(|it| it.to_string()).collect();
-                Ok(FunctionArg::CompoundIdentifier(idents))
-            }
             Token::Number(s) => Ok(FunctionArg::Value(Value::Number(s.clone()))),
             Token::String(s) => Ok(FunctionArg::Value(Value::String(s.clone()))),
             _ => self.expected("a function argument", next_token),
         }
     }
 
-    fn try_parse_expr_subquery(&mut self) -> Result<Option<Expr>> {
-        todo!()
+    fn try_parse_compound_idents(&mut self, ident: Ident) -> Result<Option<Vec<Ident>>> {
+        let mut idents = vec![];
+        while self.consume_token(&Token::Dot) {
+            let next_token = self.peek_token_ref();
+            match next_token {
+                Token::Mul => {
+                    // Put back the consumed `.` tokens before exiting.
+                    // If this expression is being parsed in the
+                    // context of a projection, then the `.*` could imply
+                    // a wildcard expansion. For example:
+                    // `SELECT STRUCT('foo').* FROM T`
+                    self.backup_token();
+                    break;
+                }
+                tok @ Token::Ident(_, _) => {
+                    idents.push(Ident::from_ident_token(tok));
+                    self.advance_token();
+                }
+                _ => self.expected_ref("an identifier after '.'", next_token)?,
+            }
+        }
+        if idents.is_empty() {
+            return Ok(None);
+        }
+        idents.insert(0, ident);
+        Ok(Some(idents))
     }
 
-    /// Parse a query expression, i.e. a `SELECT` statement optionally
-    /// preceded with some `WITH` CTE declarations and optionally followed
-    /// by `ORDER BY`. Unlike some other parse_... methods, this one doesn't
+    fn parse_dml_select(&mut self) -> Result<Statement> {
+        let query = self.parse_query()?;
+        Ok(Statement::Select { query })
+    }
+
+    /// Parse a query expression, i.e. a `SELECT` statement
+    /// Unlike some other parse_... methods, this one doesn't
     /// expect the initial keyword to be already consumed
     fn parse_query(&mut self) -> Result<Box<Query>> {
-        todo!()
+        self.expect_token(&Token::Keyword(Keyword::Select))?;
+        let projection = self.parse_comma_separated(Parser::parse_select_item)?;
+        let from = self.parse_table_with_joins()?;
+        let selection =
+            if self.parse_keyword(Keyword::Where) { Some(self.parse_expr()?) } else { None };
+        let group_by = self.parse_optional_group_by()?.unwrap_or(vec![]);
+        let order_by = self.parse_optional_order_by()?.unwrap_or(vec![]);
+        let limit_clause = self.parse_optional_limit_clause()?;
+        Ok(Box::new(Query { projection, from, selection, group_by, order_by, limit_clause }))
     }
 
-    /// Parse q query expression without `WITH` CTE declarations
-    fn parse_query_body(&mut self, precedence: u8) -> Result<Box<Query>> {
-        todo!()
+    fn parse_optional_group_by(&mut self) -> Result<Option<Vec<Expr>>> {
+        if !self.parse_keywords(&[Keyword::Group, Keyword::By]) {
+            return Ok(None);
+        }
+        let exprs = self.parse_comma_separated(Parser::parse_expr)?;
+        Ok(Some(exprs))
+    }
+
+    fn parse_optional_order_by(&mut self) -> Result<Option<Vec<OrderByExpr>>> {
+        if !self.parse_keywords(&[Keyword::Order, Keyword::By]) {
+            return Ok(None);
+        }
+        let exprs = self.parse_comma_separated(Parser::parse_order_by_item)?;
+        Ok(Some(exprs))
+    }
+
+    fn parse_optional_limit_clause(&mut self) -> Result<Option<LimitClause>> {
+        let offset = if self.parse_keyword(Keyword::Offset) {
+            Some(self.parse_literal_uint()?)
+        } else {
+            None
+        };
+        let limit = if self.parse_keyword(Keyword::Limit) {
+            let number = self.parse_literal_uint()?;
+            if self.consume_token(&Token::Comma) {
+                // LIMIT offset, limit
+                if let Some(_) = offset {
+                    return Err(Error::parse(
+                        "Unexpected 'OFFSET number' in 'LIMIT offset, limit'",
+                    ));
+                }
+                let limit = self.parse_literal_uint()?;
+                return Ok(Some(LimitClause { offset: Some(number), limit: Some(limit) }));
+            }
+            Some(number)
+        } else {
+            None
+        };
+        if offset.is_none() && limit.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(LimitClause { limit, offset }))
+    }
+
+    fn parse_order_by_item(&mut self) -> Result<OrderByExpr> {
+        let expr = self.parse_expr()?;
+        let desc = if self.parse_keyword(Keyword::Desc) {
+            Some(true)
+        } else if self.parse_keyword(Keyword::Asc) {
+            Some(false)
+        } else {
+            None
+        };
+        Ok(OrderByExpr { expr, desc })
+    }
+
+    fn parse_table_with_joins(&mut self) -> Result<TableWithJoins> {
+        self.expect_token(&Token::Keyword(Keyword::From))?;
+        let relation = self.parse_table_factor()?;
+        let joins = self.parse_joins()?;
+        Ok(TableWithJoins { relation, joins })
+    }
+
+    fn parse_joins(&mut self) -> Result<Vec<Join>> {
+        let mut joins = vec![];
+        loop {
+            let next_token = self.next_token();
+            let join_type = match &next_token {
+                Token::Keyword(w) if w == &Keyword::Join => JoinOperator::Join,
+                Token::Keyword(w) if w == &Keyword::Inner => {
+                    self.expect_one_of_keywords(&[Keyword::Join])?;
+                    JoinOperator::Inner
+                }
+                Token::Keyword(w) if w == &Keyword::Left => {
+                    let is_outer = self.parse_keyword(Keyword::Outer);
+                    self.expect_one_of_keywords(&[Keyword::Join])?;
+                    if is_outer {
+                        JoinOperator::LeftOuter
+                    } else {
+                        JoinOperator::Left
+                    }
+                }
+                Token::Keyword(w) if w == &Keyword::Right => {
+                    let is_outer = self.parse_keyword(Keyword::Outer);
+                    self.expect_one_of_keywords(&[Keyword::Join])?;
+                    if is_outer {
+                        JoinOperator::RightOuter
+                    } else {
+                        JoinOperator::Right
+                    }
+                }
+                Token::Keyword(w) if w == &Keyword::Full => {
+                    let is_outer = self.parse_keyword(Keyword::Outer);
+                    self.expect_one_of_keywords(&[Keyword::Join])?;
+                    if is_outer {
+                        JoinOperator::FullOuter
+                    } else {
+                        JoinOperator::Full
+                    }
+                }
+                _ => {
+                    self.backup_token();
+                    break;
+                }
+            };
+            let relation = self.parse_table_factor()?;
+
+            self.expect_one_of_keywords(&[Keyword::On])?;
+            let join_constraint = JoinConstraint::On(self.parse_expr()?);
+            let join_operator = join_type(join_constraint);
+
+            joins.push(Join { join_operator, relation });
+        }
+        Ok(joins)
+    }
+
+    fn parse_table_factor(&mut self) -> Result<TableFactor> {
+        let next_token = self.next_token();
+        match &next_token {
+            Token::Ident(_, _) => {
+                let table_name = Ident::from_ident_token(&next_token);
+                let alias = if self.parse_keyword(Keyword::As) {
+                    let alias = self.parse_ident()?;
+                    Some(alias.value)
+                } else {
+                    None
+                };
+                Ok(TableFactor::Table { name: table_name, alias })
+            }
+            Token::LParen => {
+                let expr = self.parse_query()?;
+                self.expect_token(&Token::RParen)?;
+                let alias = if self.parse_keyword(Keyword::As) {
+                    let alias = self.parse_ident()?;
+                    Some(alias.value)
+                } else {
+                    None
+                };
+                Ok(TableFactor::Derived { subquery: expr, alias })
+            }
+            _ => self.expected("table identifier or '('", next_token),
+        }
+    }
+
+    /// Parse a comma-delimited list of projections after SELECT
+    fn parse_select_item(&mut self) -> Result<SelectItem> {
+        if let Some(w) = self.try_parse_wildcard_expr()? {
+            return Ok(SelectItem::WildcardExpr(w));
+        };
+        let expr = self.parse_expr()?;
+        if self.parse_keyword(Keyword::As) {
+            let alias = self.parse_ident()?;
+            Ok(SelectItem::ExprWithAlias { expr, alias })
+        } else {
+            Ok(SelectItem::UnnamedExpr(expr))
+        }
+    }
+
+    fn try_parse_wildcard_expr(&mut self) -> Result<Option<WildcardExpr>> {
+        let index = self.index;
+        let next_token = self.next_token();
+        match &next_token {
+            tok @ (Token::Ident(_, _) | Token::Keyword(_)) if self.peek_token() == Token::Dot => {
+                let ident = match tok {
+                    Token::Ident(_, _) => Ident::from_ident_token(tok),
+                    Token::Keyword(w) => Ident { value: w.to_string(), double_quoted: false },
+                    _ => unreachable!(),
+                };
+                let mut idents = vec![ident];
+                while self.consume_token(&Token::Dot) {
+                    let next_token = self.next_token();
+                    match &next_token {
+                        tok @ Token::Ident(_, _) => idents.push(Ident::from_ident_token(tok)),
+                        Token::Keyword(w) => {
+                            idents.push(Ident { value: w.to_string(), double_quoted: false })
+                        }
+                        Token::Mul => return Ok(Some(WildcardExpr::QualifiedWildcard(idents))),
+                        _ => return self.expected("an identifier or *", next_token),
+                    }
+                }
+            }
+            Token::Mul => return Ok(Some(WildcardExpr::Wildcard)),
+            _ => self.backup_token(),
+        };
+        self.index = index;
+        Ok(None)
+    }
+
+    fn try_parse_expr_subquery(&mut self) -> Result<Option<Expr>> {
+        let query = self.parse_query()?;
+        Ok(Some(Expr::Subquery(query)))
     }
 
     /// Parse a comma-separated list of 1+ items accepted by `F`
@@ -532,12 +865,12 @@ impl Parser {
     fn parse_literal_uint(&mut self) -> Result<u64> {
         let next_token = self.next_token();
         match next_token {
-            Token::Number(s) => Self::parse::<u64>(s),
+            Token::Number(s) => Self::parse_str::<u64>(s),
             _ => self.expected("literal int", next_token),
         }
     }
 
-    fn parse<T: FromStr>(s: String) -> Result<T>
+    fn parse_str<T: FromStr>(s: String) -> Result<T>
     where
         <T as FromStr>::Err: Display,
     {
@@ -548,7 +881,7 @@ impl Parser {
 
     fn parse_ident(&mut self) -> Result<Ident> {
         let next_token = self.next_token();
-        match next_token {
+        match &next_token {
             tok @ Token::Ident(_, _) => Ok(Ident::from_ident_token(tok)),
             _ => self.expected("ident", next_token),
         }
@@ -580,6 +913,16 @@ impl Parser {
         }
         let keywords: Vec<String> = keywords.iter().map(|x| format!("{x:?}")).collect();
         self.expected_ref(&format!("one of {}", keywords.join(" or ")), self.peek_token_ref())
+    }
+
+    fn expect_keyword(&mut self, keyword: &Keyword) -> Result<Keyword> {
+        match &self.peek_token_ref() {
+            Token::Keyword(w) if w == keyword => {
+                self.advance_token();
+                Ok(*keyword)
+            }
+            tok => self.expected_ref(&tok.to_string(), self.peek_token_ref()),
+        }
     }
 
     /// If the current token is one of the given `keywords`, consume the token
@@ -693,6 +1036,7 @@ impl Parser {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -724,14 +1068,59 @@ mod tests {
                 ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
                 DROP COLUMN if EXISTS col2;
             "###),
+            (r###"
+            SELECT a, count(*) FROM foo JOIN b ON a.id = b.id LEFT JOIN c ON a.id = c.id where a = 1 and b = 2 group by a order by a LIMIT 0, 10;
+            "###),
+            (r###"
+            SELECT
+                users.name AS user_name,
+                orders.id AS order_id,
+                products.name AS product_name
+            FROM
+                users
+                JOIN orders ON users.id = orders.user_id
+                JOIN products ON orders.product_id = products.id;
+            "###),
+            (r###"
+            INSERT INTO users (id, name, email)
+            SELECT id, name, email
+            FROM old_users
+            WHERE active = true;            
+            "###),
+            (r###"
+            INSERT INTO users (id, name, email)
+            VALUES
+              (1, 'Alice', 'alice@example.com'),
+              (2, 'Bob', 'bob@example.com'),
+              (3, 'Charlie', 'charlie@example.com');
+            "###),
+            (r###"
+            UPDATE users
+            SET name = 'Alice Smith',
+                email = 'alice.smith@example.com'
+            WHERE id = 1;
+            "###),
+            (r###"
+            DELETE FROM users where id = 1;
+            "###),
         ];
-
-        for (i, (&sql)) in cases.iter().enumerate() {
+        for (i, &sql) in cases.iter().enumerate() {
             let mut parser = Parser::new(sql)?;
             let stmt = parser.parse_statement()?;
-            println!("{}==> {:#}", i, stmt);
+            println!("{}==> \n{:#}\n", i, stmt);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_multiple_stmts() -> Result<()> {
+        let sql = "SELECT * FROM foo; SELECT * FROM bar;";
+        let mut parser = Parser::new(sql)?;
+        let stmts = parser.parse_statements()?;
+        for (i, stmt) in stmts.iter().enumerate() {
+            println!("{}==> \n{}\n", i, stmt);
+        }
         Ok(())
     }
 }

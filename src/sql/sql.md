@@ -2,7 +2,17 @@
 
 ```ebnf
 
-sql_stmt          := ddl_stmt | dml_stmt ;
+sql_stmt          := transaction_stmt | ddl_stmt | dml_stmt ;
+
+-- TXN =================================================================================
+
+transaction_stmt  := begin_stmt | commit_stmt | rollback_stmt ;
+
+begin_stmt        := "BEGIN" [ "READ" "ONLY" ] [ as_of_clause ] ;
+as_of_clause      := "AS" "OF" number ;
+
+commit_stmt       := "COMMIT" ;
+rollback_stmt     := "ROLLBACK" ;
 
 -- DDL =================================================================================
 
@@ -38,17 +48,8 @@ alter_operation   := "ADD" "COLUMN"  [ "IF" "NOT" "EXISTS" ] column_def
 
 -- DML =================================================================================
 
-dml_stmt          := with_clause? (
-                      select_stmt
-                    | insert_stmt
-                    | update_stmt
-                    | delete_stmt
-                    | transaction_stmt
-                    | explain_stmt
-                   ) ;
-
-with_clause       := "WITH" cte_def ("," cte_def)* ;
-cte_def           := identifier "AS" "(" select_stmt ")" ;
+dml_stmt          := select_stmt | insert_stmt | update_stmt | delete_stmt 
+                   | "EXPLAIN" dml_stmt
 
 select_stmt       := "SELECT" select_list
                       "FROM" from_clause
@@ -66,14 +67,15 @@ from_clause       := table_ref ( join_clause )* ;
 table_ref         := identifier [ "AS" alias ]
                     | "(" select_stmt ")" [ "AS" alias ] ;
 
-join_clause       := join_type "JOIN" table_ref "ON" expr ;
+join_clause       := [ join_type ] "JOIN" table_ref "ON" expr ;
 join_type         := "INNER" | "LEFT" [ "OUTER" ] | "RIGHT" [ "OUTER" ] | "FULL" [ "OUTER" ] ;
 
 where_clause      := "WHERE" expr ;
 group_by_clause   := "GROUP" "BY" expr ("," expr)* ;
 order_by_clause   := "ORDER" "BY" order_item ("," order_item)* ;
 order_item        := expr [ "ASC" | "DESC" ] ;
-limit_clause      := "LIMIT" number ;
+limit_clause      := ["LIMIT" number] ["OFFSET" number] 
+                   | "LIMIT" number "," number ;
 
 insert_stmt       := "INSERT" "INTO" identifier "(" column_list ")"
                       ( "VALUES" "(" value_list ")" | select_stmt ) ;
@@ -83,16 +85,7 @@ update_stmt       := "UPDATE" identifier
 
 delete_stmt       := "DELETE" "FROM" identifier [ where_clause ] ;
 
-transaction_stmt  := begin_stmt | commit_stmt | rollback_stmt ;
-
-begin_stmt        := "BEGIN" [ transaction_mode ] [ as_of_clause ] ;
-transaction_mode  := "READ" "ONLY" | "READ" "WRITE" ;
-as_of_clause      := "AS" "OF" number ;
-
-commit_stmt       := "COMMIT" ;
-rollback_stmt     := "ROLLBACK" ;
-
-assignment        := identifier "=" expr ;
+assignment        := identifier "=" expr;
 column_list       := identifier ("," identifier)* ;
 value_list        := expr ("," expr)* ;
 

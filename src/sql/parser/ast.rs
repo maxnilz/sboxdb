@@ -1,12 +1,25 @@
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
 
 use crate::catalog::r#type::DataType;
 use crate::sql::parser::display_utils::{
-    display_comma_separated, DisplayCommaSeparated, Indent, NewLine,
+    display_comma_separated, display_dot_separated, display_inline_dot_separated,
+    display_space_separated, Indent, NewLine, SpaceOrNewline,
 };
 use crate::sql::parser::lexer::Token;
 
 pub enum Statement {
+    /// ```sql
+    ///  BEGIN TRANSACTION
+    /// ```
+    Begin { read_only: bool, as_of: Option<String> },
+    ///```sql
+    ///  COMMIT
+    /// ```
+    Commit,
+    ///```sql
+    ///  ROLLBACK
+    /// ```
+    Rollback,
     /// ```sql
     /// CREATE TABLE
     /// ```
@@ -15,7 +28,6 @@ pub enum Statement {
     /// `CREATE INDEX`
     /// ```
     CreateIndex(CreateIndex),
-
     /// ```sql
     /// DROP [TABLE, INDEX, ...]
     /// ```
@@ -29,11 +41,37 @@ pub enum Statement {
     /// ALTER TABLE
     /// ```
     AlterTable { table_name: Ident, if_exists: bool, operations: Vec<AlterTableOperation> },
+    /// ```sql
+    /// SELECT
+    /// ```
+    Select { query: Box<Query> },
+    ///```sql
+    ///  INSERT INTO
+    /// ```
+    Insert(Insert),
+    /// ```sql
+    /// UPDATE
+    /// ```
+    Update(Update),
+    /// ```sql
+    /// DELETE
+    /// ```
+    Delete { table: Ident, selection: Option<Expr> },
 }
 
 impl std::fmt::Display for Statement {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Statement::Begin { read_only, as_of } => {
+                write!(
+                    f,
+                    "BEGIN{mode}{s}",
+                    mode = if *read_only { " READ ONLY" } else { "" },
+                    s = if let Some(n) = as_of { format!(" AS OF {}", n) } else { "".to_string() }
+                )
+            }
+            Statement::Commit => write!(f, "COMMIT"),
+            Statement::Rollback => write!(f, "ROLLBACK"),
             Statement::CreateTable(create_table) => create_table.fmt(f),
             Statement::CreateIndex(create_index) => create_index.fmt(f),
             Statement::Drop { object_type, if_exists, object_name } => {
@@ -50,7 +88,21 @@ impl std::fmt::Display for Statement {
                     s = if *if_exists { "IF EXISTS " } else { "" }
                 )?;
                 NewLine.fmt(f)?;
-                Indent(DisplayCommaSeparated(operations)).fmt(f)?;
+                Indent(display_comma_separated(operations)).fmt(f)?;
+                Ok(())
+            }
+            Statement::Select { query } => query.fmt(f),
+            Statement::Insert(insert) => insert.fmt(f),
+            Statement::Update(update) => update.fmt(f),
+            Statement::Delete { table, selection } => {
+                write!(f, "DELETE FROM {}", table)?;
+                if let Some(expr) = selection {
+                    SpaceOrNewline.fmt(f)?;
+                    write!(f, "WHERE")?;
+
+                    SpaceOrNewline.fmt(f)?;
+                    expr.fmt(f)?;
+                };
                 Ok(())
             }
         }
@@ -58,6 +110,7 @@ impl std::fmt::Display for Statement {
 }
 
 /// An identifier, decomposed into its value or character data and the quote style.
+#[derive(Debug, Clone)]
 pub struct Ident {
     /// The value of the identifier without quotes.
     pub value: String,
@@ -69,9 +122,9 @@ impl Ident {
         Ident { value: value.to_string(), double_quoted: false }
     }
 
-    pub fn from_ident_token(tok: Token) -> Ident {
+    pub fn from_ident_token(tok: &Token) -> Ident {
         if let Token::Ident(value, double_quoted) = tok {
-            Ident { value, double_quoted }
+            Ident { value: value.to_string(), double_quoted: *double_quoted }
         } else {
             panic!("Expected Token::Ident, got {:?}", tok)
         }
@@ -84,6 +137,341 @@ impl std::fmt::Display for Ident {
             write!(f, "\"{}\"", self.value)
         } else {
             f.write_str(&self.value)
+        }
+    }
+}
+
+pub struct Update {
+    /// TABLE
+    pub table: Ident,
+    /// Column assignments
+    pub assignments: Vec<Assignment>,
+    /// WHERE
+    pub selection: Option<Expr>,
+}
+
+impl std::fmt::Display for Update {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UPDATE {}", self.table)?;
+
+        SpaceOrNewline.fmt(f)?;
+        write!(f, "SET")?;
+
+        SpaceOrNewline.fmt(f)?;
+        Indent(display_comma_separated(&self.assignments)).fmt(f)?;
+
+        if let Some(expr) = &self.selection {
+            SpaceOrNewline.fmt(f)?;
+            write!(f, "WHERE")?;
+
+            SpaceOrNewline.fmt(f)?;
+            expr.fmt(f)?;
+        };
+
+        Ok(())
+    }
+}
+
+/// SQL assignment `foo = expr` as used in SQLUpdate
+pub struct Assignment {
+    pub column: Ident,
+    pub value: Expr,
+}
+
+impl std::fmt::Display for Assignment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} = {}", self.column, self.value)
+    }
+}
+
+/// INSERT statement.
+pub struct Insert {
+    /// TABLE
+    pub table: Ident,
+    /// COLUMNS
+    pub columns: Vec<Ident>,
+    pub source: InsertSource,
+}
+
+impl std::fmt::Display for Insert {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "INERT INTO {} (", self.table)?;
+
+        NewLine.fmt(f)?;
+        Indent(display_comma_separated(&self.columns)).fmt(f)?;
+
+        NewLine.fmt(f)?;
+        write!(f, ")")?;
+
+        SpaceOrNewline.fmt(f)?;
+        self.source.fmt(f)
+    }
+}
+
+pub enum InsertSource {
+    Select(Box<Query>),
+    Values(Values),
+}
+
+impl std::fmt::Display for InsertSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InsertSource::Select(q) => q.fmt(f)?,
+            InsertSource::Values(values) => {
+                f.write_str("VALUES")?;
+                values.fmt(f)?;
+            }
+        };
+        Ok(())
+    }
+}
+
+pub struct Values {
+    pub rows: Vec<Vec<Expr>>,
+}
+
+impl std::fmt::Display for Values {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut delim = "";
+        for row in &self.rows {
+            f.write_str(delim)?;
+            delim = ",";
+            SpaceOrNewline.fmt(f)?;
+            Indent(format_args!("({})", display_comma_separated(row))).fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+/// The `SELECT` query expression.
+pub struct Query {
+    /// projection expressions
+    pub projection: Vec<SelectItem>,
+    /// FROM
+    pub from: TableWithJoins,
+    /// WHERE
+    pub selection: Option<Expr>,
+    /// GROUP BY
+    pub group_by: Vec<Expr>,
+    /// ORDER BY
+    pub order_by: Vec<OrderByExpr>,
+    /// `LIMIT ... OFFSET ... | LIMIT <offset>, <limit>`
+    pub limit_clause: Option<LimitClause>,
+}
+
+impl std::fmt::Display for Query {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SELECT")?;
+
+        SpaceOrNewline.fmt(f)?;
+        Indent(display_comma_separated(&self.projection)).fmt(f)?;
+
+        SpaceOrNewline.fmt(f)?;
+        write!(f, "FROM")?;
+
+        SpaceOrNewline.fmt(f)?;
+        Indent(&self.from).fmt(f)?;
+
+        if let Some(s) = &self.selection {
+            SpaceOrNewline.fmt(f)?;
+            write!(f, "WHERE")?;
+
+            SpaceOrNewline.fmt(f)?;
+            Indent(s).fmt(f)?;
+        }
+
+        if !self.group_by.is_empty() {
+            SpaceOrNewline.fmt(f)?;
+            write!(f, "GROUP BY")?;
+
+            SpaceOrNewline.fmt(f)?;
+            Indent(display_comma_separated(&self.group_by)).fmt(f)?;
+        }
+
+        if !self.order_by.is_empty() {
+            SpaceOrNewline.fmt(f)?;
+            write!(f, "ORDER BY")?;
+
+            SpaceOrNewline.fmt(f)?;
+            Indent(display_comma_separated(&self.order_by)).fmt(f)?;
+        }
+
+        if let Some(c) = &self.limit_clause {
+            SpaceOrNewline.fmt(f)?;
+            c.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// An `ORDER BY` expression
+pub struct OrderByExpr {
+    pub expr: Expr,
+    /// Optional `ASC` or `DESC`
+    pub desc: Option<bool>,
+}
+
+impl std::fmt::Display for OrderByExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.expr.fmt(f)?;
+        write!(
+            f,
+            " {s}",
+            s = if let Some(desc) = self.desc {
+                if desc {
+                    "DESC"
+                } else {
+                    "ASC"
+                }
+            } else {
+                "ASC"
+            }
+        )
+    }
+}
+
+/// `LIMIT ... OFFSET ... | LIMIT <offset>, <limit>`
+pub struct LimitClause {
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
+impl std::fmt::Display for LimitClause {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(limit) = self.limit {
+            write!(f, "LIMIT {}", limit)?;
+        }
+        if let Some(offset) = self.offset {
+            write!(f, " OFFSET {}", offset)?;
+        }
+        Ok(())
+    }
+}
+
+pub enum WildcardExpr {
+    /// An expression, followed by a wildcard expansion.
+    /// e.g. `alias.*``, the idents here represent the
+    /// prefix without the `*`.
+    QualifiedWildcard(Vec<Ident>),
+    /// An unqualified `*`
+    Wildcard,
+}
+
+impl std::fmt::Display for WildcardExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WildcardExpr::QualifiedWildcard(idents) => {
+                write!(f, "{}.*", display_dot_separated(idents))
+            }
+            WildcardExpr::Wildcard => write!(f, "*"),
+        }
+    }
+}
+/// One item of the comma-separated list following `SELECT`
+pub enum SelectItem {
+    /// Any expression, not followed by `[ AS ] alias`
+    UnnamedExpr(Expr),
+    /// An expression, followed by `[ AS ] alias`
+    ExprWithAlias {
+        expr: Expr,
+        alias: Ident,
+    },
+    WildcardExpr(WildcardExpr),
+}
+
+impl std::fmt::Display for SelectItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SelectItem::UnnamedExpr(expr) => write!(f, "{expr}"),
+            SelectItem::ExprWithAlias { expr, alias } => write!(f, "{expr} AS {alias}"),
+            SelectItem::WildcardExpr(w) => w.fmt(f),
+        }
+    }
+}
+
+pub struct TableWithJoins {
+    pub relation: TableFactor,
+    pub joins: Vec<Join>,
+}
+
+impl std::fmt::Display for TableWithJoins {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.relation)?;
+        if !self.joins.is_empty() {
+            SpaceOrNewline.fmt(f)?;
+            display_space_separated(&self.joins).fmt(f)?
+        };
+        Ok(())
+    }
+}
+
+pub struct Join {
+    pub join_operator: JoinOperator,
+    pub relation: TableFactor,
+}
+
+impl std::fmt::Display for Join {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let (join_type, jc) = match &self.join_operator {
+            JoinOperator::Join(c) => ("", c),
+            JoinOperator::Inner(c) => ("INNER ", c),
+            JoinOperator::Left(c) => ("LEFT ", c),
+            JoinOperator::LeftOuter(c) => ("LEFT OUTER ", c),
+            JoinOperator::Right(c) => ("RIGHT ", c),
+            JoinOperator::RightOuter(c) => ("RIGHT OUTER ", c),
+            JoinOperator::Full(c) => ("FULL ", c),
+            JoinOperator::FullOuter(c) => ("FULL OUTER ", c),
+        };
+        write!(f, "{}JOIN {} {}", join_type, self.relation, jc)
+    }
+}
+
+pub enum JoinOperator {
+    Join(JoinConstraint),
+    Inner(JoinConstraint),
+    Left(JoinConstraint),
+    LeftOuter(JoinConstraint),
+    Right(JoinConstraint),
+    RightOuter(JoinConstraint),
+    Full(JoinConstraint),
+    FullOuter(JoinConstraint),
+}
+
+pub enum JoinConstraint {
+    On(Expr),
+}
+
+impl std::fmt::Display for JoinConstraint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinConstraint::On(expr) => write!(f, "ON {expr}"),
+        }
+    }
+}
+
+pub enum TableFactor {
+    Table { name: Ident, alias: Option<String> },
+    Derived { subquery: Box<Query>, alias: Option<String> },
+}
+
+impl std::fmt::Display for TableFactor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TableFactor::Table { name, alias } => {
+                write!(
+                    f,
+                    "{name}{s}",
+                    s = if let Some(s) = alias { format!(" {s}") } else { "".to_string() }
+                )
+            }
+            TableFactor::Derived { subquery, alias } => {
+                write!(
+                    f,
+                    "({subquery}){s}",
+                    s = if let Some(s) = alias { format!(" {s}") } else { "".to_string() }
+                )
+            }
         }
     }
 }
@@ -108,7 +496,7 @@ impl std::fmt::Display for CreateTable {
         }
         f.write_str(" (")?;
         NewLine.fmt(f)?;
-        Indent(DisplayCommaSeparated(&self.columns)).fmt(f)?;
+        Indent(display_comma_separated(&self.columns)).fmt(f)?;
         NewLine.fmt(f)?;
         f.write_str(")")
     }
@@ -225,31 +613,14 @@ impl std::fmt::Display for AlterTableOperation {
     }
 }
 
-/// The `SELECT` query expression.
-pub struct Query {}
-
-impl std::fmt::Display for Query {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        todo!()
-    }
-}
-
-/// A name of a table, view, custom type, etc., possibly multi-part, i.e. db.schema.obj
-struct ObjectName(Vec<ObjectNamePart>);
-
-/// A single part of an ObjectName
-enum ObjectNamePart {
-    Identifier(String),
-}
-
 /// An SQL expression.
 pub enum Expr {
     /// A literal value, such as string, number or NULL
     Value(Value),
     /// Identifier e.g. table name or column name
-    Identifier(String),
-    /// Multi-part identifier, e.g. `table_alias.column` or `schema.table.col`
-    CompoundIdentifier(Vec<String>),
+    Identifier(Ident),
+    /// Multi-part identifier, e.g. `table_alias.column`
+    CompoundIdentifier(Vec<Ident>),
     BinaryOp {
         left: Box<Expr>,
         op: BinaryOperator,
@@ -316,8 +687,8 @@ impl std::fmt::Display for Expr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Value(v) => write!(f, "{v}"),
-            Expr::Identifier(s) => write!(f, "{s}"),
-            Expr::CompoundIdentifier(s) => write!(f, "{}", s.join(".")),
+            Expr::Identifier(ident) => write!(f, "{ident}"),
+            Expr::CompoundIdentifier(s) => display_inline_dot_separated(s).fmt(f),
             Expr::BinaryOp { left, op, right } => write!(f, "{left} {op} {right}"),
             Expr::UnaryOp { op, expr } => write!(f, "{op}{expr}"),
             Expr::Exists { subquery, negated } => {
@@ -353,6 +724,7 @@ impl std::fmt::Display for Expr {
     }
 }
 
+#[derive(Debug)]
 pub enum Value {
     Number(String),
     String(String),
@@ -371,6 +743,7 @@ impl std::fmt::Display for Value {
     }
 }
 
+#[derive(Debug)]
 pub enum BinaryOperator {
     /// Plus, e.g. `a + b`
     Plus,
@@ -420,6 +793,7 @@ impl std::fmt::Display for BinaryOperator {
     }
 }
 
+#[derive(Debug)]
 pub enum UnaryOperator {
     /// Plus, e.g. `+9`
     Plus,
@@ -440,8 +814,9 @@ impl std::fmt::Display for UnaryOperator {
 }
 
 /// A function call
+#[derive(Debug)]
 pub struct Function {
-    pub name: String,
+    pub name: Ident,
     /// The arguments to the function, including any options specified within the
     /// delimiting parentheses.
     pub args: Vec<FunctionArg>,
@@ -453,14 +828,14 @@ impl std::fmt::Display for Function {
     }
 }
 
+#[derive(Debug)]
 pub enum FunctionArg {
     Value(Value),
     /// An unqualified `*`
     Asterisk,
     /// Identifier e.g. table name or column name
-    Identifier(String),
-    /// Multi-part identifier, e.g. `table_alias.column` or `schema.table.col`
-    CompoundIdentifier(Vec<String>),
+    /// TODO: Support multi-part identifier, e.g. `table_alias.column` or `schema.table.col`
+    Identifier(Ident),
     Function(Function),
 }
 
@@ -470,7 +845,6 @@ impl std::fmt::Display for FunctionArg {
             FunctionArg::Value(v) => write!(f, "{v}"),
             FunctionArg::Asterisk => write!(f, "*"),
             FunctionArg::Identifier(s) => write!(f, "{s}"),
-            FunctionArg::CompoundIdentifier(s) => write!(f, "{}", s.join(".")),
             FunctionArg::Function(func) => write!(f, "{func}"),
         }
     }
