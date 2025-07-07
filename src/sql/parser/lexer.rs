@@ -125,6 +125,9 @@ pub enum Keyword {
     Update,
     Set,
     Delete,
+    Explain,
+    Analyze,
+    Verbose,
 }
 
 impl Keyword {
@@ -189,6 +192,9 @@ impl Keyword {
             "UPDATE" => Self::Update,
             "SET" => Self::Set,
             "DELETE" => Self::Delete,
+            "EXPLAIN" => Self::Explain,
+            "ANALYZE" => Self::Analyze,
+            "VERBOSE" => Self::Verbose,
             _ => return None,
         };
         Some(ans)
@@ -255,6 +261,9 @@ impl Keyword {
             Keyword::Update => "UPDATE",
             Keyword::Set => "SET",
             Keyword::Delete => "DELETE",
+            Keyword::Explain => "EXPLAIN",
+            Keyword::Analyze => "ANALYZE",
+            Keyword::Verbose => "VERBOSE",
         }
     }
 }

@@ -2,7 +2,10 @@
 
 ```ebnf
 
-sql_stmt          := transaction_stmt | ddl_stmt | dml_stmt ;
+sql_stmt          := transaction_stmt 
+                   | ddl_stmt 
+                   | dml_stmt 
+                   | "EXPLAIN" ( "ANALYZE" | "VERBOSE" ) sql_stmt ;
 
 -- TXN =================================================================================
 
@@ -48,8 +51,7 @@ alter_operation   := "ADD" "COLUMN"  [ "IF" "NOT" "EXISTS" ] column_def
 
 -- DML =================================================================================
 
-dml_stmt          := select_stmt | insert_stmt | update_stmt | delete_stmt 
-                   | "EXPLAIN" dml_stmt
+dml_stmt          := select_stmt | insert_stmt | update_stmt | delete_stmt ;
 
 select_stmt       := "SELECT" select_list
                       "FROM" from_clause

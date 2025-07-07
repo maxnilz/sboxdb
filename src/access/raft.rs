@@ -10,7 +10,7 @@ use crate::access::kv::Kv;
 use crate::access::value::{IndexKey, PrimaryKey, Tuple};
 use crate::catalog::catalog::Catalog;
 use crate::catalog::index::{Index, Indexes};
-use crate::catalog::table::{Table, Tables};
+use crate::catalog::schema::{Schema, Schemas};
 use crate::concurrency::mvcc::TransactionState;
 use crate::error::{Error, Result};
 use crate::raft;
@@ -54,7 +54,7 @@ enum Mutation<'a> {
     Rollback(TransactionState),
 
     /// Creates a table
-    CreateTable { txn: TransactionState, table: Table },
+    CreateTable { txn: TransactionState, schema: Schema },
     /// Deletes a table
     DeleteTable { txn: TransactionState, table: Cow<'a, str> },
 
@@ -117,30 +117,29 @@ impl RaftTxn {
 }
 
 impl Catalog for RaftTxn {
-    fn read_table(&self, table_name: &str) -> Result<Option<Table>> {
-        self.client.query(Query::ReadTable { txn: self.state.clone(), table: table_name.into() })
+    fn read_table(&self, table: &str) -> Result<Option<Schema>> {
+        self.client.query(Query::ReadTable { txn: self.state.clone(), table: table.into() })
     }
 
-    fn create_table(&self, table: Table) -> Result<()> {
-        self.client.mutate(Mutation::CreateTable { txn: self.state.clone(), table })
+    fn create_table(&self, schema: Schema) -> Result<()> {
+        self.client.mutate(Mutation::CreateTable { txn: self.state.clone(), schema })
     }
 
-    fn delete_table(&self, table_name: &str) -> Result<()> {
-        self.client
-            .mutate(Mutation::DeleteTable { txn: self.state.clone(), table: table_name.into() })
+    fn delete_table(&self, table: &str) -> Result<()> {
+        self.client.mutate(Mutation::DeleteTable { txn: self.state.clone(), table: table.into() })
     }
 
-    fn scan_tables(&self) -> Result<Tables> {
-        let tables: Vec<Table> =
+    fn scan_tables(&self) -> Result<Schemas> {
+        let tables: Vec<Schema> =
             self.client.query(Query::ScanTables { txn: self.state.clone() })?;
         Ok(Box::new(tables.into_iter()))
     }
 
-    fn read_index(&self, index_name: &str, table_name: &str) -> Result<Option<Index>> {
+    fn read_index(&self, index: &str, table: &str) -> Result<Option<Index>> {
         self.client.query(Query::ReadIndex {
             txn: self.state.clone(),
-            table: table_name.into(),
-            index: index_name.into(),
+            table: table.into(),
+            index: index.into(),
         })
     }
 
@@ -148,16 +147,16 @@ impl Catalog for RaftTxn {
         self.client.mutate(Mutation::CreateIndex { txn: self.state.clone(), index })
     }
 
-    fn delete_index(&self, index_name: &str, table_name: &str) -> Result<()> {
+    fn delete_index(&self, index: &str, table: &str) -> Result<()> {
         self.client.mutate(Mutation::DeleteIndex {
             txn: self.state.clone(),
-            table: table_name.into(),
-            index: index_name.into(),
+            table: table.into(),
+            index: index.into(),
         })
     }
 
-    fn scan_table_indexes(&self, table_name: &str) -> Result<Indexes> {
-        self.client.query(Query::ScanIndexes { txn: self.state.clone(), table: table_name.into() })
+    fn scan_table_indexes(&self, table: &str) -> Result<Indexes> {
+        self.client.query(Query::ScanIndexes { txn: self.state.clone(), table: table.into() })
     }
 }
 
@@ -178,62 +177,58 @@ impl Transaction for RaftTxn {
         self.client.mutate(Mutation::Rollback(self.state.clone()))
     }
 
-    fn insert(&mut self, tblname: &str, tuple: Tuple) -> Result<PrimaryKey> {
-        self.client.mutate(Mutation::Insert {
-            txn: self.state.clone(),
-            table: tblname.into(),
-            tuple,
-        })
+    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
+        self.client.mutate(Mutation::Insert { txn: self.state.clone(), table: table.into(), tuple })
     }
 
-    fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()> {
+    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()> {
         self.client.mutate(Mutation::Delete {
             txn: self.state.clone(),
-            table: tblname.into(),
+            table: table.into(),
             pk: pk.clone(),
         })
     }
 
-    fn read(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
         self.client.query(Query::Read {
             txn: self.state.clone(),
-            table: tblname.into(),
+            table: table.into(),
             pk: pk.clone(),
         })
     }
 
-    fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan> {
+    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan> {
         let result: Vec<Result<Tuple>> = self.client.query(Query::Scan {
             txn: self.state.clone(),
-            table: tblname.into(),
+            table: table.into(),
             predicate,
         })?;
         Ok(Box::new(result.into_iter()))
     }
 
-    fn drop(&self, tblname: &str) -> Result<()> {
-        self.client.mutate(Mutation::Drop { txn: self.state.clone(), table: tblname.into() })
+    fn drop(&self, table: &str) -> Result<()> {
+        self.client.mutate(Mutation::Drop { txn: self.state.clone(), table: table.into() })
     }
 
     fn read_index_entry(
         &self,
-        tblname: &str,
-        indname: &str,
+        table: &str,
+        index: &str,
         index_key: IndexKey,
     ) -> Result<Option<Vec<Tuple>>> {
         self.client.query(Query::ReadIndexEntry {
             txn: self.state.clone(),
-            table: tblname.into(),
-            index: indname.into(),
+            table: table.into(),
+            index: index.into(),
             value: index_key,
         })
     }
 
-    fn scan_index_entries(&self, tblname: &str, indname: &str) -> Result<IndexScan> {
+    fn scan_index_entries(&self, table: &str, index: &str) -> Result<IndexScan> {
         let result: Vec<(IndexKey, Vec<Tuple>)> = self.client.query(Query::ScanIndexEntries {
             txn: self.state.clone(),
-            table: tblname.into(),
-            index: indname.into(),
+            table: table.into(),
+            index: index.into(),
         })?;
         Ok(Box::new(result.into_iter()))
     }
@@ -364,9 +359,9 @@ impl<T: Storage> State<T> {
             }
             Mutation::Commit(txn) => bincodec::serialize(&self.engine.resume(txn)?.commit()?),
             Mutation::Rollback(txn) => bincodec::serialize(&self.engine.resume(txn)?.rollback()?),
-            Mutation::CreateTable { txn, table } => {
+            Mutation::CreateTable { txn, schema } => {
                 let txn = self.engine.resume(txn)?;
-                bincodec::serialize(&txn.create_table(table)?)
+                bincodec::serialize(&txn.create_table(schema)?)
             }
             Mutation::DeleteTable { txn, table } => {
                 let txn = self.engine.resume(txn)?;

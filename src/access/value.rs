@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::column::{Column, Columns};
+use crate::catalog::column::{Column, ColumnRef, Columns};
 use crate::catalog::r#type::Value;
 use crate::error::{Error, Result};
 
@@ -12,11 +12,14 @@ pub struct Values {
 }
 
 impl Values {
-    pub fn new(values: Vec<Value>) -> Values {
-        Values { values }
-    }
     pub fn into_vec(self) -> Vec<Value> {
         self.values
+    }
+}
+
+impl From<Vec<Value>> for Values {
+    fn from(values: Vec<Value>) -> Self {
+        Self { values }
     }
 }
 
@@ -39,14 +42,8 @@ pub struct Tuple {
 }
 
 impl Tuple {
-    pub fn new(values: Values, columns: Columns) -> Result<Tuple> {
-        let tuple = Tuple { values, columns };
-        tuple.validate()?;
-        Ok(tuple)
-    }
-
-    pub fn from(values: Vec<Value>, columns: &[Column]) -> Result<Tuple> {
-        let tuple = Tuple { values: Values::new(values), columns: Columns::from_ref_vec(columns) };
+    pub fn new(values: Values, columns: &[ColumnRef]) -> Result<Tuple> {
+        let tuple = Tuple { values, columns: Columns::from(columns) };
         tuple.validate()?;
         Ok(tuple)
     }
@@ -70,7 +67,7 @@ impl Tuple {
                 .ok_or_else(|| Error::value(format!("Column {} is not found", column.name)))?;
             out.push(val.clone());
         }
-        Ok(Values::new(out))
+        Ok(Values::from(out))
     }
 
     pub fn check_columns(&self, columns: &Columns) -> Result<()> {
@@ -98,6 +95,40 @@ impl Tuple {
                 _ => Ok(()),
             }?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::vec;
+
+    use super::*;
+    use crate::catalog::r#type::DataType;
+    use crate::storage::codec::bincodec;
+
+    #[test]
+    fn test_values_codec() -> Result<()> {
+        let columns = Columns::from(vec![Column::new(
+            "".to_string(),
+            DataType::String,
+            true,
+            false,
+            true,
+            None,
+        )]);
+        let values = Values::from(vec![Value::String("hello".to_string())]);
+
+        // encode with &values.as_ref() as input arg, decode with Values
+        let enc = bincodec::serialize(&values.as_ref())?;
+        let tuple = Tuple::new(bincodec::deserialize(&enc)?, &columns)?;
+        assert_eq!(tuple.values, values);
+
+        // encode with &values as input arg, decode with Values
+        let enc = bincodec::serialize(&values)?;
+        let tuple = Tuple::new(bincodec::deserialize(&enc)?, &columns)?;
+        assert_eq!(tuple.values, values);
+
         Ok(())
     }
 }

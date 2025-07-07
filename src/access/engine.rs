@@ -35,23 +35,23 @@ pub trait Transaction: Catalog {
     fn rollback(self) -> Result<()>;
 
     /// Inserts a new table row
-    fn insert(&mut self, tblname: &str, tuple: Tuple) -> Result<PrimaryKey>;
+    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey>;
     /// Deletes a table row
-    fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()>;
+    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()>;
     /// Reads a table row, if it exists
-    fn read(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
     /// Scan a table
-    fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan>;
+    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan>;
     /// drop table data
-    fn drop(&self, tblname: &str) -> Result<()>;
+    fn drop(&self, table: &str) -> Result<()>;
 
     /// Reads an index entry from index, if it exists
     fn read_index_entry(
         &self,
-        tblname: &str,
-        indname: &str,
+        table: &str,
+        index: &str,
         index_key: IndexKey,
     ) -> Result<Option<Vec<Tuple>>>;
     /// Scan index entries
-    fn scan_index_entries(&self, tblname: &str, indname: &str) -> Result<IndexScan>;
+    fn scan_index_entries(&self, table: &str, index: &str) -> Result<IndexScan>;
 }

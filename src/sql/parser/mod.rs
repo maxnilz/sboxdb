@@ -1,11 +1,10 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::catalog::r#type::DataType;
 use crate::error::Error;
 use crate::error::Result;
 use crate::sql::parser::ast::{
-    AlterTableOperation, Assignment, BinaryOperator, Column, CreateIndex, Expr, Function,
+    AlterTableOperation, Assignment, BinaryOperator, Column, CreateIndex, DataType, Expr, Function,
     FunctionArg, Ident, Insert, InsertSource, Join, JoinConstraint, JoinOperator, LimitClause,
     ObjectType, OrderByExpr, Precedence, SelectItem, Statement, TableFactor, TableWithJoins,
     UnaryOperator, Update, Values, WildcardExpr,
@@ -13,9 +12,12 @@ use crate::sql::parser::ast::{
 use crate::sql::parser::ast::{Query, Value};
 use crate::sql::parser::lexer::{Keyword, Lexer, Token};
 
-mod ast;
+pub mod ast;
 mod display_utils;
 mod lexer;
+mod visitor;
+
+pub use visitor::*;
 
 struct Parser {
     /// The tokens
@@ -76,10 +78,18 @@ impl Parser {
                 Keyword::Insert => self.parse_dml_insert(),
                 Keyword::Update => self.parse_dml_update(),
                 Keyword::Delete => self.parse_dml_delete(),
+                Keyword::Explain => self.parse_explain(),
                 _ => self.expected("an SQL statement", next_token),
             },
             _ => self.expected("an SQL statement", next_token),
         }
+    }
+
+    fn parse_explain(&mut self) -> Result<Statement> {
+        let analyze = self.parse_keyword(Keyword::Analyze);
+        let verbose = self.parse_keyword(Keyword::Verbose);
+        let statement = self.parse_statement()?;
+        Ok(Statement::Explain { analyze, verbose, statement: Box::new(statement) })
     }
 
     fn parse_dml_delete(&mut self) -> Result<Statement> {

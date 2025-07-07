@@ -1,25 +1,36 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::column::{Column, Columns};
+use crate::catalog::column::Columns;
 use crate::error::Error;
 use crate::error::Result;
 
-/// Table holds metadata about table
+/// A reference-counted reference to a [`Schema`].
+pub type SchemaRef = Arc<Schema>;
+
+/// Describes the meta-data of an ordered sequence of relative
+/// types, e.g. table schema etc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Table {
-    /// Table name
+pub struct Schema {
+    /// Schema name
     pub name: String,
-    /// User-orientated Table columns
+    /// A sequence of columns that describe the schema.
     pub columns: Columns,
 }
 
 /// A table scan iterator
-pub type Tables = Box<dyn DoubleEndedIterator<Item = Table>>;
+pub type Schemas = Box<dyn DoubleEndedIterator<Item = Schema>>;
 
-impl Table {
-    pub fn new(name: String, columns: Vec<Column>) -> Table {
-        Table { name, columns: Columns::new(columns) }
+impl Schema {
+    pub fn new(name: String, columns: Columns) -> Schema {
+        Schema { name, columns }
     }
+
+    pub fn empty() -> Schema {
+        Schema { name: "".to_string(), columns: Columns::empty() }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(Error::value("Table name can't be empty"));

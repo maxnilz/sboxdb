@@ -12,3 +12,5 @@ a.rs
 a.json
 b.json
 gold.tmp
+
+/derive/target/

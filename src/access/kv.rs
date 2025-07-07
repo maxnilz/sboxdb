@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -6,9 +7,10 @@ use crate::access::engine::{Engine, IndexScan, Scan, Transaction};
 use crate::access::expression::Expression;
 use crate::access::value::{IndexKey, PrimaryKey, Tuple, Values};
 use crate::catalog::catalog::Catalog;
+use crate::catalog::column::Columns;
 use crate::catalog::index::{Index, Indexes};
 use crate::catalog::r#type::Value;
-use crate::catalog::table::{Table, Tables};
+use crate::catalog::schema::{Schema, Schemas};
 use crate::concurrency::mvcc;
 use crate::concurrency::mvcc::TransactionState;
 use crate::error::{Error, Result};
@@ -125,10 +127,10 @@ impl<T: Storage> KvTxn<T> {
         self.txn.state()
     }
 
-    fn get_tuples_by_pks(&self, tblname: &str, pks: Vec<PrimaryKey>) -> Result<Vec<Tuple>> {
+    fn get_tuples_by_pks(&self, table: &str, pks: Vec<PrimaryKey>) -> Result<Vec<Tuple>> {
         pks.iter()
             .map(|it| {
-                self.read(tblname, it)
+                self.read(table, it)
                     .and_then(|t| t.ok_or(Error::value(format!("Tuple with key {} not found", it))))
             })
             .collect::<Result<Vec<Tuple>>>()
@@ -136,62 +138,63 @@ impl<T: Storage> KvTxn<T> {
 }
 
 impl<T: Storage> Catalog for KvTxn<T> {
-    fn read_table(&self, tblname: &str) -> Result<Option<Table>> {
-        let tblname = Cow::Borrowed(tblname);
-        let key = Key::Table(tblname).encode()?;
+    fn read_table(&self, table: &str) -> Result<Option<Schema>> {
+        let table = Cow::Borrowed(table);
+        let key = Key::Table(table).encode()?;
         self.txn.get(&key)?.map(|it| bincodec::deserialize(&it)).transpose()
     }
 
-    fn create_table(&self, table: Table) -> Result<()> {
-        table.validate()?;
-        if self.read_table(&table.name)?.is_some() {
-            return Err(Error::value(format!("Table {} already exits", &table.name)));
+    fn create_table(&self, schema: Schema) -> Result<()> {
+        schema.validate()?;
+        if self.read_table(&schema.name)?.is_some() {
+            return Err(Error::value(format!("Table {} already exits", &schema.name)));
         }
-        let tblname = Cow::Borrowed(table.name.as_str());
-        let key = Key::Table(tblname).encode()?;
-        self.txn.set(&key, bincodec::serialize(&table)?)?;
+        let table = Cow::Borrowed(schema.name.as_str());
+        let key = Key::Table(table).encode()?;
+        self.txn.set(&key, bincodec::serialize(&schema)?)?;
 
         // Create unique index for unique column
-        for column in table.columns.iter() {
+        for column in schema.columns.iter() {
             if column.primary_key || !column.unique {
                 continue;
             }
-            let index = Index::from(&column.name, &table.name, vec![column], true);
+            let index =
+                Index::from(&column.name, &schema.name, Columns::from([Arc::clone(column)]), true);
             self.create_index(index)?;
         }
         Ok(())
     }
 
-    fn delete_table(&self, tblname: &str) -> Result<()> {
+    fn delete_table(&self, table: &str) -> Result<()> {
         // delete indexes
-        let indexes = self.scan_table_indexes(tblname)?;
+        let indexes = self.scan_table_indexes(table)?;
         for index in indexes {
             self.delete_index(&index.name, &index.tblname)?
         }
 
         // drop table data
-        Transaction::drop(self, tblname)?;
+        Transaction::drop(self, table)?;
 
         // delete table definition
-        let key = Key::Table(tblname.into()).encode()?;
+        let key = Key::Table(table.into()).encode()?;
         self.txn.delete(&key)?;
 
         Ok(())
     }
 
-    fn scan_tables(&self) -> Result<Tables> {
+    fn scan_tables(&self) -> Result<Schemas> {
         let prefix = KeyPrefix::Table.encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         let iter = scan
             .iter()
             .map(|it| it.and_then(|(_, v)| bincodec::deserialize(&v)))
-            .collect::<Result<Vec<Table>>>()?
+            .collect::<Result<Vec<Schema>>>()?
             .into_iter();
         Ok(Box::new(iter))
     }
 
-    fn read_index(&self, indname: &str, tblname: &str) -> Result<Option<Index>> {
-        let key = Key::Index(tblname.into(), indname.into()).encode()?;
+    fn read_index(&self, index: &str, table: &str) -> Result<Option<Index>> {
+        let key = Key::Index(table.into(), index.into()).encode()?;
         self.txn.get(&key)?.map(|it| bincodec::deserialize(&it)).transpose()
     }
 
@@ -212,21 +215,21 @@ impl<T: Storage> Catalog for KvTxn<T> {
         // index existing data in case of the table exists
     }
 
-    fn delete_index(&self, indname: &str, tblname: &str) -> Result<()> {
+    fn delete_index(&self, index: &str, table: &str) -> Result<()> {
         // delete indexed entries
-        self.delete_index_entries(tblname, indname)?;
+        self.delete_index_entries(table, index)?;
 
         // delete index definition
-        let tblame = Cow::Borrowed(tblname);
-        let name = Cow::Borrowed(indname);
-        let key = Key::Index(tblame, name).encode()?;
+        let table = Cow::Borrowed(table);
+        let index = Cow::Borrowed(index);
+        let key = Key::Index(table, index).encode()?;
         self.txn.delete(&key)?;
 
         Ok(())
     }
 
-    fn scan_table_indexes(&self, tblname: &str) -> Result<Indexes> {
-        let prefix = KeyPrefix::Index(tblname.into()).encode()?;
+    fn scan_table_indexes(&self, table: &str) -> Result<Indexes> {
+        let prefix = KeyPrefix::Index(table.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         scan.iter()
             .map(|it| it.and_then(|(_, v)| bincodec::deserialize(&v)))
@@ -285,10 +288,10 @@ impl<T: Storage> KvTxn<T> {
         }
     }
 
-    fn delete_index_entries(&self, tblname: &str, indname: &str) -> Result<()> {
-        let tblame = Cow::Borrowed(tblname);
-        let name = Cow::Borrowed(indname);
-        let prefix = KeyPrefix::HashIndexEntry(tblame, name).encode()?;
+    fn delete_index_entries(&self, table: &str, index: &str) -> Result<()> {
+        let table = Cow::Borrowed(table);
+        let index = Cow::Borrowed(index);
+        let prefix = KeyPrefix::HashIndexEntry(table, index).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         let mut iter = scan.iter();
         while let Some((k, _)) = iter.next().transpose()? {
@@ -315,41 +318,41 @@ impl<T: Storage> Transaction for KvTxn<T> {
         self.txn.rollback()
     }
 
-    fn insert(&mut self, tblname: &str, tuple: Tuple) -> Result<PrimaryKey> {
-        let table = self.must_read_table(tblname)?;
-        tuple.check_columns(&table.columns)?;
+    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
+        let schema = self.must_read_table(table)?;
+        tuple.check_columns(&schema.columns)?;
         // Check if the pk exists
         let pk = tuple.primary_key()?;
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+        let key = Key::Row(table.into(), pk.clone()).encode()?;
         if self.txn.get(&key)?.is_some() {
             return Err(Error::value(format!(
                 "Primary key {} already exits for table {}",
-                pk, tblname
+                pk, table
             )));
         }
         // Set the tuple value under primary key
-        self.txn.set(&key, bincodec::serialize(&tuple.values.as_ref())?)?;
+        self.txn.set(&key, bincodec::serialize(&tuple.values)?)?;
 
         // Update indexes
-        let indexes = self.scan_table_indexes(tblname)?;
+        let indexes = self.scan_table_indexes(table)?;
         for index in indexes {
             self.insert_index_entry(index, &tuple)?;
         }
         Ok(pk.clone())
     }
 
-    fn delete(&mut self, tblname: &str, pk: &PrimaryKey) -> Result<()> {
-        let table = self.must_read_table(tblname)?;
+    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()> {
+        let schema = self.must_read_table(table)?;
 
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+        let key = Key::Row(table.into(), pk.clone()).encode()?;
         let row = self.txn.get(&key)?;
         if row.is_none() {
             return Ok(());
         }
-        let tuple = Tuple::new(bincodec::deserialize(&row.unwrap())?, table.columns)?;
+        let tuple = Tuple::new(bincodec::deserialize(&row.unwrap())?, &schema.columns)?;
 
         // Delete tuple from index
-        let indexes = self.scan_table_indexes(tblname)?;
+        let indexes = self.scan_table_indexes(table)?;
         for index in indexes {
             let cols = &index.columns;
             let keyv = tuple.get_values(&cols)?;
@@ -362,27 +365,27 @@ impl<T: Storage> Transaction for KvTxn<T> {
         Ok(())
     }
 
-    fn read(&self, tblname: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
-        let table = self.must_read_table(tblname)?;
-        let key = Key::Row(tblname.into(), pk.clone()).encode()?;
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
+        let schema = self.must_read_table(table)?;
+        let key = Key::Row(table.into(), pk.clone()).encode()?;
         let row = self.txn.get(&key)?;
         if let Some(bytes) = row {
-            let tuple = Tuple::new(bincodec::deserialize(&bytes)?, table.columns)?;
+            let tuple = Tuple::new(bincodec::deserialize(&bytes)?, &schema.columns)?;
             return Ok(Some(tuple));
         }
         Ok(None)
     }
 
-    fn scan(&self, tblname: &str, predicate: Option<Expression>) -> Result<Scan> {
-        let table = self.must_read_table(tblname)?;
-        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
+    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan> {
+        let schema = self.must_read_table(table)?;
+        let prefix = KeyPrefix::Row(table.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         let iter = scan
             .iter()
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let values = bincodec::deserialize(&v)?;
-                    Tuple::new(values, table.columns.clone())
+                    Tuple::new(values, &schema.columns)
                 })
             })
             .filter_map(|r| match r {
@@ -405,8 +408,8 @@ impl<T: Storage> Transaction for KvTxn<T> {
         Ok(Box::new(iter))
     }
 
-    fn drop(&self, tblname: &str) -> Result<()> {
-        let prefix = KeyPrefix::Row(tblname.into()).encode()?;
+    fn drop(&self, table: &str) -> Result<()> {
+        let prefix = KeyPrefix::Row(table.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         let mut iter = scan.iter();
         while let Some((k, _)) = iter.next().transpose()? {
@@ -417,28 +420,24 @@ impl<T: Storage> Transaction for KvTxn<T> {
 
     fn read_index_entry(
         &self,
-        tblname: &str,
-        indname: &str,
+        table: &str,
+        index: &str,
         index_key: IndexKey,
     ) -> Result<Option<Vec<Tuple>>> {
-        let tblame = Cow::Borrowed(tblname);
-        let name = Cow::Borrowed(indname);
         let keyv = bincodec::serialize(&index_key)?;
-        let key = Key::HashIndexEntry(tblame, name, keyv.into()).encode()?;
+        let key = Key::HashIndexEntry(table.into(), index.into(), keyv.into()).encode()?;
         match self.txn.get(&key)? {
             None => Ok(None),
             Some(bytes) => {
                 let values: Vec<Value> = bincodec::deserialize(&bytes)?;
-                let tuples = self.get_tuples_by_pks(tblname, values)?;
+                let tuples = self.get_tuples_by_pks(table, values)?;
                 Ok(Some(tuples))
             }
         }
     }
 
-    fn scan_index_entries(&self, tblname: &str, indname: &str) -> Result<IndexScan> {
-        let tblame = Cow::Borrowed(tblname);
-        let name = Cow::Borrowed(indname);
-        let prefix = KeyPrefix::HashIndexEntry(tblame, name).encode()?;
+    fn scan_index_entries(&self, table: &str, index: &str) -> Result<IndexScan> {
+        let prefix = KeyPrefix::HashIndexEntry(table.into(), index.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
         let primary_keys = scan
             .iter()
@@ -460,7 +459,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
         let iter = primary_keys
             .into_iter()
             .map(|(index_key, pks)| {
-                let tuples = self.get_tuples_by_pks(tblname, pks)?;
+                let tuples = self.get_tuples_by_pks(table, pks)?;
                 Ok((index_key, tuples))
             })
             .collect::<Result<Vec<_>>>()?
@@ -491,8 +490,8 @@ mod tests {
 
         let t1 = kv.begin()?;
 
-        let tblnname = String::from("foo");
-        let columns = vec![
+        let table = String::from("foo");
+        let columns: Columns = vec![
             Column::new("col1".to_string(), DataType::Integer, true, false, true, None),
             Column::new(
                 "col2".to_string(),
@@ -503,47 +502,48 @@ mod tests {
                 Some(Value::Null),
             ),
             Column::new("col3".to_string(), DataType::String, false, false, true, None),
-        ];
-        let table = Table::new(tblnname.clone(), columns.clone());
+        ]
+        .into();
+        let schema = Schema::new(table.clone(), columns);
 
         // create table
-        t1.create_table(table.clone())?;
+        t1.create_table(schema.clone())?;
 
         // check table creation
-        let got = t1.read_table(&tblnname)?;
-        assert_eq!(got, Some(table));
+        let got = t1.read_table(&table)?;
+        assert_eq!(got, Some(schema.clone()));
 
         // An unique index should be created for unique column col3
-        let indexes = t1.scan_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&table)?;
         assert_eq!(indexes.len(), 1);
 
         // creat index
-        let indname = String::from("alice");
-        let index = Index::from(&indname, &tblnname, vec![&columns[1]], false);
+        let index = String::from("alice");
+        let index = Index::from(&index, &table, Columns::from(&schema.columns[1..2]), false);
         t1.create_index(index.clone())?;
 
         // check the index creation
-        let got = t1.read_index(&indname, &tblnname)?;
-        assert_eq!(got, Some(index));
-        let indexes = t1.scan_table_indexes(&tblnname)?;
+        let got = t1.read_index(&index.name, &table)?;
+        assert_eq!(got, Some(index.clone()));
+        let indexes = t1.scan_table_indexes(&table)?;
         assert_eq!(indexes.len(), 2);
 
         // delete index
-        t1.delete_index(&indname, &tblnname)?;
+        t1.delete_index(&index.name, &table)?;
 
         // check the index deletion
-        let got = t1.read_index(&indname, &tblnname)?;
+        let got = t1.read_index(&index.name, &table)?;
         assert_eq!(got, None);
-        let indexes = t1.scan_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&table)?;
         assert_eq!(indexes.len(), 1);
 
         // delete table
-        t1.delete_table(&tblnname)?;
+        t1.delete_table(&table)?;
 
         // check table deletion
-        let got = t1.read_table(&tblnname)?;
+        let got = t1.read_table(&table)?;
         assert_eq!(got, None);
-        let indexes = t1.scan_table_indexes(&tblnname)?;
+        let indexes = t1.scan_table_indexes(&table)?;
         assert_eq!(indexes.len(), 0);
 
         t1.commit()?;
@@ -743,7 +743,7 @@ mod tests {
                 columns.push(column)
             }
             // create table
-            let table = Table::new(self.name.clone(), columns);
+            let table = Schema::new(self.name.clone(), columns.into());
             txn.create_table(table.clone())?;
 
             // generate table data
@@ -751,7 +751,7 @@ mod tests {
             Ok(())
         }
 
-        fn generate_data(&mut self, table: Table, txn: &mut dyn Txn) -> Result<()> {
+        fn generate_data(&mut self, table: Schema, txn: &mut dyn Txn) -> Result<()> {
             let batch_size = 128;
             let mut num_generated = 0;
             while num_generated < self.num_rows {
@@ -765,7 +765,8 @@ mod tests {
                     for it in &values {
                         entry.push(it[i as usize].clone());
                     }
-                    let tuple = Tuple::from(entry, &table.columns)?;
+                    let values = Values::from(entry);
+                    let tuple = Tuple::new(values, &table.columns)?;
                     txn.insert(&table.name, tuple)?;
                     num_generated += 1;
                 }

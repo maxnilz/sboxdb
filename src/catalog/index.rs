@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::column::{Column, Columns};
+use crate::catalog::column::{Column, ColumnRef, Columns};
 use crate::error::Error;
 use crate::error::Result;
 
@@ -30,16 +30,16 @@ impl Index {
             index_type: IndexType::HashIndex,
             uniqueness,
             tblname,
-            columns: Columns::new(columns),
+            columns: Columns::from(columns),
         }
     }
 
-    pub fn from(name: &str, tblname: &str, columns: Vec<&Column>, uniqueness: bool) -> Index {
+    pub fn from(name: &str, tblname: &str, columns: Columns, uniqueness: bool) -> Index {
         Index {
             name: name.to_string(),
             tblname: tblname.to_string(),
             index_type: IndexType::HashIndex,
-            columns: Columns::from(columns),
+            columns,
             uniqueness,
         }
     }
