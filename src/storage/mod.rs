@@ -2,7 +2,8 @@ use std::collections::Bound;
 use std::fmt::Debug;
 use std::iter::once;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::error::Result;
 

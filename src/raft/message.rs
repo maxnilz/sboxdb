@@ -1,11 +1,17 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use super::node::{NodeId, ProposalId};
+use super::node::NodeId;
+use super::node::ProposalId;
 use super::persister::Entry;
-use super::{Command, CommandResult, Index, Term};
+use super::Command;
+use super::CommandResult;
+use super::Index;
+use super::Term;
 use crate::error::Result;
 
 /// A message that passed between raft peers

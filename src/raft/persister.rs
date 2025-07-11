@@ -1,11 +1,15 @@
 use std::ops::Bound;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use super::node::NodeId;
-use super::{Command, Index, Term};
+use super::Command;
+use super::Index;
+use super::Term;
 use crate::error::Result;
-use crate::storage::codec::{bincodec, keycodec};
+use crate::storage::codec::bincodec;
+use crate::storage::codec::keycodec;
 use crate::storage::Storage;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -194,7 +198,8 @@ impl Persister {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{new_storage, StorageType};
+    use crate::storage::new_storage;
+    use crate::storage::StorageType;
 
     #[test]
     fn test_persister_simple() -> Result<()> {

@@ -1,8 +1,11 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::ops::Bound;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use super::{ScanIterator, Storage};
+use super::ScanIterator;
+use super::Storage;
 use crate::error::Result;
 use crate::storage;
 

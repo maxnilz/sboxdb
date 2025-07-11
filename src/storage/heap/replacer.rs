@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use super::page::FrameId;

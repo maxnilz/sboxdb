@@ -1,9 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 
 pub mod message;
 pub mod node;

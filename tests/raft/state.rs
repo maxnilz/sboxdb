@@ -1,9 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use sboxdb::error::Error;
 use sboxdb::raft::node::NodeId;
-use sboxdb::raft::{ApplyMsg, Command, Index, State};
+use sboxdb::raft::ApplyMsg;
+use sboxdb::raft::Command;
+use sboxdb::raft::Index;
+use sboxdb::raft::State;
 
 type Log = HashMap<Index, Command>;
 #[derive(Debug)]

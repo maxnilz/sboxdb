@@ -1,22 +1,34 @@
-use std::collections::{HashMap, HashSet};
-use std::ops::{Add, Mul};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::ops::Add;
+use std::ops::Mul;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use std::time::SystemTime;
 
-use log::{debug, error};
+use log::debug;
+use log::error;
 use sboxdb::error::Error;
+use sboxdb::raft::node::NodeId;
+use sboxdb::raft::node::NodeState;
 use sboxdb::raft::node::ELECTION_TIMEOUT_RANGE;
 use sboxdb::raft::node::HEARTBEAT_INTERVAL;
 use sboxdb::raft::node::ROUND_TRIP_INTERVAL;
 use sboxdb::raft::node::TICK_INTERVAL;
-use sboxdb::raft::node::{NodeId, NodeState};
 use sboxdb::raft::server::Server;
-use sboxdb::raft::{Command, CommandResult, Index, State, Term};
-use sboxdb::storage::{new_storage, StorageType};
+use sboxdb::raft::Command;
+use sboxdb::raft::CommandResult;
+use sboxdb::raft::Index;
+use sboxdb::raft::State;
+use sboxdb::raft::Term;
+use sboxdb::storage::new_storage;
+use sboxdb::storage::StorageType;
 use tokio::sync::broadcast;
 
-use crate::raft::state::{KvState, States};
-use crate::raft::transport::{LabNetMesh, Noise};
+use crate::raft::state::KvState;
+use crate::raft::state::States;
+use crate::raft::transport::LabNetMesh;
+use crate::raft::transport::Noise;
 
 pub fn max_election_timeout() -> Duration {
     let ticks = ELECTION_TIMEOUT_RANGE.end + HEARTBEAT_INTERVAL;

@@ -1,10 +1,14 @@
 use std::ops::Deref;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::catalog::column::{Column, ColumnRef, Columns};
+use crate::catalog::column::Column;
+use crate::catalog::column::ColumnRef;
+use crate::catalog::column::Columns;
 use crate::catalog::r#type::Value;
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Values {
@@ -104,19 +108,15 @@ mod tests {
     use std::vec;
 
     use super::*;
+    use crate::catalog::column::ColumnBuilder;
     use crate::catalog::r#type::DataType;
     use crate::storage::codec::bincodec;
 
     #[test]
     fn test_values_codec() -> Result<()> {
-        let columns = Columns::from(vec![Column::new(
-            "".to_string(),
-            DataType::String,
-            true,
-            false,
-            true,
-            None,
-        )]);
+        let columns = Columns::from(vec![ColumnBuilder::new("", DataType::String)
+            .primary_key()
+            .build_unchecked()]);
         let values = Values::from(vec![Value::String("hello".to_string())]);
 
         // encode with &values.as_ref() as input arg, decode with Values

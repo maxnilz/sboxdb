@@ -1,11 +1,16 @@
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
+use std::fmt::Formatter;
 
-use sqlparser_derive::{Visit, VisitMut};
+use sqlparser_derive::Visit;
+use sqlparser_derive::VisitMut;
 
-use crate::sql::parser::display_utils::{
-    display_comma_separated, display_dot_separated, display_inline_dot_separated,
-    display_space_separated, Indent, NewLine, SpaceOrNewline,
-};
+use crate::sql::parser::display_utils::display_comma_separated;
+use crate::sql::parser::display_utils::display_dot_separated;
+use crate::sql::parser::display_utils::display_inline_dot_separated;
+use crate::sql::parser::display_utils::display_space_separated;
+use crate::sql::parser::display_utils::Indent;
+use crate::sql::parser::display_utils::NewLine;
+use crate::sql::parser::display_utils::SpaceOrNewline;
 use crate::sql::parser::lexer::Token;
 
 #[derive(Visit, VisitMut)]
@@ -754,9 +759,10 @@ pub enum Expr {
         expr: Box<Expr>,
         pattern: Box<Expr>,
     },
-    /// A parenthesized subquery `(SELECT ...)`, used in expression like
-    /// `SELECT (subquery) AS x` or `WHERE (subquery) = x`
-    Subquery(Box<Query>),
+    /// A parenthesized scalar subquery `(SELECT ...)`, used in expression like
+    /// `SELECT (subquery) AS x` or `WHERE (subquery) = x`.
+    /// A scalar subquery must return exactly one column and at most one row.
+    ScalarSubquery(Box<Query>),
     /// `[ NOT ] IN (val1, val2, ...)`
     InList {
         expr: Box<Expr>,
@@ -798,7 +804,7 @@ impl std::fmt::Display for Expr {
             Expr::ILike { negated, expr, pattern } => {
                 write!(f, "{} {}ILIKE {}", expr, if *negated { "NOT " } else { "" }, pattern)
             }
-            Expr::Subquery(q) => write!(f, "{q}"),
+            Expr::ScalarSubquery(q) => write!(f, "{q}"),
             Expr::InList { expr, list, negated } => write!(
                 f,
                 "{} {}IN ({})",

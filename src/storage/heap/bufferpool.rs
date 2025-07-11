@@ -1,10 +1,15 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use super::page::{FrameId, Key, Page, PageId};
+use super::page::FrameId;
+use super::page::Key;
+use super::page::Page;
+use super::page::PageId;
 use super::replacer::Replacer;
 use super::replacer::SyncLRUKReplacer;
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 use crate::storage::Storage;
 
 /// The buffer pool is responsible for moving physical pages back and forth
@@ -351,7 +356,8 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::storage::{new_storage, StorageType};
+    use crate::storage::new_storage;
+    use crate::storage::StorageType;
 
     #[test]
     fn test_buffer_pool_basic() -> Result<()> {

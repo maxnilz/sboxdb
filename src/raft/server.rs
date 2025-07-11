@@ -3,19 +3,29 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use log::debug;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
-use super::message::{Address, Event, Message};
+use super::message::Address;
+use super::message::Event;
+use super::message::Message;
 use super::node::follower::Follower;
-use super::node::{Node, NodeId, NodeState, ProposalId, RawNode, TICK_INTERVAL};
+use super::node::Node;
+use super::node::NodeId;
+use super::node::NodeState;
+use super::node::ProposalId;
+use super::node::RawNode;
+use super::node::TICK_INTERVAL;
 use super::persister::Persister;
 use super::transport::Transport;
+use super::Command;
+use super::CommandResult;
 use super::State;
-use super::{Command, CommandResult};
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 use crate::storage::Storage;
 
 struct Request {

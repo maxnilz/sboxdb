@@ -1,18 +1,24 @@
 use std::cell::Cell;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::time::Duration;
 
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::raft::message::{Address, Event, Message};
+use crate::raft::message::Address;
+use crate::raft::message::Event;
+use crate::raft::message::Message;
 use crate::raft::node::follower::Follower;
-use crate::raft::persister::{HardState, Persister};
+use crate::raft::persister::HardState;
+use crate::raft::persister::Persister;
+use crate::raft::Index;
 use crate::raft::State;
-use crate::raft::{Index, Term};
+use crate::raft::Term;
 
 macro_rules! log {
     ($rn:expr, $lvl:expr, $($arg:tt)+) => {

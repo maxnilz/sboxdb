@@ -1,7 +1,8 @@
 use std::iter::Peekable;
 use std::str::Chars;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {

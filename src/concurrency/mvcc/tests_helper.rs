@@ -1,14 +1,27 @@
-use std::collections::{Bound, HashMap, HashSet, VecDeque};
-use std::fs::{read_to_string, File};
+use std::collections::Bound;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::fs::read_to_string;
+use std::fs::File;
 use std::io::Write;
 use std::ops::RangeBounds;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
-use crate::concurrency::mvcc::{Key, Scan, Transaction, TransactionState, Version, MVCC};
+use crate::concurrency::mvcc::Key;
+use crate::concurrency::mvcc::Scan;
+use crate::concurrency::mvcc::Transaction;
+use crate::concurrency::mvcc::TransactionState;
+use crate::concurrency::mvcc::Version;
+use crate::concurrency::mvcc::MVCC;
 use crate::error::Result;
 use crate::storage::codec::bincodec;
-use crate::storage::memory::{Memory, VecDequeIterator};
-use crate::storage::{ScanIterator, Storage};
+use crate::storage::memory::Memory;
+use crate::storage::memory::VecDequeIterator;
+use crate::storage::ScanIterator;
+use crate::storage::Storage;
 
 pub struct MVCCRecorder {
     name: String,

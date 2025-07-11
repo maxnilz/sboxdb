@@ -4,7 +4,10 @@
 //! for both regular (`{}`) and pretty (`{:#}`) formatting modes. Pretty printing
 //! adds proper indentation and line breaks to make SQL statements more readable.
 
-use core::fmt::{Display, Formatter, Result, Write};
+use core::fmt::Display;
+use core::fmt::Formatter;
+use core::fmt::Result;
+use core::fmt::Write;
 
 /// A wrapper around a value that adds an indent to the value when displayed with {:#}.
 pub struct Indent<T>(pub T);

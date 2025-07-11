@@ -141,16 +141,22 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::iter::Peekable;
 use std::ops::Bound;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 use crate::storage;
-use crate::storage::codec::{bincodec, keycodec};
+use crate::storage::codec::bincodec;
+use crate::storage::codec::keycodec;
 use crate::storage::Storage;
 
 #[cfg(test)]

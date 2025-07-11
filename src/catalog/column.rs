@@ -1,10 +1,13 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::catalog::r#type::{DataType, Value};
-use crate::error::{Error, Result};
+use crate::catalog::r#type::DataType;
+use crate::catalog::r#type::Value;
+use crate::error::Error;
+use crate::error::Result;
 
 /// A reference counted [`Column`]
 pub type ColumnRef = Arc<Column>;
@@ -27,18 +30,7 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn new(
-        name: String,
-        datatype: DataType,
-        primary_key: bool,
-        nullable: bool,
-        unique: bool,
-        default: Option<Value>,
-    ) -> Column {
-        Column { name, datatype, primary_key, nullable, unique, default }
-    }
-
-    pub fn validate(&self) -> Result<()> {
+    fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(Error::value("Column name can't be empty"));
         }
@@ -74,6 +66,95 @@ impl Column {
             )));
         }
         Ok(())
+    }
+}
+
+/// Builder for creating [`Column`] instances with a fluent interface
+#[derive(Debug, Clone)]
+pub struct ColumnBuilder {
+    name: String,
+    datatype: DataType,
+    primary_key: bool,
+    nullable: bool,
+    unique: bool,
+    default: Option<Value>,
+}
+
+impl ColumnBuilder {
+    /// Create a new column builder with the required name and data type
+    pub fn new(name: impl Into<String>, datatype: DataType) -> Self {
+        Self {
+            name: name.into(),
+            datatype,
+            primary_key: false,
+            nullable: true,
+            unique: false,
+            default: None,
+        }
+    }
+
+    /// Mark this column as a primary key
+    pub fn primary_key(mut self) -> Self {
+        self.primary_key = true;
+        self.nullable = false; // Primary keys are automatically not nullable
+        self.unique = true; // Primary keys are automatically unique
+        self
+    }
+
+    /// Set whether this column is nullable
+    pub fn nullable(mut self, nullable: bool) -> Self {
+        self.nullable = nullable;
+        self
+    }
+
+    /// Mark this column as not nullable
+    pub fn not_null(mut self) -> Self {
+        self.nullable = false;
+        self
+    }
+
+    /// Set whether this column is unique
+    pub fn uniqueness(mut self, unique: bool) -> Self {
+        self.unique = unique;
+        self
+    }
+
+    /// Mark this column as unique
+    pub fn unique(mut self) -> Self {
+        self.unique = true;
+        self
+    }
+
+    /// Set the default value for this column
+    pub fn default_value(mut self, value: Value) -> Self {
+        self.default = Some(value);
+        self
+    }
+
+    /// Build the column, validating it in the process
+    pub fn build(self) -> Result<Column> {
+        let column = Column {
+            name: self.name,
+            datatype: self.datatype,
+            primary_key: self.primary_key,
+            nullable: self.nullable,
+            unique: self.unique,
+            default: self.default,
+        };
+        column.validate()?;
+        Ok(column)
+    }
+
+    /// Build the column without validation
+    pub fn build_unchecked(self) -> Column {
+        Column {
+            name: self.name,
+            datatype: self.datatype,
+            primary_key: self.primary_key,
+            nullable: self.nullable,
+            unique: self.unique,
+            default: self.default,
+        }
     }
 }
 

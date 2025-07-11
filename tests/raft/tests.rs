@@ -1,13 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{debug, info};
-use rand::{thread_rng, Rng};
+use log::debug;
+use log::info;
+use rand::thread_rng;
+use rand::Rng;
 use sboxdb::error::Result;
 use sboxdb::raft::node::NodeId;
-use sboxdb::raft::{Command, CommandResult};
+use sboxdb::raft::Command;
+use sboxdb::raft::CommandResult;
 
-use super::cluster::{max_election_timeout, Cluster};
+use super::cluster::max_election_timeout;
+use super::cluster::Cluster;
 use super::transport::Noise;
 
 #[test]

@@ -1,6 +1,7 @@
 use std::collections::Bound;
 
-use crate::storage::{ScanIterator, Storage};
+use crate::storage::ScanIterator;
+use crate::storage::Storage;
 
 pub mod bufferpool;
 pub mod page;

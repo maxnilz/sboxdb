@@ -3,14 +3,38 @@ use std::str::FromStr;
 
 use crate::error::Error;
 use crate::error::Result;
-use crate::sql::parser::ast::{
-    AlterTableOperation, Assignment, BinaryOperator, Column, CreateIndex, DataType, Expr, Function,
-    FunctionArg, Ident, Insert, InsertSource, Join, JoinConstraint, JoinOperator, LimitClause,
-    ObjectType, OrderByExpr, Precedence, SelectItem, Statement, TableFactor, TableWithJoins,
-    UnaryOperator, Update, Values, WildcardExpr,
-};
-use crate::sql::parser::ast::{Query, Value};
-use crate::sql::parser::lexer::{Keyword, Lexer, Token};
+use crate::sql::parser::ast::AlterTableOperation;
+use crate::sql::parser::ast::Assignment;
+use crate::sql::parser::ast::BinaryOperator;
+use crate::sql::parser::ast::Column;
+use crate::sql::parser::ast::CreateIndex;
+use crate::sql::parser::ast::DataType;
+use crate::sql::parser::ast::Expr;
+use crate::sql::parser::ast::Function;
+use crate::sql::parser::ast::FunctionArg;
+use crate::sql::parser::ast::Ident;
+use crate::sql::parser::ast::Insert;
+use crate::sql::parser::ast::InsertSource;
+use crate::sql::parser::ast::Join;
+use crate::sql::parser::ast::JoinConstraint;
+use crate::sql::parser::ast::JoinOperator;
+use crate::sql::parser::ast::LimitClause;
+use crate::sql::parser::ast::ObjectType;
+use crate::sql::parser::ast::OrderByExpr;
+use crate::sql::parser::ast::Precedence;
+use crate::sql::parser::ast::Query;
+use crate::sql::parser::ast::SelectItem;
+use crate::sql::parser::ast::Statement;
+use crate::sql::parser::ast::TableFactor;
+use crate::sql::parser::ast::TableWithJoins;
+use crate::sql::parser::ast::UnaryOperator;
+use crate::sql::parser::ast::Update;
+use crate::sql::parser::ast::Value;
+use crate::sql::parser::ast::Values;
+use crate::sql::parser::ast::WildcardExpr;
+use crate::sql::parser::lexer::Keyword;
+use crate::sql::parser::lexer::Lexer;
+use crate::sql::parser::lexer::Token;
 
 pub mod ast;
 mod display_utils;
@@ -466,15 +490,21 @@ impl Parser {
                 Ok(Expr::UnaryOp { op, expr: Box::new(expr) })
             }
             Token::LParen => {
-                if let Some(expr) = self.try_parse_expr_subquery()? {
+                // try to parse the scalar subquery first
+                if let Some(expr) = self.try_parse_expr_scalar_subquery()? {
+                    self.expect_token(&Token::RParen)?;
                     return Ok(expr);
                 }
+
+                // try to parse the tuple/grouped expr
                 let exprs = self.parse_comma_separated(Parser::parse_expr)?;
-                match exprs.len() {
+                let expr = match exprs.len() {
                     0 => unreachable!(),
-                    1 => Ok(Expr::Nested(Box::new(exprs.into_iter().next().unwrap()))),
-                    _ => Ok(Expr::Tuple(exprs)),
-                }
+                    1 => Expr::Nested(Box::new(exprs.into_iter().next().unwrap())),
+                    _ => Expr::Tuple(exprs),
+                };
+                self.expect_token(&Token::RParen)?;
+                return Ok(expr);
             }
             _ => self.expected_ref("an expression", &next_token),
         }?;
@@ -770,9 +800,9 @@ impl Parser {
         Ok(None)
     }
 
-    fn try_parse_expr_subquery(&mut self) -> Result<Option<Expr>> {
+    fn try_parse_expr_scalar_subquery(&mut self) -> Result<Option<Expr>> {
         let query = self.parse_query()?;
-        Ok(Some(Expr::Subquery(query)))
+        Ok(Some(Expr::ScalarSubquery(query)))
     }
 
     /// Parse a comma-separated list of 1+ items accepted by `F`

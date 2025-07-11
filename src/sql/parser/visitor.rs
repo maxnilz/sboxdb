@@ -1,7 +1,11 @@
 use core::ops::ControlFlow;
 
 use crate::sql::parser::ast::Ident;
-use crate::sql::parser::{Expr, Query, Statement, TableFactor, Value};
+use crate::sql::parser::Expr;
+use crate::sql::parser::Query;
+use crate::sql::parser::Statement;
+use crate::sql::parser::TableFactor;
+use crate::sql::parser::Value;
 
 /// A type that can be visited by a [`Visitor`]. See [`Visitor`] for
 /// recursively visiting parsed SQL statements.

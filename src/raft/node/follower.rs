@@ -3,10 +3,19 @@ use std::collections::HashMap;
 
 use super::candidate::Candidate;
 use super::leader::Leader;
-use super::{rand_election_timeout, Node, NodeState, ProposalId};
-use super::{RawNode, Ticks};
+use super::rand_election_timeout;
+use super::Node;
+use super::NodeState;
+use super::ProposalId;
+use super::RawNode;
+use super::Ticks;
 use crate::error::Result;
-use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult, RequestVote};
+use crate::raft::message::Address;
+use crate::raft::message::AppendEntries;
+use crate::raft::message::Event;
+use crate::raft::message::Message;
+use crate::raft::message::ProposalResult;
+use crate::raft::message::RequestVote;
 use crate::raft::ApplyMsg;
 use crate::raft::Index;
 

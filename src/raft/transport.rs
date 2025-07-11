@@ -4,15 +4,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::SinkExt;
-use log::{debug, error};
-use tokio::net::{TcpListener, TcpStream};
+use log::debug;
+use log::error;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream, UnboundedReceiverStream};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tokio_util::codec::Framed;
+use tokio_util::codec::LengthDelimitedCodec;
 
-use super::message::{Address, Message};
+use super::message::Address;
+use super::message::Message;
 use super::node::NodeId;
 use crate::error::Error;
 use crate::error::Result;

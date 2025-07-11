@@ -1,11 +1,19 @@
 use std::collections::HashSet;
 
 use super::leader::Leader;
+use super::rand_election_timeout;
+use super::Node;
 use super::NodeId;
-use super::{rand_election_timeout, RawNode, Ticks};
-use super::{Node, NodeState};
-use crate::error::{Error, Result};
-use crate::raft::message::{Address, Event, Message, ProposalResult, RequestVote};
+use super::NodeState;
+use super::RawNode;
+use super::Ticks;
+use crate::error::Error;
+use crate::error::Result;
+use crate::raft::message::Address;
+use crate::raft::message::Event;
+use crate::raft::message::Message;
+use crate::raft::message::ProposalResult;
+use crate::raft::message::RequestVote;
 
 pub struct Candidate {
     rn: RawNode,

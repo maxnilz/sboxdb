@@ -13,8 +13,10 @@
 //! introducing Encode/Decode drive attributes for replacing the serde
 //! Serialize/Deserialize attributes.
 use bincode;
-use bincode::{DefaultOptions, Options};
-use serde::{Deserialize, Serialize};
+use bincode::DefaultOptions;
+use bincode::Options;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::error::Result;
 
@@ -32,7 +34,8 @@ pub fn deserialize<'a, T: Deserialize<'a>>(input: &'a [u8]) -> Result<T> {
 mod tests {
     use std::fmt::Debug;
 
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
+    use serde::Serialize;
 
     use super::*;
     use crate::raft::Index;

@@ -91,7 +91,8 @@ use serde::de;
 use serde::de::IntoDeserializer;
 use serde::ser;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
+use crate::error::Result;
 
 pub fn serialize<T: serde::Serialize>(key: &T) -> Result<Vec<u8>> {
     let mut serializer = Serializer { data: Vec::new() };
@@ -788,7 +789,8 @@ impl<'de> de::VariantAccess<'de> for &mut Deserializer<'de> {
 #[cfg(test)]
 mod tests {
     use paste::paste;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
+    use serde::Serialize;
     use serde_bytes::ByteBuf;
 
     use super::*;

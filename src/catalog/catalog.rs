@@ -1,6 +1,9 @@
-use crate::catalog::index::{Index, Indexes};
-use crate::catalog::schema::{Schema, Schemas};
-use crate::error::{Error, Result};
+use crate::catalog::index::Index;
+use crate::catalog::index::Indexes;
+use crate::catalog::schema::Schema;
+use crate::catalog::schema::Schemas;
+use crate::error::Error;
+use crate::error::Result;
 
 /// The catalog stores schema information. It handles table
 /// creation, table lookup, index creation, and index lookup.

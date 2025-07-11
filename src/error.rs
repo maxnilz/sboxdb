@@ -1,10 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use std::sync::mpsc;
 
 use config::ConfigError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

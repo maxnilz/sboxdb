@@ -1,20 +1,31 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::access::engine::{Engine, IndexScan, Scan, Transaction};
+use crate::access::engine::Engine;
+use crate::access::engine::IndexScan;
+use crate::access::engine::Scan;
+use crate::access::engine::Transaction;
 use crate::access::expression::Expression;
-use crate::access::value::{IndexKey, PrimaryKey, Tuple, Values};
+use crate::access::value::IndexKey;
+use crate::access::value::PrimaryKey;
+use crate::access::value::Tuple;
+use crate::access::value::Values;
 use crate::catalog::catalog::Catalog;
 use crate::catalog::column::Columns;
-use crate::catalog::index::{Index, Indexes};
+use crate::catalog::index::Index;
+use crate::catalog::index::Indexes;
 use crate::catalog::r#type::Value;
-use crate::catalog::schema::{Schema, Schemas};
+use crate::catalog::schema::Schema;
+use crate::catalog::schema::Schemas;
 use crate::concurrency::mvcc;
 use crate::concurrency::mvcc::TransactionState;
-use crate::error::{Error, Result};
-use crate::storage::codec::{bincodec, keycodec};
+use crate::error::Error;
+use crate::error::Result;
+use crate::storage::codec::bincodec;
+use crate::storage::codec::keycodec;
 use crate::storage::Storage;
 
 /// A transactional access engine based on an underlying MVCC key/value store.
@@ -473,12 +484,13 @@ impl<T: Storage> Transaction for KvTxn<T> {
 mod tests {
     use std::cmp::min;
 
-    use rand::distributions::{Distribution, Uniform};
+    use rand::distributions::Distribution;
+    use rand::distributions::Uniform;
     use rand::thread_rng;
 
     use super::super::engine::Transaction as Txn;
     use super::*;
-    use crate::catalog::column::Column;
+    use crate::catalog::column::ColumnBuilder;
     use crate::catalog::r#type::DataType;
     use crate::error::Result;
     use crate::storage::memory::Memory;
@@ -491,19 +503,11 @@ mod tests {
         let t1 = kv.begin()?;
 
         let table = String::from("foo");
-        let columns: Columns = vec![
-            Column::new("col1".to_string(), DataType::Integer, true, false, true, None),
-            Column::new(
-                "col2".to_string(),
-                DataType::String,
-                false,
-                true,
-                false,
-                Some(Value::Null),
-            ),
-            Column::new("col3".to_string(), DataType::String, false, false, true, None),
-        ]
-        .into();
+        let columns = Columns::from(vec![
+            ColumnBuilder::new("col1", DataType::Integer).primary_key().build()?,
+            ColumnBuilder::new("col2", DataType::String).default_value(Value::Null).build()?,
+            ColumnBuilder::new("col3", DataType::String).not_null().unique().build()?,
+        ]);
         let schema = Schema::new(table.clone(), columns);
 
         // create table
@@ -582,6 +586,7 @@ mod tests {
 
         fn make_values(&mut self, count: usize) -> Result<Vec<Value>> {
             match self.datatype {
+                DataType::Null => Ok(vec![Value::Null; count]),
                 DataType::Boolean => self.gen_boolean_values(count),
                 DataType::Integer => self.gen_integer_values(count),
                 DataType::Float => self.gen_float_values(count),
@@ -717,29 +722,29 @@ mod tests {
             // generate column definition
             let mut columns = vec![];
             for (i, it) in &mut self.column_generators.iter_mut().enumerate() {
+                let mut column_builder = ColumnBuilder::new(it.name.clone(), it.datatype.clone());
                 if i == 0 {
-                    it.primary_key = true;
-                    it.unique = true;
-                    it.nullable = false;
-                    it.default = None;
+                    column_builder = column_builder.primary_key();
                 }
+
+                column_builder = column_builder.uniqueness(it.unique);
                 if it.unique {
-                    it.dst = Dst::Serial
+                    it.dst = Dst::Serial;
                 }
-                let name = it.name.clone();
-                let datatype = it.datatype.clone();
-                let default = if it.nullable {
-                    Some(match datatype {
+
+                column_builder = column_builder.nullable(it.nullable);
+                if it.nullable {
+                    let default = match it.datatype {
+                        DataType::Null => Value::Null,
                         DataType::Boolean => Value::Boolean(false),
                         DataType::Integer => Value::Integer(0),
                         DataType::Float => Value::Float(0f64),
                         DataType::String => Value::String(String::from("")),
-                    })
-                } else {
-                    None
-                };
-                let column =
-                    Column::new(name, datatype, it.primary_key, it.nullable, it.unique, default);
+                    };
+                    column_builder = column_builder.default_value(default);
+                }
+
+                let column = column_builder.build()?;
                 columns.push(column)
             }
             // create table

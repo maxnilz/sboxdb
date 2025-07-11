@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::catalog::column::{Column, ColumnRef, Columns};
+use crate::catalog::column::Column;
+use crate::catalog::column::ColumnRef;
+use crate::catalog::column::Columns;
 use crate::error::Error;
 use crate::error::Result;
 

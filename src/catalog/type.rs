@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A datatype
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -7,6 +8,7 @@ pub enum DataType {
     Integer,
     Float,
     String,
+    Null,
 }
 
 impl Default for DataType {
@@ -22,6 +24,7 @@ impl std::fmt::Display for DataType {
             Self::Integer => "INTEGER",
             Self::Float => "FLOAT",
             Self::String => "TEXT",
+            Self::Null => "NULL",
         })
     }
 }

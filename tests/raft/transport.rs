@@ -1,18 +1,22 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Stream;
-use log::{debug, error};
+use log::debug;
+use log::error;
 use rand::Rng;
 use sboxdb::error::Error;
 use sboxdb::error::Result;
-use sboxdb::raft::message::{Address, Message};
+use sboxdb::raft::message::Address;
+use sboxdb::raft::message::Message;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::transport::Transport;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub struct LabTransport {

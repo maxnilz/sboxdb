@@ -1,5 +1,7 @@
 use crate::access::expression::Expression;
-use crate::access::value::{IndexKey, PrimaryKey, Tuple};
+use crate::access::value::IndexKey;
+use crate::access::value::PrimaryKey;
+use crate::access::value::Tuple;
 use crate::catalog::catalog::Catalog;
 use crate::error::Result;
 

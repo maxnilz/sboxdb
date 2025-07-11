@@ -1,13 +1,26 @@
 use std::collections::HashMap;
 use std::ops::Add;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use std::time::SystemTime;
 
-use super::{Node, NodeId, NodeState, ProposalId, MAX_NODE_ID};
-use super::{RawNode, Ticks, HEARTBEAT_INTERVAL};
-use crate::error::{Error, Result};
-use crate::raft::message::{Address, AppendEntries, Event, Message, ProposalResult};
+use super::Node;
+use super::NodeId;
+use super::NodeState;
+use super::ProposalId;
+use super::RawNode;
+use super::Ticks;
+use super::HEARTBEAT_INTERVAL;
+use super::MAX_NODE_ID;
+use crate::error::Error;
+use crate::error::Result;
+use crate::raft::message::Address;
+use crate::raft::message::AppendEntries;
+use crate::raft::message::Event;
+use crate::raft::message::Message;
+use crate::raft::message::ProposalResult;
 use crate::raft::ApplyMsg;
-use crate::raft::{Index, Term};
+use crate::raft::Index;
+use crate::raft::Term;
 
 struct Ticket {
     from: Address,

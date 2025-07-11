@@ -1,7 +1,8 @@
 use std::ops::Deref;
 use std::sync::RwLock;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::error::Result;
 use crate::storage::codec::keycodec;

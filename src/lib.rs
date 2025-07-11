@@ -2,6 +2,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(duration_constructors)]
 #![feature(assert_matches)]
+#![feature(str_as_str)]
 
 pub mod access;
 pub mod catalog;

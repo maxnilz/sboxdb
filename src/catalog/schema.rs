@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::catalog::column::Columns;
 use crate::error::Error;
@@ -13,7 +14,7 @@ pub type SchemaRef = Arc<Schema>;
 /// types, e.g. table schema etc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
-    /// Schema name
+    /// Schema name, a qualifier name the columns belongs.
     pub name: String,
     /// A sequence of columns that describe the schema.
     pub columns: Columns,
