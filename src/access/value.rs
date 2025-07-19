@@ -3,7 +3,6 @@ use std::ops::Deref;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::catalog::column::Column;
 use crate::catalog::column::ColumnRef;
 use crate::catalog::column::Columns;
 use crate::catalog::r#type::Value;

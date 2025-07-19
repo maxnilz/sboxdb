@@ -1,11 +1,13 @@
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::num::ParseIntError;
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use std::sync::mpsc;
 
 use config::ConfigError;
+use futures::future::err;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -164,5 +166,11 @@ impl From<std::str::Utf8Error> for Error {
 impl From<regex::Error> for Error {
     fn from(err: regex::Error) -> Self {
         Error::internal(err)
+    }
+}
+
+impl From<ParseIntError> for Error {
+    fn from(err: ParseIntError) -> Self {
+        Error::parse(err)
     }
 }

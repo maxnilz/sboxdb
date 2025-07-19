@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// A datatype
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum DataType {
     Boolean,
     Integer,

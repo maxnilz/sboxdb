@@ -22,7 +22,7 @@ A distributed SQL database, written as a learning project about my journey on th
     - [x] tuple related CRUD access methods
     - [x] index based access methods
     - [x] raft-backed access methods
-- [ ] **SQL parser:** A handcraft SQL parser without yacc/bison.
+- [x] **SQL parser:** A handcraft SQL parser without yacc/bison.
     - **Data Types:** null, boolean, i64, double, utf-8 string
     - **SQL syntax:**
         * `BEGIN`, `COMMIT`, and `ROLLBACK`
@@ -34,8 +34,10 @@ A distributed SQL database, written as a learning project about my journey on th
     - **Full reference** at [here](src/sql/sql.md)
 - [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
   joins.
+    - [x] Planner
+    - [ ] Optimizer
     - [ ] Executors
-    - [ ] Planner & optimizer
+    - [ ] Function support
 
 ## Reference
 
@@ -43,4 +45,5 @@ A distributed SQL database, written as a learning project about my journey on th
 - https://github.com/erikgrinaker/toydb
 - https://github.com/postgres/postgres
 - https://github.com/apache/datafusion-sqlparser-rs
+- https://github.com/apache/datafusion
  
