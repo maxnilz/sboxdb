@@ -26,7 +26,6 @@ use crate::storage::Storage;
 pub struct MVCCRecorder {
     name: String,
     mvcc: MVCC<StorageRecorder<Memory>>,
-    #[allow(unused)]
     mint: goldenfile::Mint,
     file: Arc<Mutex<File>>,
     next_id: u8,

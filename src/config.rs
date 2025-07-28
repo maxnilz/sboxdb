@@ -16,7 +16,7 @@ pub struct Config {
 }
 
 impl Config {
-    #[allow(unused)]
+    #[allow(dead_code)]
     fn new(file: &str) -> Result<Config> {
         let mut cfg = config::Config::builder()
             .set_default("storage_type", "memory")?

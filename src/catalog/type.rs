@@ -11,6 +11,15 @@ pub enum DataType {
     Null,
 }
 
+impl DataType {
+    pub fn is_numeric(&self) -> bool {
+        match self {
+            DataType::Float => true,
+            _ => false,
+        }
+    }
+}
+
 impl Default for DataType {
     fn default() -> Self {
         Self::String

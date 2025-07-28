@@ -39,7 +39,6 @@ pub trait Transport: Send {
 
 pub struct TcpTransport {
     me: (NodeId, IpAddr),
-    #[allow(unused)]
     peers: HashMap<NodeId, IpAddr>,
 
     /// outbound message first get buffered into

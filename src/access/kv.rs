@@ -35,6 +35,7 @@ pub struct Kv<T: Storage> {
 }
 
 impl<T: Storage> Kv<T> {
+    #[allow(dead_code)]
     pub fn new(kv: T) -> Kv<T> {
         Kv { mvcc: mvcc::MVCC::new(kv) }
     }

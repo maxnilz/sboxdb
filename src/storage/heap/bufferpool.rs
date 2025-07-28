@@ -21,7 +21,7 @@ use crate::storage::Storage;
 /// identifier (page_id) and it does not know whether that page is already in
 /// memory or whether the system has to retrieve it from disk.
 struct BufferPool {
-    #[allow(unused)]
+    #[allow(dead_code)]
     pool_size: usize,
     /// kv storage.
     storage: Box<dyn Storage>,
@@ -263,6 +263,7 @@ impl BufferPool {
     /// Decrement the pin count of a page. If the pin count reaches 0, the frame should
     /// be evictable by the replacer. Also, set the dirty flag on the page to indicate if
     /// the page was modified.
+    #[allow(dead_code)]
     fn unpin_page(&self, page_id: PageId, is_dirty: bool) -> bool {
         let frame_id = self.page_table.get(&page_id);
         if frame_id.is_none() {
@@ -344,7 +345,7 @@ impl BufferPoolManager {
     /// Decrement the pin count of a page. If the pin count reaches 0, the frame should
     /// be evictable by the replacer. Also, set the dirty flag on the page to indicate if
     /// the page was modified.
-    #[allow(unused)]
+    #[allow(dead_code)]
     fn unpin_page(&self, page_id: PageId, is_dirty: bool) -> bool {
         let inner = self.inner.lock().unwrap();
         inner.unpin_page(page_id, is_dirty)

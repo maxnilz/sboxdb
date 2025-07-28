@@ -122,13 +122,21 @@ impl Context {
 ///
 /// It does not perform type coercion, or perform optimization, which are done
 /// by subsequent passes.
-struct SqlToRel {
+struct Planner {
     catalog: Box<dyn Catalog>,
     ident_normalizer: IdentNormalizer,
 }
 
-impl SqlToRel {
-    fn sql_statement_to_plan(&self, statement: Statement, context: &mut Context) -> Result<Plan> {
+impl Planner {
+    #[allow(dead_code)]
+    pub fn new(catalog: Box<dyn Catalog>) -> Self {
+        let ident_normalizer = IdentNormalizer::new(true);
+        Self { catalog, ident_normalizer }
+    }
+
+    #[allow(dead_code)]
+    pub fn sql_statement_to_plan(&self, statement: Statement) -> Result<Plan> {
+        let context = &mut Context::new();
         match statement {
             Statement::Begin { read_only, as_of } => {
                 let as_of =
@@ -154,7 +162,7 @@ impl SqlToRel {
             }
             Statement::Select { query } => self.query_to_plan(context, *query),
             Statement::Explain { analyze, verbose, statement } => {
-                let plan = self.sql_statement_to_plan(*statement, context)?;
+                let plan = self.sql_statement_to_plan(*statement)?;
                 Ok(Plan::Explain(Explain::new(plan, verbose, analyze)))
             }
         }
@@ -168,50 +176,36 @@ impl SqlToRel {
         // plan the selection
         if let Some(sqlexpr) = query.selection {
             let schema = base_plan.schema();
-            let mut expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
-            expr = expr.qualify_field_reference(&[schema])?;
+            let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
             base_plan = Plan::Filter(Filter::try_new(expr, base_plan)?)
         }
 
-        // plan projection
-        let mut plan =
-            self.parse_projection_to_plan(context, base_plan.clone(), query.projection)?;
-        let select_exprs: &[Expr] = match &plan {
-            Plan::Projection(proj) => proj.exprs.as_ref(),
-            _ => unreachable!(),
-        };
-        // TODO: add agg function support later.
-        _ = select_exprs;
-        let aggr_exprs: Vec<Expr> = vec![];
-
         // Process group by
-        // group-by expressions prioritize referencing columns from the FROM clause
-        // then the select list.
-        let mut group_by_schema = base_plan.schema().clone();
-        group_by_schema.merge(plan.schema());
+        let group_by_schema = base_plan.schema().clone();
         let group_by_exprs = query
             .group_by
             .into_iter()
-            .map(|it| {
-                let expr = self.sqlexpr_to_expr(context, it, &group_by_schema)?;
-                expr.qualify_field_reference(&[&group_by_schema])
-            })
+            .map(|it| self.sqlexpr_to_expr(context, it, &group_by_schema))
             .collect::<Result<Vec<_>>>()?;
 
-        if !group_by_exprs.is_empty() || !aggr_exprs.is_empty() {
-            plan = Plan::Aggregate(Aggregate::try_new(plan, group_by_exprs, aggr_exprs)?);
-        }
+        // TODO: Process aggregation and Support scalar function and aggregation function.
+        let aggr_exprs: Vec<Expr> = vec![];
 
-        // Process order by, order-by expressions prioritize referencing columns
-        // from the select list, then from the FROM clause.
-        let mut order_by_schema = plan.schema().clone();
-        order_by_schema.merge(base_plan.schema());
+        if !group_by_exprs.is_empty() || !aggr_exprs.is_empty() {
+            base_plan =
+                Plan::Aggregate(Aggregate::try_new(base_plan.clone(), group_by_exprs, aggr_exprs)?)
+        };
+
+        // plan projection
+        let mut plan = self.parse_projection_to_plan(context, base_plan, query.projection)?;
+
+        // Process order by
+        let order_by_schema = plan.schema().clone();
         let order_by_exprs = query
             .order_by
             .into_iter()
             .map(|it| {
-                let mut expr = self.sqlexpr_to_expr(context, it.expr, &order_by_schema)?;
-                expr = expr.qualify_field_reference(&[&order_by_schema])?;
+                let expr = self.sqlexpr_to_expr(context, it.expr, &order_by_schema)?;
                 let asc = if let Some(desc) = it.desc { !desc } else { true };
                 Ok(SortExpr { expr, asc })
             })
@@ -253,13 +247,11 @@ impl SqlToRel {
         let schema = input.schema();
         match item {
             SelectItem::UnnamedExpr(expr) => {
-                let mut expr = self.sqlexpr_to_expr(context, expr, schema)?;
-                expr = expr.qualify_field_reference(&[schema])?;
+                let expr = self.sqlexpr_to_expr(context, expr, schema)?;
                 Ok(vec![expr])
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                let mut expr = self.sqlexpr_to_expr(context, expr, schema)?;
-                expr = expr.qualify_field_reference(&[schema])?;
+                let expr = self.sqlexpr_to_expr(context, expr, schema)?;
                 let alias = self.normalize_ident(&alias);
                 Ok(vec![Expr::Alias(Alias::new(expr, None::<&str>, alias))])
             }
@@ -335,8 +327,7 @@ impl SqlToRel {
         match constraint {
             JoinConstraint::On(expr) => {
                 let schema = left.schema().join(right.schema())?;
-                let mut expr = self.sqlexpr_to_expr(context, expr, &schema)?;
-                expr = expr.qualify_field_reference(&[&schema])?;
+                let expr = self.sqlexpr_to_expr(context, expr, &schema)?;
                 Ok(Plan::Join(Join::new(left, right, typ, expr, schema)))
             }
         }
@@ -389,7 +380,7 @@ impl SqlToRel {
             scan_builder = scan_builder.filter(expr);
         }
         let scan = Plan::TableScan(scan_builder.build());
-        Ok(Plan::Delete(Delete::new(table.as_str(), scan)))
+        Ok(Plan::Delete(Delete::new(table, scan)))
     }
 
     fn update_to_plan(&self, context: &mut Context, update: SQLUpdate) -> Result<Plan> {
@@ -443,7 +434,7 @@ impl SqlToRel {
         // to ensure the insertion values align to the table schema.
         let schema = scan.schema().clone();
         let projection = Plan::Projection(Projection::new(exprs, scan, schema));
-        Ok(Plan::Update(Update::new(table.as_str(), projection)))
+        Ok(Plan::Update(Update::new(table, projection)))
     }
 
     fn insert_to_plan(&self, context: &mut Context, insert: SQLInsert) -> Result<Plan> {
@@ -512,7 +503,7 @@ impl SqlToRel {
                             .collect::<Result<Vec<_>>>()
                     })
                     .collect::<Result<Vec<_>>>()?;
-                let values = Values::new(exprs, insertion_schema)?;
+                let values = Values::try_new(exprs, insertion_schema)?;
                 Ok(Plan::Values(values))
             }
         }?;
@@ -539,11 +530,9 @@ impl SqlToRel {
 
         // build a projection plan node with source node and exprs as reference
         // to ensure the insertion values align to the table schema.
-        // TODO: maybe we need infer the output schema from the exprs list instead
-        //  of using the table schema directly.
         let projection = Plan::Projection(Projection::new(exprs, source, table_schema));
 
-        Ok(Plan::Insert(Insert::new(table.as_str(), projection)))
+        Ok(Plan::Insert(Insert::new(table, projection)))
     }
 
     fn drop_obj_to_plan(
@@ -555,11 +544,11 @@ impl SqlToRel {
         match object_type {
             ObjectType::Table => {
                 let relation = TableReference::new(&self.normalize_ident(&object_name));
-                Ok(Plan::DropTable(DropTable { relation, if_exists }))
+                Ok(Plan::DropTable(DropTable::new(relation, if_exists)))
             }
             ObjectType::Index => {
                 let name = self.normalize_ident(&object_name);
-                Ok(Plan::DropIndex(DropIndex { name, if_exists }))
+                Ok(Plan::DropIndex(DropIndex::new(name, if_exists)))
             }
         }
     }
@@ -585,17 +574,11 @@ impl SqlToRel {
             })
             .collect::<Result<Vec<_>>>()?
             .into();
-        Ok(Plan::CreateIndex(CreateIndex {
-            name,
-            relation: TableReference::new(&table),
-            columns,
-            unique: a.unique,
-            if_not_exists: a.if_not_exists,
-        }))
+        Ok(Plan::CreateIndex(CreateIndex::new(name, table, columns, a.unique, a.if_not_exists)))
     }
 
     fn create_table_to_plan(&self, context: &mut Context, a: SQLCreateTable) -> Result<Plan> {
-        let relation = TableReference::new(&self.normalize_ident(&a.name));
+        let relation = self.normalize_ident(&a.name);
         let fields: Fields = a
             .columns
             .into_iter()
@@ -618,7 +601,7 @@ impl SqlToRel {
             .collect::<Result<Vec<_>>>()?
             .into();
         let schema = LogicalSchema::from_unqualified_fields(fields)?;
-        Ok(Plan::CreateTable(CreateTable { relation, schema, if_not_exists: a.if_not_exists }))
+        Ok(Plan::CreateTable(CreateTable::new(relation, schema, a.if_not_exists)))
     }
 
     /// Generate a relational/logical expression from a SQL expression.
@@ -746,7 +729,19 @@ impl SqlToRel {
             SQLExpr::InSubquery { expr, subquery, negated } => {
                 self.parse_in_subquery_to_expr(context, *expr, *subquery, negated, schema)
             }
-            SQLExpr::Function(_) => self.semantic_err("Function not supported yet"),
+            SQLExpr::Function(_) => {
+                // There different types of functions in SQL, i.e.,
+                //  1. scalar function: operate on single input value, return single
+                //   output value, e.g., UPPER(str), ABS(x), etc.
+                //  2. aggregate function: operate on set of rows, return one value per
+                //   group or per entire dataset, e.g, SUM(x), COUNT(*).
+                //  3. window function: like aggregate function, but use `over` clause
+                //   to define a window frame, and return one value per row, e.g.,
+                //   ROW_NUMBER(), RANK(), SUM() OVER(...), COUNT() OVER(...)
+                //  4. UDFs(User Defined Functions)...
+                // TODO: Support scalar function and aggregation function.
+                self.semantic_err("Function not supported yet")
+            }
             _ => self.semantic_err(format!("Unsupported sqlexpr {}", sqlexpr)),
         }
     }
@@ -763,7 +758,14 @@ impl SqlToRel {
         let subplan = self.query_to_plan(context, subquery)?;
         context.set_outer_query_schema(old_outer_query_schema);
 
-        // TODO: validate the subplan produce a single column.
+        // validate the subplan produce a single column.
+        let fields = subplan.schema().fields();
+        if fields.len() > 1 {
+            return self.semantic_err(format!(
+                "Too many columns: {}, Select only one column in the subquery",
+                fields.names().join(",")
+            ));
+        }
 
         let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
         Ok(Expr::InSubquery(InSubquery::new(subplan, expr, negated)))
@@ -779,7 +781,14 @@ impl SqlToRel {
         let subplan = self.query_to_plan(context, subquery)?;
         context.set_outer_query_schema(old_outer_query_schema);
 
-        // TODO: validate the subplan produce a single column.
+        // validate the subplan produce a single column.
+        let fields = subplan.schema().fields();
+        if fields.len() > 1 {
+            return self.semantic_err(format!(
+                "Too many columns: {}, Select only one column in the subquery",
+                fields.names().join(",")
+            ));
+        }
 
         Ok(Expr::ScalarSubquery(Subquery::new(subplan)))
     }
@@ -881,7 +890,7 @@ impl SqlToRel {
         }
         let table = idents.remove(0);
         let table = self.ident_normalizer.normalize(table);
-        let ident = idents.remove(1);
+        let ident = idents.remove(0);
         let ident = self.ident_normalizer.normalize(ident);
 
         if let Some((field, Some(_))) =
@@ -899,7 +908,7 @@ impl SqlToRel {
             }
         }
 
-        Ok(Expr::FieldReference(FieldReference::new(ident, Some(TableReference::new(&table)))))
+        self.semantic_err(format!("Unknown compound ident {}.{}", table, ident))
     }
 
     fn parse_identifier_to_expr(
@@ -918,7 +927,7 @@ impl SqlToRel {
                 return Ok(Expr::OuterReferenceColumn(col.datatype.clone(), field));
             }
         }
-        Ok(Expr::FieldReference(FieldReference::new_unqualified(ident)))
+        self.semantic_err(format!("Unknown identifier {}", ident))
     }
 
     fn parse_value(&self, sql_value: SQLValue) -> Result<Value> {
@@ -980,5 +989,158 @@ impl IdentNormalizer {
             return ident.value;
         }
         ident.value.to_ascii_lowercase()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::column::ColumnBuilder;
+    use crate::catalog::index::Index;
+    use crate::catalog::index::Indexes;
+    use crate::catalog::schema::Schema;
+    use crate::catalog::schema::Schemas;
+
+    #[test]
+    fn test_ddl_stmts() -> Result<()> {
+        let cases = vec![
+            // query with join
+            r###"
+            SELECT
+                users.name AS user_name,
+                orders.id AS order_id,
+                products.name AS product_name
+            FROM
+                users
+                JOIN orders ON users.id = orders.user_id
+                JOIN products ON orders.product_id = products.id
+            WHERE
+               users.name IN (SELECT name from users WHERE email = 'admin@example.com');
+            "###,
+            // query with alias and join
+            r###"
+            SELECT
+                a.name AS user_name,
+                orders.id AS order_id,
+                products.name AS product_name
+            FROM
+                users AS a
+                JOIN orders ON a.id = orders.user_id
+                JOIN products ON orders.product_id = products.id
+            WHERE
+               a.name IN (SELECT name from users WHERE email = 'admin@example.com');
+            "###,
+            // query with group by, limit, offset
+            r###"
+            SELECT name FROM users GROUP BY name ORDER BY name DESC limit 1 offset 1;
+            "###,
+            // insert with select
+            r###"
+            INSERT INTO users (id, name, email)
+            SELECT id, name, email
+            FROM old_users
+            WHERE active is true;
+            "###,
+            // insert with values
+            r###"
+            INSERT INTO users (id, name, email)
+            VALUES
+              (1, 'Alice', 'alice@example.com'),
+              (2, 'Bob', 'bob@example.com'),
+              (3, 'Charlie', 'charlie@example.com');
+            "###,
+            // update
+            r###"
+            UPDATE users
+            SET name = 'Alice Smith',
+                email = 'alice.smith@example.com'
+            WHERE id = 1;
+            "###,
+            // delete
+            r###"
+            DELETE FROM users where id = 1;
+            "###,
+        ];
+        for (i, &sql) in cases.iter().enumerate() {
+            let mut parser = crate::sql::parser::Parser::new(sql)?;
+            let stmt = parser.parse_statement()?;
+            let catalog: Box<dyn Catalog> = Box::new(TestCatalog {});
+            let planner = Planner::new(catalog);
+            let plan = planner.sql_statement_to_plan(stmt)?;
+            println!("{}==> \n{:#}\n", i, plan);
+        }
+
+        Ok(())
+    }
+
+    struct TestCatalog {}
+
+    impl Catalog for TestCatalog {
+        fn read_table(&self, table: &str) -> Result<Option<Schema>> {
+            match table {
+                "users" => {
+                    let columns = vec![
+                        ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("name", DataType::String).build_unchecked(),
+                        ColumnBuilder::new("email", DataType::String).build_unchecked(),
+                    ];
+                    Ok(Some(Schema::new("users", columns.into())))
+                }
+                "old_users" => {
+                    let columns = vec![
+                        ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("name", DataType::String).build_unchecked(),
+                        ColumnBuilder::new("email", DataType::String).build_unchecked(),
+                        ColumnBuilder::new("active", DataType::Boolean).build_unchecked(),
+                    ];
+                    Ok(Some(Schema::new("old_users", columns.into())))
+                }
+                "orders" => {
+                    let columns = vec![
+                        ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("user_id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("product_id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("amound", DataType::Float).build_unchecked(),
+                    ];
+                    Ok(Some(Schema::new("orders", columns.into())))
+                }
+                "products" => {
+                    let columns = vec![
+                        ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
+                        ColumnBuilder::new("name", DataType::String).build_unchecked(),
+                    ];
+                    Ok(Some(Schema::new("products", columns.into())))
+                }
+                _ => Err(Error::value(format!("Table {} not found", table))),
+            }
+        }
+
+        fn create_table(&self, _schema: Schema) -> Result<()> {
+            todo!()
+        }
+
+        fn delete_table(&self, _table: &str) -> Result<()> {
+            todo!()
+        }
+
+        fn scan_tables(&self) -> Result<Schemas> {
+            todo!()
+        }
+
+        fn read_index(&self, _index: &str, _table: &str) -> Result<Option<Index>> {
+            todo!()
+        }
+
+        fn create_index(&self, _index: Index) -> Result<()> {
+            todo!()
+        }
+
+        fn delete_index(&self, _index: &str, _table: &str) -> Result<()> {
+            todo!()
+        }
+
+        fn scan_table_indexes(&self, _table: &str) -> Result<Indexes> {
+            todo!()
+        }
     }
 }

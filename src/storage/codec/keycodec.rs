@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-
 //! keyCodec is a lexicographical order-preserving binary encoding for use with
 //! keys. It is designed for simplicity, not efficiency (i.e. it does not use
 //! varints or other compression method).
@@ -299,7 +297,7 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         unimplemented!()
     }
 
-    fn serialize_char(self, v: char) -> Result<()> {
+    fn serialize_char(self, _v: char) -> Result<()> {
         unimplemented!()
     }
 
@@ -356,9 +354,9 @@ impl<'a> serde::Serializer for &'a mut Serializer {
 
     fn serialize_newtype_variant<T>(
         self,
-        name: &'static str,
+        _name: &'static str,
         variant_index: u32,
-        variant: &'static str,
+        _variant: &'static str,
         value: &T,
     ) -> Result<()>
     where
@@ -578,7 +576,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         unimplemented!()
     }
 
-    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
+    fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
@@ -728,7 +726,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         visitor.visit_enum(self)
     }
 
-    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
+    fn deserialize_identifier<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {

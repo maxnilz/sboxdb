@@ -1,9 +1,6 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
-use sqlparser_derive::Visit;
-use sqlparser_derive::VisitMut;
-
 use crate::sql::parser::display_utils::display_comma_separated;
 use crate::sql::parser::display_utils::display_dot_separated;
 use crate::sql::parser::display_utils::display_inline_dot_separated;
@@ -13,8 +10,6 @@ use crate::sql::parser::display_utils::NewLine;
 use crate::sql::parser::display_utils::SpaceOrNewline;
 use crate::sql::parser::lexer::Token;
 
-#[derive(Visit, VisitMut)]
-#[visit(with = "visit_statement")]
 pub enum Statement {
     /// ```sql
     ///  BEGIN TRANSACTION
@@ -48,12 +43,7 @@ pub enum Statement {
     /// ```sql
     /// ALTER TABLE
     /// ```
-    AlterTable {
-        #[visit(with = "visit_relation")]
-        table_name: Ident,
-        if_exists: bool,
-        operations: Vec<AlterTableOperation>,
-    },
+    AlterTable { table_name: Ident, if_exists: bool, operations: Vec<AlterTableOperation> },
     /// ```sql
     /// SELECT
     /// ```
@@ -70,11 +60,7 @@ pub enum Statement {
     /// DELETE
     /// ```
     ///
-    Delete {
-        #[visit(with = "visit_relation")]
-        table: Ident,
-        selection: Option<Expr>,
-    },
+    Delete { table: Ident, selection: Option<Expr> },
     /// ```sql
     /// EXPLAIN <statement>
     /// ```
@@ -151,7 +137,7 @@ impl std::fmt::Display for Statement {
 }
 
 /// An identifier, decomposed into its value or character data and the quote style.
-#[derive(Debug, Clone, Visit, VisitMut)]
+#[derive(Debug, Clone)]
 pub struct Ident {
     /// The value of the identifier without quotes.
     pub value: String,
@@ -182,10 +168,8 @@ impl std::fmt::Display for Ident {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub struct Update {
     /// TABLE
-    #[visit(with = "visit_relation")]
     pub table: Ident,
     /// Column assignments
     pub assignments: Vec<Assignment>,
@@ -216,7 +200,6 @@ impl std::fmt::Display for Update {
 }
 
 /// SQL assignment `foo = expr` as used in SQLUpdate
-#[derive(Visit, VisitMut)]
 pub struct Assignment {
     pub column: Ident,
     pub value: Expr,
@@ -229,10 +212,8 @@ impl std::fmt::Display for Assignment {
 }
 
 /// INSERT statement.
-#[derive(Visit, VisitMut)]
 pub struct Insert {
     /// TABLE
-    #[visit(with = "visit_relation")]
     pub table: Ident,
     /// COLUMNS
     pub columns: Vec<Ident>,
@@ -254,7 +235,6 @@ impl std::fmt::Display for Insert {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum InsertSource {
     Select(Box<Query>),
     Values(Values),
@@ -273,7 +253,6 @@ impl std::fmt::Display for InsertSource {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub struct Values {
     pub rows: Vec<Vec<Expr>>,
 }
@@ -292,8 +271,6 @@ impl std::fmt::Display for Values {
 }
 
 /// The `SELECT` query expression.
-#[derive(Visit, VisitMut)]
-#[visit(with = "visit_query")]
 pub struct Query {
     /// projection expressions
     pub projection: Vec<SelectItem>,
@@ -356,7 +333,6 @@ impl std::fmt::Display for Query {
 }
 
 /// An `ORDER BY` expression
-#[derive(Visit, VisitMut)]
 pub struct OrderByExpr {
     pub expr: Expr,
     /// Optional `ASC` or `DESC`
@@ -383,7 +359,6 @@ impl std::fmt::Display for OrderByExpr {
 }
 
 /// `LIMIT ... OFFSET ... | LIMIT <offset>, <limit>`
-#[derive(Visit, VisitMut)]
 pub struct LimitClause {
     pub limit: Option<u64>,
     pub offset: Option<u64>,
@@ -401,7 +376,6 @@ impl std::fmt::Display for LimitClause {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum WildcardExpr {
     /// An expression, followed by a wildcard expansion.
     /// e.g. `alias.*``, the idents here represent the
@@ -422,7 +396,6 @@ impl std::fmt::Display for WildcardExpr {
     }
 }
 /// One item of the comma-separated list following `SELECT`
-#[derive(Visit, VisitMut)]
 pub enum SelectItem {
     /// Any expression, not followed by `[ AS ] alias`
     UnnamedExpr(Expr),
@@ -444,7 +417,6 @@ impl std::fmt::Display for SelectItem {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub struct TableWithJoins {
     pub relation: TableFactor,
     pub joins: Vec<Join>,
@@ -461,7 +433,6 @@ impl std::fmt::Display for TableWithJoins {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub struct Join {
     pub join_operator: JoinOperator,
     pub relation: TableFactor,
@@ -483,7 +454,6 @@ impl std::fmt::Display for Join {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum JoinOperator {
     Join(JoinConstraint),
     Inner(JoinConstraint),
@@ -495,7 +465,6 @@ pub enum JoinOperator {
     FullOuter(JoinConstraint),
 }
 
-#[derive(Visit, VisitMut)]
 pub enum JoinConstraint {
     On(Expr),
 }
@@ -508,18 +477,9 @@ impl std::fmt::Display for JoinConstraint {
     }
 }
 
-#[derive(Visit, VisitMut)]
-#[visit(with = "visit_table_factor")]
 pub enum TableFactor {
-    Table {
-        #[visit(with = "visit_relation")]
-        name: Ident,
-        alias: Option<String>,
-    },
-    Derived {
-        subquery: Box<Query>,
-        alias: Option<String>,
-    },
+    Table { name: Ident, alias: Option<String> },
+    Derived { subquery: Box<Query>, alias: Option<String> },
 }
 
 impl std::fmt::Display for TableFactor {
@@ -544,9 +504,7 @@ impl std::fmt::Display for TableFactor {
 }
 
 /// CREATE TABLE statement.
-#[derive(Visit, VisitMut)]
 pub struct CreateTable {
-    #[visit(with = "visit_relation")]
     pub name: Ident,
     pub columns: Vec<Column>,
     pub if_not_exists: bool,
@@ -572,7 +530,6 @@ impl std::fmt::Display for CreateTable {
 }
 
 /// SQL column definition
-#[derive(Visit, VisitMut)]
 pub struct Column {
     pub name: Ident,
     pub datatype: DataType,
@@ -615,7 +572,6 @@ impl std::fmt::Display for Column {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum DataType {
     Boolean,
     Integer,
@@ -634,10 +590,8 @@ impl std::fmt::Display for DataType {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub struct CreateIndex {
     pub name: Ident,
-    #[visit(with = "visit_relation")]
     pub table_name: Ident,
     pub column_names: Vec<Ident>,
     pub unique: bool,
@@ -664,7 +618,6 @@ impl std::fmt::Display for CreateIndex {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum ObjectType {
     Table,
     Index,
@@ -679,7 +632,6 @@ impl std::fmt::Display for ObjectType {
     }
 }
 
-#[derive(Visit, VisitMut)]
 pub enum AlterTableOperation {
     AddColumn { if_not_exists: bool, column: Column },
     DropColumn { if_exists: bool, column_name: Ident },
@@ -707,8 +659,6 @@ impl std::fmt::Display for AlterTableOperation {
 }
 
 /// An SQL expression.
-#[derive(Visit, VisitMut)]
-#[visit(with = "visit_expr")]
 pub enum Expr {
     /// A literal value, such as string, number or NULL
     Value(Value),
@@ -820,8 +770,7 @@ impl std::fmt::Display for Expr {
     }
 }
 
-#[derive(Debug, Visit, VisitMut)]
-#[visit(with = "visit_value")]
+#[derive(Debug)]
 pub enum Value {
     Number(String),
     String(String),
@@ -840,7 +789,7 @@ impl std::fmt::Display for Value {
     }
 }
 
-#[derive(Debug, Visit, VisitMut)]
+#[derive(Debug)]
 pub enum BinaryOperator {
     /// Plus, e.g. `a + b`
     Plus,
@@ -890,7 +839,7 @@ impl std::fmt::Display for BinaryOperator {
     }
 }
 
-#[derive(Debug, Visit, VisitMut)]
+#[derive(Debug)]
 pub enum UnaryOperator {
     /// Plus, e.g. `+9`
     Plus,
@@ -911,7 +860,7 @@ impl std::fmt::Display for UnaryOperator {
 }
 
 /// A function call
-#[derive(Debug, Visit, VisitMut)]
+#[derive(Debug)]
 pub struct Function {
     pub name: Ident,
     /// The arguments to the function, including any options specified within the
@@ -925,7 +874,7 @@ impl std::fmt::Display for Function {
     }
 }
 
-#[derive(Debug, Visit, VisitMut)]
+#[derive(Debug)]
 pub enum FunctionArg {
     Value(Value),
     /// An unqualified `*`

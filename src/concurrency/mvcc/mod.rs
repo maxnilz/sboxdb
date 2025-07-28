@@ -656,6 +656,7 @@ impl<'a, T: Storage + 'a> Scan<'a, T> {
         }
     }
 
+    #[allow(dead_code)] // used by test case only
     fn to_vec(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.iter()
             .map(|it| it.and_then(|(k, v)| Ok((k, v))))

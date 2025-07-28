@@ -89,11 +89,13 @@ pub struct Raft {
 
 impl Raft {
     /// Creates a Raft based transactional access engine
+    #[allow(dead_code)]
     pub fn new(server: Arc<Server>) -> Raft {
         Raft { client: Client::new(server) }
     }
 
     /// Creates an underlying Raft state machine for the Raft machine
+    #[allow(dead_code)]
     pub fn new_state<T: Storage + 'static>(kv: T) -> Box<dyn raft::State> {
         Box::new(State::new(kv))
     }

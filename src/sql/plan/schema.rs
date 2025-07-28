@@ -5,8 +5,8 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Deref;
-use std::path::Prefix::Verbatim;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use crate::catalog::column::Column;
 use crate::catalog::column::ColumnRef;
@@ -30,9 +30,14 @@ impl FieldReference {
     pub fn new(name: impl Into<String>, relation: Option<TableReference>) -> Self {
         Self { name: name.into(), relation }
     }
+}
 
-    pub fn new_unqualified(name: impl Into<String>) -> Self {
-        Self { name: name.into(), relation: None }
+impl std::fmt::Display for FieldReference {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self.relation {
+            None => write!(f, "{}", self.name),
+            Some(rel) => write!(f, "{}.{}", rel, self.name),
+        }
     }
 }
 
@@ -148,6 +153,10 @@ impl Fields {
     pub fn find(&self, name: &str) -> Option<(usize, &FieldRef)> {
         self.0.iter().enumerate().find(|(_, c)| c.name == name)
     }
+
+    pub fn names(&self) -> Vec<String> {
+        self.0.iter().map(|it| it.name.clone()).collect()
+    }
 }
 
 impl FromIterator<Field> for Fields {
@@ -158,7 +167,7 @@ impl FromIterator<Field> for Fields {
 
 impl FromIterator<FieldRef> for Fields {
     fn from_iter<T: IntoIterator<Item = FieldRef>>(iter: T) -> Self {
-        iter.into_iter().collect()
+        Self(iter.into_iter().collect())
     }
 }
 
@@ -210,35 +219,9 @@ impl FieldBuilder {
         }
     }
 
-    /// Mark this field as a primary key
-    pub fn primary_key(mut self) -> Self {
-        self.primary_key = true;
-        self.nullable = false; // Primary keys are automatically not nullable
-        self.unique = true; // Primary keys are automatically unique
-        self
-    }
-
     /// Set whether this field is nullable
     pub fn nullable(mut self, nullable: bool) -> Self {
         self.nullable = nullable;
-        self
-    }
-
-    /// Mark this field as not nullable
-    pub fn not_null(mut self) -> Self {
-        self.nullable = false;
-        self
-    }
-
-    /// Mark this field as unique
-    pub fn unique(mut self) -> Self {
-        self.unique = true;
-        self
-    }
-
-    /// Set the default value for this field
-    pub fn default_value(mut self, value: Expr) -> Self {
-        self.default = Some(value);
         self
     }
 
@@ -268,6 +251,7 @@ pub struct LogicalSchema {
     qualifiers: Vec<Option<TableReference>>,
 }
 
+pub static EMPTY_SCHEMA: LazyLock<LogicalSchema> = LazyLock::new(|| LogicalSchema::empty());
 impl LogicalSchema {
     pub fn empty() -> Self {
         Self { fields: Fields::empty(), qualifiers: vec![] }
@@ -295,13 +279,6 @@ impl LogicalSchema {
 
     pub fn field(&self, index: usize) -> &FieldRef {
         &self.fields[index]
-    }
-
-    pub fn field_by_name(&self, name: &str) -> Result<FieldRef> {
-        if let Some(idx) = self.field_index_by_name(&None, name) {
-            return Ok(self.fields[idx].clone());
-        }
-        Err(Error::parse(format!("Column {} not found", name)))
     }
 
     pub fn field_by_ref(&self, field: &FieldReference) -> Result<FieldRef> {

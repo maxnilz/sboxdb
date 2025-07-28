@@ -465,6 +465,7 @@ mod tests {
     #[test]
     fn test_ddl_stmts() -> Result<()> {
         let cases = vec![
+            // create table
             (r###"
             CREATE TABLE if not exists foo(
               col1 integer primary key,
@@ -476,17 +477,21 @@ mod tests {
               "col 7" text NULL
             );
             "###),
+            // create index
             (r###"
             CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
             "###),
+            // drop table
             (r###"
             DROP TABLE foo;
             "###),
+            // drop index
             (r###"
-            DROP INDEX index1;
+            DROP INDEX bar;
             "###),
+            // alter table
             (r###"
-            ALTER TABLE table1
+            ALTER TABLE foo
                 ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
                 DROP COLUMN if EXISTS col2;
             "###),

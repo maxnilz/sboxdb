@@ -34,8 +34,9 @@ A distributed SQL database, written as a learning project about my journey on th
     - **Full reference** at [here](src/sql/sql.md)
 - [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
   joins.
-    - [x] Planner
-    - [ ] Optimizer
+    - [x] Logical Planner
+    - [ ] Logical Optimizer
+    - [ ] Physical Planner
     - [ ] Executors
     - [ ] Function support
 

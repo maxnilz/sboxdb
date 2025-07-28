@@ -39,11 +39,8 @@ use crate::sql::parser::lexer::Token;
 pub mod ast;
 mod display_utils;
 mod lexer;
-mod visitor;
 
-pub use visitor::*;
-
-struct Parser {
+pub struct Parser {
     /// The tokens
     tokens: Vec<Token>,
     /// The index of the first unprocessed token in [`Parser::tokens`].
@@ -52,14 +49,16 @@ struct Parser {
 
 impl Parser {
     /// Creates a new parser for the given string input
-    fn new(query: &str) -> Result<Parser> {
+    #[allow(dead_code)]
+    pub fn new(query: &str) -> Result<Parser> {
         let tokens = Lexer::new(query).into_iter().collect::<Result<Vec<_>>>()?;
         Ok(Parser { tokens, index: 0 })
     }
 
     /// Parse potentially multiple statements
     /// e.g., "SELECT * FROM foo; SELECT * FROM bar;"
-    fn parse_statements(&mut self) -> Result<Vec<Statement>> {
+    #[allow(dead_code)]
+    pub fn parse_statements(&mut self) -> Result<Vec<Statement>> {
         let mut stmts = Vec::new();
         let mut expecting_statement_delimiter = false;
         loop {
@@ -85,7 +84,7 @@ impl Parser {
     }
 
     /// Parses the input string into an AST statement
-    fn parse_statement(&mut self) -> Result<Statement> {
+    pub fn parse_statement(&mut self) -> Result<Statement> {
         let next_token = self.next_token();
         match &next_token {
             Token::Keyword(w) => match w {
@@ -1083,6 +1082,7 @@ mod tests {
     #[test]
     fn test_ddl_stmts() -> Result<()> {
         let cases = vec![
+            // creat table
             (r###"
             CREATE TABLE if not exists foo(
               col1 integer primary key,
@@ -1094,23 +1094,29 @@ mod tests {
               "col 7" text NULL
             );
             "###),
+            // create index
             (r###"
             CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
             "###),
+            // drop table
             (r###"
             DROP TABLE foo;
             "###),
+            // drop index
             (r###"
-            DROP INDEX index1;
+            DROP INDEX bar;
             "###),
+            // alter table
             (r###"
-            ALTER TABLE table1
+            ALTER TABLE foo
                 ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
                 DROP COLUMN if EXISTS col2;
             "###),
+            // query
             (r###"
             SELECT a, count(*) FROM foo JOIN b ON a.id = b.id LEFT JOIN c ON a.id = c.id where a = 1 and b = 2 group by a order by a LIMIT 0, 10;
             "###),
+            // query
             (r###"
             SELECT
                 users.name AS user_name,
@@ -1121,12 +1127,14 @@ mod tests {
                 JOIN orders ON users.id = orders.user_id
                 JOIN products ON orders.product_id = products.id;
             "###),
+            // insert with select
             (r###"
             INSERT INTO users (id, name, email)
             SELECT id, name, email
             FROM old_users
             WHERE active = true;            
             "###),
+            // insert with values
             (r###"
             INSERT INTO users (id, name, email)
             VALUES
@@ -1134,12 +1142,14 @@ mod tests {
               (2, 'Bob', 'bob@example.com'),
               (3, 'Charlie', 'charlie@example.com');
             "###),
+            // update
             (r###"
             UPDATE users
             SET name = 'Alice Smith',
                 email = 'alice.smith@example.com'
             WHERE id = 1;
             "###),
+            // delete
             (r###"
             DELETE FROM users where id = 1;
             "###),

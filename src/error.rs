@@ -7,7 +7,6 @@ use std::string::FromUtf8Error;
 use std::sync::mpsc;
 
 use config::ConfigError;
-use futures::future::err;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -172,5 +171,11 @@ impl From<regex::Error> for Error {
 impl From<ParseIntError> for Error {
     fn from(err: ParseIntError) -> Self {
         Error::parse(err)
+    }
+}
+
+impl From<std::fmt::Error> for Error {
+    fn from(err: std::fmt::Error) -> Self {
+        Error::internal(err)
     }
 }

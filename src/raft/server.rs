@@ -58,7 +58,6 @@ struct EventLoopContext {
 
 /// A Raft server
 pub struct Server {
-    #[allow(unused)]
     id: NodeId,
 
     /// channel for query node state, paired with
@@ -182,7 +181,10 @@ impl Server {
     pub fn get_state(&self) -> Result<NodeState> {
         let (tx, rx) = oneshot::channel();
         if self.state_tx.send(((), tx)).is_err() {
-            return Err(Error::internal("state channel is closed or dropped"));
+            return Err(Error::internal(format!(
+                "state channel on server {} is closed or dropped",
+                self.id
+            )));
         }
         let ns = futures::executor::block_on(rx)?;
         Ok(ns)
@@ -196,7 +198,10 @@ impl Server {
         let (tx, rx) = oneshot::channel();
         let req = Request { command, timeout, tx };
         if self.command_tx.send(req).is_err() {
-            return Err(Error::internal("command channel is closed or dropped"));
+            return Err(Error::internal(format!(
+                "command channel on server {} is closed or dropped",
+                self.id
+            )));
         }
         Ok(futures::executor::block_on(rx)?)
     }

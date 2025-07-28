@@ -24,8 +24,8 @@ pub struct Schema {
 pub type Schemas = Box<dyn DoubleEndedIterator<Item = Schema>>;
 
 impl Schema {
-    pub fn new(name: String, columns: Columns) -> Schema {
-        Schema { name, columns }
+    pub fn new(name: impl Into<String>, columns: Columns) -> Schema {
+        Schema { name: name.into(), columns }
     }
 
     pub fn empty() -> Schema {
