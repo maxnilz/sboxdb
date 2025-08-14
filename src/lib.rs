@@ -3,6 +3,7 @@
 #![feature(duration_constructors)]
 #![feature(assert_matches)]
 #![feature(str_as_str)]
+#![feature(trait_upcasting)]
 extern crate core;
 
 pub mod access;

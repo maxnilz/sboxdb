@@ -1,0 +1,15 @@
+Stmt: 
+UPDATE users
+SET name = 'Alice Smith',
+    email = 'alice.smith@example.com'
+WHERE id = 1;
+
+Parsed Stmts:
+------------
+
+UPDATE users
+SET
+  name = 'Alice Smith',
+  email = 'alice.smith@example.com'
+WHERE
+id = 1

@@ -1,0 +1,7 @@
+Stmt: 
+CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
+
+Parsed Stmts:
+------------
+
+CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1(col1, col2)

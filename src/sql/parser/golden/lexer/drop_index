@@ -1,0 +1,10 @@
+Stmt: 
+DROP INDEX bar ON foo;
+
+Tokens: 
+  Keyword(Drop)
+  Keyword(Index)
+  Ident("bar", false)
+  Keyword(On)
+  Ident("foo", false)
+  Semicolon

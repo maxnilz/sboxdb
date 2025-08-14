@@ -35,7 +35,7 @@ pub enum Expr {
     FieldReference(FieldReference),
     /// A placeholder which hold a reference to a qualified field
     /// in the outer query, used for correlated sub queries.
-    OuterReferenceColumn(DataType, FieldReference),
+    OuterFieldReference(DataType, FieldReference),
     Not(Box<Expr>),
     IsNull(Box<Expr>),
     IsNotNull(Box<Expr>),
@@ -43,15 +43,134 @@ pub enum Expr {
     IsNotTrue(Box<Expr>),
     IsFalse(Box<Expr>),
     IsNotFalse(Box<Expr>),
+    /// Negative against on numeric expr
     Negative(Box<Expr>),
     Like(Like),
     /// Returns whether the list contains the expr value.
     InList(InList),
-    /// EXISTS subquery
+    /// EXISTS subquery, Returns a Boolean (true if any row exists), i.e., the exists only
+    /// checks whether at least one row exists, not what columns or values are returned, the
+    /// actual contents of the returned columns are ignored — only the presence or absence
+    /// of rows matters.
+    ///
+    /// Can only be used where Boolean expressions are valid(e.g., WHERE, CASE, etc.).
+    ///
+    /// Not allowed in:
+    /// - SELECT expressions, i.e., projection.
+    /// - GROUP BY, ORDER BY, SET clause - only via CASE or logical use.
+    ///
+    /// Ideally, the subquery, can be correlated or non-correlated, should be optimized
+    /// as join. For example:
+    ///
+    /// EXISTS Subquery → SEMI JOIN (or plain JOIN + DISTINCT)
+    /// ```sql
+    /// SELECT name
+    /// FROM employees e
+    /// WHERE EXISTS (
+    ///     SELECT 1 FROM projects p WHERE p.emp_id = e.id
+    /// );
+    /// ```
+    ///
+    /// Rewrite to:
+    /// ```sql
+    /// SELECT DISTINCT e.name
+    /// FROM employees e
+    /// JOIN projects p ON p.emp_id = e.id;
+    /// ```
+    /// - DISTINCT removes duplicates if an employee has multiple projects.
+    /// - This acts like a semi-join: include e only if p exists.
+    /// - A semi-join between two tables A and B returns only rows from A that
+    ///  have a matching row in B, but does not return any columns from B. i.e.,
+    ///  Care whether a match exists in the second table, but don't care about
+    ///  the matched data.
     Exists(Exists),
-    /// Scalar subquery, produce exactly one column and at most one row
+    /// Scalar subquery, produce exactly one column and at most one row.
+    /// Used anywhere a single value is expected(except group by), i.e.,
+    /// anywhere a scalar expression is allowed, e.g., SELECT, WHERE, SET, etc.
+    ///
+    /// Ideally, the subquery, can be correlated or non-correlated, should be optimized
+    /// as join. For example:
+    ///
+    /// Scalar Subquery → JOIN + GROUP BY:
+    ///
+    /// ```sql
+    /// SELECT e.name,
+    ///        (SELECT AVG(salary)
+    ///         FROM employees e2
+    ///         WHERE e2.dept_id = e.dept_id) AS avg_salary
+    /// FROM employees e;
+    /// ```
+    ///
+    /// Rewrite to:
+    ///
+    /// ```sql
+    /// SELECT e.name, d.avg_salary
+    /// FROM employees e
+    /// JOIN (
+    ///     SELECT dept_id, AVG(salary) AS avg_salary
+    ///     FROM employees
+    ///     GROUP BY dept_id
+    /// ) d ON e.dept_id = d.dept_id;
+    /// ```
+    ///
+    /// Or, Scalar Subquery -> LATERAL JOIN:
+    ///
+    /// ```sql
+    /// SELECT name,
+    ///        (SELECT MAX(project_name)
+    ///         FROM projects p
+    ///         WHERE p.emp_id = e.id) AS top_project
+    /// FROM employees e;
+    /// ```
+    ///
+    /// Rewrite to with LATERAL JOIN:
+    ///
+    /// ```sql
+    /// SELECT e.name, p.project_name
+    /// FROM employees e
+    /// LEFT JOIN LATERAL (
+    ///     SELECT project_name
+    ///     FROM projects p
+    ///     WHERE p.emp_id = e.id
+    ///     ORDER BY start_date DESC
+    ///     LIMIT 1
+    /// ) p ON true;
+    /// ```
+    ///
+    /// NB:
+    /// - If scalar subquery depends on a joinable key (like dept_id) and uses aggregation,
+    ///  try rewriting it with GROUP BY + JOIN.
+    /// - If it depends on per-row filtering, sorting, or limiting, and can’t be precomputed,
+    ///  must use LATERAL.
     ScalarSubquery(Subquery),
-    /// IN subquery
+    /// IN subquery, returns boolean, Left-hand side compared against a
+    /// set of values from the subquery (which must return 1 column).
+    /// Can appear in WHERE, CASE, etc. e.g., `... WHERE id IN (SELECT id FROM...)`
+    ///
+    /// Not allowed in:
+    /// - SELECT value positions unless wrapped inside CASE or stored to a column alias.
+    /// - GROUP BY or ORDER BY — only via computed expressions(e.g., use an alias or
+    ///  expression computed in the SELECT list that contains a subquery, and refer to
+    ///  that in ORDER BY.)
+    ///
+    /// Ideally, the subquery, can be correlated or non-correlated, should be optimized
+    /// as join. For example:
+    ///
+    /// ```sql
+    /// SELECT name
+    /// FROM employees
+    /// WHERE dept_id IN (
+    ///     SELECT id FROM departments WHERE location = 'NY'
+    /// );
+    /// ```
+    ///
+    /// Rewrite to
+    /// ```sql
+    /// SELECT e.name
+    /// FROM employees e
+    /// JOIN departments d ON e.dept_id = d.id
+    /// WHERE d.location = 'NY';
+    /// ```
     InSubquery(InSubquery),
     /// A binary expression such as "age > 21"
     BinaryExpr(BinaryExpr),
@@ -72,20 +191,12 @@ impl Expr {
     }
 
     /// Wrap this expr to in a `Expr::Cast` to the target `DataType`
-    pub fn cast_to(self, cast_to_type: &DataType, schema: &LogicalSchema) -> Result<Expr> {
+    pub fn can_cast_to(self, cast_to_type: &DataType, schema: &LogicalSchema) -> Result<Expr> {
         let (this_type, _) = self.datatype_and_nullable(schema)?;
         if this_type == *cast_to_type {
             return Ok(self);
         }
-        let can_cast = match (&this_type, cast_to_type) {
-            (DataType::Null, _) => true,
-            (DataType::Boolean, DataType::Integer | DataType::Float | DataType::String) => true,
-            (DataType::Integer, DataType::Boolean | DataType::Float | DataType::String) => true,
-            (DataType::Float, DataType::Boolean | DataType::String) => true,
-            (DataType::String, DataType::Boolean) => true,
-            _ => false,
-        };
-        if !can_cast {
+        if !this_type.can_cast_to(cast_to_type.clone()) {
             return Err(Error::parse(format!(
                 "Cannot automatically convert {this_type:?} to {cast_to_type:?}"
             )));
@@ -111,7 +222,7 @@ impl Expr {
                 let f = schema.field_by_ref(field_ref)?;
                 (f.datatype.clone(), f.nullable)
             }
-            Expr::OuterReferenceColumn(datatype, _) => (datatype.clone(), true),
+            Expr::OuterFieldReference(datatype, _) => (datatype.clone(), true),
             Expr::Not(_)
             | Expr::IsNull(_)
             | Expr::IsNotNull(_)
@@ -140,7 +251,7 @@ impl Expr {
                 let (_, nullable) = expr.datatype_and_nullable(schema)?;
                 (DataType::Boolean, nullable)
             }
-            Expr::ScalarSubquery(Subquery { subquery }) => {
+            Expr::ScalarSubquery(Subquery { subquery, .. }) => {
                 let f = subquery.schema().field(0);
                 (f.datatype.clone(), f.nullable)
             }
@@ -204,7 +315,7 @@ impl TreeNode for Expr {
             }
             Expr::Value(_)
             | Expr::FieldReference(_)
-            | Expr::OuterReferenceColumn(_, _)
+            | Expr::OuterFieldReference(_, _)
             | Expr::Exists(_)
             | Expr::ScalarSubquery(_) => Ok(VisitRecursion::Continue),
         }
@@ -222,9 +333,9 @@ impl Display for Expr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Alias(Alias { name, expr, .. }) => write!(f, "{expr} AS {name}"),
-            Expr::Value(value) => write!(f, "{value:?}"),
+            Expr::Value(value) => write!(f, "{value}"),
             Expr::FieldReference(fr) => write!(f, "{fr}"),
-            Expr::OuterReferenceColumn(_, fr) => write!(f, "{fr}"),
+            Expr::OuterFieldReference(_, fr) => write!(f, "{fr}"),
             Expr::Not(expr) => write!(f, "NOT {expr}"),
             Expr::IsNull(expr) => write!(f, "{expr} IS NULL"),
             Expr::IsNotNull(expr) => write!(f, "{expr} IS NOT NULL"),
@@ -249,18 +360,35 @@ impl Display for Expr {
                 }
             }
             Expr::Exists(Exists { subquery, negated }) => {
-                if *negated {
-                    write!(f, "NOT EXISTS ({subquery:?})")
+                let sub = if !f.alternate() {
+                    format!("Subquery(correlated: {}, ...)", subquery.correlated)
                 } else {
-                    write!(f, "EXISTS ({subquery:?})")
+                    format!("{:#?}", subquery)
+                };
+                if *negated {
+                    write!(f, "NOT EXISTS ({sub})")
+                } else {
+                    write!(f, "EXISTS ({sub})")
                 }
             }
-            Expr::ScalarSubquery(subquery) => write!(f, "({subquery:?})"),
-            Expr::InSubquery(InSubquery { expr, subquery, negated }) => {
-                if *negated {
-                    write!(f, "{expr} NOT IN ({subquery:?})")
+            Expr::ScalarSubquery(subquery) => {
+                let sub = if !f.alternate() {
+                    format!("Subquery(correlated: {}, ...)", subquery.correlated)
                 } else {
-                    write!(f, "{expr} IN ({subquery:?})")
+                    format!("{:#?}", subquery)
+                };
+                write!(f, "({sub})")
+            }
+            Expr::InSubquery(InSubquery { expr, subquery, negated }) => {
+                let sub = if !f.alternate() {
+                    format!("Subquery(correlated: {}, ...)", subquery.correlated)
+                } else {
+                    format!("{:#?}", subquery)
+                };
+                if *negated {
+                    write!(f, "{expr} NOT IN ({sub})")
+                } else {
+                    write!(f, "{expr} IN ({sub})")
                 }
             }
             Expr::BinaryExpr(expr) => write!(f, "{expr}"),
@@ -304,56 +432,8 @@ impl BinaryExpr {
     pub fn datatype_and_nullable(&self, schema: &LogicalSchema) -> Result<(DataType, bool)> {
         let (ld, ln) = self.left.datatype_and_nullable(schema)?;
         let (rd, rn) = self.right.datatype_and_nullable(schema)?;
-        let datatype = match self.op {
-            Operator::Plus
-            | Operator::Minus
-            | Operator::Multiply
-            | Operator::Divide
-            | Operator::Modulo => {
-                if !ld.is_numeric() && !rd.is_numeric() {
-                    return Err(Error::parse(format!(
-                        "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, ld, rd
-                    )));
-                }
-                match (ld, rd) {
-                    (_, DataType::Float) | (DataType::Float, _) => DataType::Float,
-                    _ => DataType::Integer,
-                }
-            }
-
-            Operator::Eq
-            | Operator::NotEq
-            | Operator::Gt
-            | Operator::GtEq
-            | Operator::Lt
-            | Operator::LtEq => match (&ld, &rd) {
-                (DataType::Float, DataType::Integer)
-                | (DataType::Integer, DataType::Float)
-                | (DataType::Integer, DataType::Integer)
-                | (DataType::String, DataType::String)
-                | (DataType::Null, _)
-                | (_, DataType::Null) => DataType::Boolean,
-                _ => {
-                    return Err(Error::parse(format!(
-                        "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, ld, rd
-                    )))
-                }
-            },
-
-            Operator::And | Operator::Or => match (&ld, &rd) {
-                (DataType::Boolean, DataType::Boolean)
-                | (DataType::Boolean, DataType::Null)
-                | (DataType::Null, DataType::Boolean) => DataType::Boolean,
-                _ => {
-                    return Err(Error::parse(format!(
-                        "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, ld, rd
-                    )))
-                }
-            },
-        };
+        let type_coercer = BinaryTypeCoercer::new(&ld, &self.op, &rd);
+        let datatype = type_coercer.get_result_type()?;
         Ok((datatype, ln || rn))
     }
 }
@@ -383,6 +463,73 @@ impl Display for BinaryExpr {
         write!(f, "{}", self.op)?;
         write_child(f, self.right.as_ref(), prec)?;
         Ok(())
+    }
+}
+
+pub struct BinaryTypeCoercer<'a> {
+    lhs: &'a DataType,
+    op: &'a Operator,
+    rhs: &'a DataType,
+}
+
+impl<'a> BinaryTypeCoercer<'a> {
+    pub fn new(lhs: &'a DataType, op: &'a Operator, rhs: &'a DataType) -> Self {
+        Self { lhs, op, rhs }
+    }
+
+    pub fn get_result_type(&self) -> Result<DataType> {
+        let datatype = match self.op {
+            Operator::Plus
+            | Operator::Minus
+            | Operator::Multiply
+            | Operator::Divide
+            | Operator::Modulo => {
+                if !self.lhs.is_numeric() && !self.rhs.is_numeric() {
+                    return Err(Error::parse(format!(
+                        "Cannot perform binary {:?} between type: {}, {}",
+                        self.op, self.lhs, self.rhs
+                    )));
+                }
+                match (self.lhs, self.rhs) {
+                    (_, DataType::Float) | (DataType::Float, _) => DataType::Float,
+                    _ => DataType::Integer,
+                }
+            }
+
+            Operator::Eq
+            | Operator::NotEq
+            | Operator::Gt
+            | Operator::GtEq
+            | Operator::Lt
+            | Operator::LtEq => match (self.lhs, self.rhs) {
+                (DataType::Float, DataType::Integer)
+                | (DataType::Integer, DataType::Float)
+                | (DataType::Integer, DataType::Integer)
+                | (DataType::String, DataType::String)
+                | (DataType::Boolean, DataType::Boolean)
+                | (DataType::Null, _)
+                | (_, DataType::Null) => DataType::Boolean,
+                _ => {
+                    return Err(Error::parse(format!(
+                        "Cannot perform binary {:?} between type: {}, {}",
+                        self.op, self.lhs, self.rhs
+                    )))
+                }
+            },
+
+            Operator::And | Operator::Or => match (self.lhs, self.rhs) {
+                (DataType::Boolean, DataType::Boolean)
+                | (DataType::Boolean, DataType::Null)
+                | (DataType::Null, DataType::Boolean) => DataType::Boolean,
+                _ => {
+                    return Err(Error::parse(format!(
+                        "Cannot perform binary {:?} between type: {}, {}",
+                        self.op, self.lhs, self.rhs
+                    )))
+                }
+            },
+        };
+        Ok(datatype)
     }
 }
 
@@ -419,7 +566,7 @@ pub enum Operator {
 
 impl Operator {
     /// Refer to `crate::sql::parser::ast::Precedence`
-    fn prec_value(&self) -> u8 {
+    pub fn prec_value(&self) -> u8 {
         match self {
             Operator::Multiply | Operator::Divide | Operator::Modulo => 40,
             Operator::Plus | Operator::Minus => 30,
@@ -460,43 +607,53 @@ impl Display for Operator {
 pub struct InSubquery {
     /// The expression to compare
     pub expr: Box<Expr>,
-    /// Subquery that will produce a single column of data to compare against
+    /// Subquery that will produce a single column of data to compare against.
     pub subquery: Subquery,
     /// Whether the expression is negated
     pub negated: bool,
 }
 
 impl InSubquery {
-    pub fn new(subplan: Plan, expr: Expr, negated: bool) -> Self {
-        Self { expr: Box::new(expr), subquery: Subquery::new(subplan), negated }
+    pub fn try_new(subplan: Plan, expr: Expr, negated: bool) -> Result<Self> {
+        let subquery = Subquery::try_new(subplan)?;
+        Ok(Self { expr: Box::new(expr), subquery, negated })
     }
 }
 
+/// Exists expr logical node
 #[derive(Clone, Debug)]
 pub struct Exists {
-    /// Subquery that will produce rows. The exists only checks whether at least one
-    /// row exists, not what columns or values are returned. The actual contents of
-    /// the returned columns are ignored — only the presence or absence of rows matters.
+    /// Subquery that will produce rows.
     pub subquery: Subquery,
     /// Whether the expression is negated
     pub negated: bool,
 }
 
 impl Exists {
-    pub fn new(subplan: Plan, negated: bool) -> Self {
-        Self { subquery: Subquery { subquery: Arc::new(subplan) }, negated }
+    pub fn try_new(subplan: Plan, negated: bool) -> Result<Self> {
+        let subquery = Subquery::try_new(subplan)?;
+        Ok(Self { subquery, negated })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Subquery {
     /// The subquery plan
-    pub subquery: Arc<Plan>,
+    pub subquery: Box<Plan>,
+    /// Whether the subquery is correlated
+    pub correlated: bool,
 }
 
 impl Subquery {
-    pub fn new(subplan: Plan) -> Self {
-        Self { subquery: Arc::new(subplan) }
+    pub fn try_new(subplan: Plan) -> Result<Self> {
+        let mut correlated = false;
+        subplan.visit_exprs(|expr| {
+            if matches!(expr, Expr::OuterFieldReference(_, _)) {
+                correlated = true
+            }
+            Ok(VisitRecursion::Continue)
+        })?;
+        Ok(Self { subquery: Box::new(subplan), correlated })
     }
 }
 
@@ -557,7 +714,7 @@ impl Display for SchemaDisplay<'_> {
         match self.0 {
             Expr::Alias(Alias { relation: Some(rel), name, .. }) => write!(f, "{}.{}", rel, name),
             Expr::Alias(Alias { name, .. }) => write!(f, "{}", name),
-            Expr::Value(_) | Expr::FieldReference(_) | Expr::OuterReferenceColumn(..) => {
+            Expr::Value(_) | Expr::FieldReference(_) | Expr::OuterFieldReference(..) => {
                 // same as the Expr::Display
                 write!(f, "{}", self.0)
             }

@@ -22,6 +22,8 @@ pub enum Error {
     ReadOnly,
     Serialization,
     Parse(String),
+    AlreadyExists(String),
+    Unimplemented(String),
 }
 
 impl Error {
@@ -35,6 +37,14 @@ impl Error {
 
     pub fn parse<E: ToString>(msg: E) -> Error {
         Error::Parse(msg.to_string())
+    }
+
+    pub fn already_exists<E: ToString>(msg: E) -> Error {
+        Error::AlreadyExists(msg.to_string())
+    }
+
+    pub fn unimplemented<E: ToString>(msg: E) -> Error {
+        Error::Unimplemented(msg.to_string())
     }
 }
 

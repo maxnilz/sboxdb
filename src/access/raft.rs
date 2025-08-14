@@ -9,8 +9,8 @@ use crate::access::engine::Engine;
 use crate::access::engine::IndexScan;
 use crate::access::engine::Scan;
 use crate::access::engine::Transaction;
-use crate::access::expression::Expression;
 use crate::access::kv::Kv;
+use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
 use crate::access::value::Tuple;
@@ -46,7 +46,7 @@ enum Query<'a> {
     /// Reads a row
     Read { txn: TransactionState, table: String, pk: PrimaryKey },
     /// Scans a table's rows
-    Scan { txn: TransactionState, table: String, predicate: Option<Expression> },
+    Scan { txn: TransactionState, table: String, predicate: Option<Predicate> },
 
     /// Reads an index entry
     ReadIndexEntry { txn: TransactionState, table: String, index: String, value: IndexKey },
@@ -182,19 +182,19 @@ impl Transaction for RaftTxn {
         self.state.read_only
     }
 
-    fn commit(self) -> Result<()> {
+    fn commit(&self) -> Result<()> {
         self.client.mutate(Mutation::Commit(self.state.clone()))
     }
 
-    fn rollback(self) -> Result<()> {
+    fn rollback(&self) -> Result<()> {
         self.client.mutate(Mutation::Rollback(self.state.clone()))
     }
 
-    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
+    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
         self.client.mutate(Mutation::Insert { txn: self.state.clone(), table: table.into(), tuple })
     }
 
-    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()> {
+    fn delete(&self, table: &str, pk: &PrimaryKey) -> Result<()> {
         self.client.mutate(Mutation::Delete {
             txn: self.state.clone(),
             table: table.into(),
@@ -210,7 +210,7 @@ impl Transaction for RaftTxn {
         })
     }
 
-    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan> {
+    fn scan(&self, table: &str, predicate: Option<Predicate>) -> Result<Scan> {
         let result: Vec<Result<Tuple>> = self.client.query(Query::Scan {
             txn: self.state.clone(),
             table: table.into(),
@@ -389,11 +389,11 @@ impl<T: Storage> State<T> {
                 bincodec::serialize(&txn.delete_index(&index, &table)?)
             }
             Mutation::Insert { txn, table, tuple } => {
-                let mut txn = self.engine.resume(txn)?;
+                let txn = self.engine.resume(txn)?;
                 bincodec::serialize(&txn.insert(&table, tuple)?)
             }
             Mutation::Delete { txn, table, pk } => {
-                let mut txn = self.engine.resume(txn)?;
+                let txn = self.engine.resume(txn)?;
                 bincodec::serialize(&txn.delete(&table, &pk)?)
             }
             Mutation::Drop { txn, table } => {

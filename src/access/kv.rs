@@ -8,7 +8,7 @@ use crate::access::engine::Engine;
 use crate::access::engine::IndexScan;
 use crate::access::engine::Scan;
 use crate::access::engine::Transaction;
-use crate::access::expression::Expression;
+use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
 use crate::access::value::Tuple;
@@ -159,7 +159,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
     fn create_table(&self, schema: Schema) -> Result<()> {
         schema.validate()?;
         if self.read_table(&schema.name)?.is_some() {
-            return Err(Error::value(format!("Table {} already exits", &schema.name)));
+            return Err(Error::already_exists(format!("Table {} already exits", &schema.name)));
         }
         let table = Cow::Borrowed(schema.name.as_str());
         let key = Key::Table(table).encode()?;
@@ -171,7 +171,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
                 continue;
             }
             let index =
-                Index::from(&column.name, &schema.name, Columns::from([Arc::clone(column)]), true);
+                Index::new(&column.name, &schema.name, Columns::from([Arc::clone(column)]), true);
             self.create_index(index)?;
         }
         Ok(())
@@ -213,7 +213,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
     fn create_index(&self, index: Index) -> Result<()> {
         index.validate()?;
         if self.read_index(&index.name, &index.tblname)?.is_some() {
-            return Err(Error::value(format!(
+            return Err(Error::already_exists(format!(
                 "Index {} on table {} already exists",
                 index.name, index.tblname
             )));
@@ -250,7 +250,7 @@ impl<T: Storage> Catalog for KvTxn<T> {
 }
 
 impl<T: Storage> KvTxn<T> {
-    fn insert_index_entry(&mut self, index: Index, tuple: &Tuple) -> Result<()> {
+    fn insert_index_entry(&self, index: Index, tuple: &Tuple) -> Result<()> {
         let pk = tuple.primary_key()?;
         let index_key = tuple.get_values(&index.columns)?;
         let tblame = Cow::Borrowed(index.tblname.as_str());
@@ -274,12 +274,7 @@ impl<T: Storage> KvTxn<T> {
         }
     }
 
-    fn delete_index_entry(
-        &mut self,
-        index: Index,
-        index_key: IndexKey,
-        pk: &PrimaryKey,
-    ) -> Result<()> {
+    fn delete_index_entry(&self, index: Index, index_key: IndexKey, pk: &PrimaryKey) -> Result<()> {
         let tblame = Cow::Borrowed(index.tblname.as_str());
         let name = Cow::Borrowed(index.name.as_str());
         let keyv = bincodec::serialize(&index_key)?;
@@ -322,15 +317,15 @@ impl<T: Storage> Transaction for KvTxn<T> {
         self.txn.state().read_only
     }
 
-    fn commit(self) -> Result<()> {
+    fn commit(&self) -> Result<()> {
         self.txn.commit()
     }
 
-    fn rollback(self) -> Result<()> {
+    fn rollback(&self) -> Result<()> {
         self.txn.rollback()
     }
 
-    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
+    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
         let schema = self.must_read_table(table)?;
         tuple.check_columns(&schema.columns)?;
         // Check if the pk exists
@@ -353,7 +348,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
         Ok(pk.clone())
     }
 
-    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()> {
+    fn delete(&self, table: &str, pk: &PrimaryKey) -> Result<()> {
         let schema = self.must_read_table(table)?;
 
         let key = Key::Row(table.into(), pk.clone()).encode()?;
@@ -388,7 +383,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
         Ok(None)
     }
 
-    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan> {
+    fn scan(&self, table: &str, predicate: Option<Predicate>) -> Result<Scan> {
         let schema = self.must_read_table(table)?;
         let prefix = KeyPrefix::Row(table.into()).encode()?;
         let scan = self.txn.scan_prefix(prefix)?;
@@ -505,7 +500,7 @@ mod tests {
 
         let table = String::from("foo");
         let columns = Columns::from(vec![
-            ColumnBuilder::new("col1", DataType::Integer).primary_key().build()?,
+            ColumnBuilder::new("col1", DataType::Integer).primary().build()?,
             ColumnBuilder::new("col2", DataType::String).default_value(Value::Null).build()?,
             ColumnBuilder::new("col3", DataType::String).not_null().unique().build()?,
         ]);
@@ -524,7 +519,7 @@ mod tests {
 
         // creat index
         let index = String::from("alice");
-        let index = Index::from(&index, &table, Columns::from(&schema.columns[1..2]), false);
+        let index = Index::new(&index, &table, Columns::from(&schema.columns[1..2]), false);
         t1.create_index(index.clone())?;
 
         // check the index creation
@@ -564,10 +559,8 @@ mod tests {
     struct ColumnGenerator {
         name: String,
         datatype: DataType,
-        primary_key: bool,
         nullable: bool,
         unique: bool,
-        default: Option<Value>,
         dst: Dst,
         min: u64,
         max: u64,
@@ -692,10 +685,8 @@ mod tests {
             Self {
                 name: "".to_string(),
                 datatype: DataType::Integer,
-                primary_key: false,
                 nullable: false,
                 unique: false,
-                default: None,
                 dst: Dst::Uniform,
                 min: 0,
                 max: 100,
@@ -725,7 +716,7 @@ mod tests {
             for (i, it) in &mut self.column_generators.iter_mut().enumerate() {
                 let mut column_builder = ColumnBuilder::new(it.name.clone(), it.datatype.clone());
                 if i == 0 {
-                    column_builder = column_builder.primary_key();
+                    column_builder = column_builder.primary();
                 }
 
                 column_builder = column_builder.uniqueness(it.unique);
@@ -749,7 +740,7 @@ mod tests {
                 columns.push(column)
             }
             // create table
-            let table = Schema::new(self.name.clone(), columns.into());
+            let table = Schema::new(self.name.clone(), columns);
             txn.create_table(table.clone())?;
 
             // generate table data

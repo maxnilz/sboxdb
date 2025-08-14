@@ -1,0 +1,62 @@
+Stmt: 
+CREATE TABLE if not exists foo(
+    col1 integer primary key,
+    col2 varchar(20) NOT NULL,
+    col3 integer default 1,
+    col4 double default 3.14,
+    col5 double default -2.1E-4 + 2,
+    col6 text default 'a' NOT NULL,
+    "col 7" text NULL
+);
+
+Tokens: 
+  Keyword(Create)
+  Keyword(Table)
+  Keyword(If)
+  Keyword(Not)
+  Keyword(Exists)
+  Ident("foo", false)
+  LParen
+  Ident("col1", false)
+  Keyword(Integer)
+  Keyword(Primary)
+  Keyword(Key)
+  Comma
+  Ident("col2", false)
+  Keyword(Varchar)
+  LParen
+  Number("20")
+  RParen
+  Keyword(Not)
+  Keyword(Null)
+  Comma
+  Ident("col3", false)
+  Keyword(Integer)
+  Keyword(Default)
+  Number("1")
+  Comma
+  Ident("col4", false)
+  Keyword(Double)
+  Keyword(Default)
+  Number("3.14")
+  Comma
+  Ident("col5", false)
+  Keyword(Double)
+  Keyword(Default)
+  Minus
+  Number("2.1E-4")
+  Plus
+  Number("2")
+  Comma
+  Ident("col6", false)
+  Keyword(Text)
+  Keyword(Default)
+  String("a")
+  Keyword(Not)
+  Keyword(Null)
+  Comma
+  Ident("col 7", true)
+  Keyword(Text)
+  Keyword(Null)
+  RParen
+  Semicolon

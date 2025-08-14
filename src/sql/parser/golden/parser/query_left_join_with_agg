@@ -1,0 +1,20 @@
+Stmt: 
+SELECT a, count(*) FROM foo JOIN b ON a.id = b.id LEFT JOIN c ON a.id = c.id where a = 1 and b = 2 group by a order by a LIMIT 0, 10;
+
+Parsed Stmts:
+------------
+
+SELECT
+  a,
+  count(*)
+FROM
+  foo
+  JOIN b ON a.id = b.id
+  LEFT JOIN c ON a.id = c.id
+WHERE
+  a = 1 AND b = 2
+GROUP BY
+  a
+ORDER BY
+  a ASC
+LIMIT 10 OFFSET 0

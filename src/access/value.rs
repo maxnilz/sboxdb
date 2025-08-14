@@ -1,28 +1,51 @@
+use std::collections::HashSet;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::catalog::column::ColumnRef;
 use crate::catalog::column::Columns;
+use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Values {
-    values: Vec<Value>,
-}
+pub struct ValuesRef(Arc<Values>);
+
+/// Tabular values, i.e., tuple values
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Values(Vec<Value>);
 
 impl Values {
     pub fn into_vec(self) -> Vec<Value> {
-        self.values
+        self.0
+    }
+
+    pub fn scalar(mut self) -> Result<Value> {
+        let sz = self.len();
+        if sz != 1 {
+            return Err(Error::internal(format!("Expect single scalar value, got {} values", sz)));
+        }
+        Ok(self.0.remove(0))
     }
 }
 
 impl From<Vec<Value>> for Values {
     fn from(values: Vec<Value>) -> Self {
-        Self { values }
+        Self(values)
+    }
+}
+
+impl From<Values> for HashSet<Value> {
+    fn from(values: Values) -> Self {
+        let mut out = HashSet::new();
+        for value in values.into_iter() {
+            out.insert(value);
+        }
+        out
     }
 }
 
@@ -30,7 +53,25 @@ impl Deref for Values {
     type Target = [Value];
 
     fn deref(&self) -> &[Value] {
-        &self.values
+        &self.0
+    }
+}
+
+impl IntoIterator for Values {
+    type Item = Value;
+    type IntoIter = std::vec::IntoIter<Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Values {
+    type Item = &'a Value;
+    type IntoIter = std::slice::Iter<'a, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 
@@ -84,14 +125,14 @@ impl Tuple {
         if self.values.len() != self.columns.len() {
             return Err(Error::value("Invalid values size"));
         }
-        for (column, value) in self.columns.iter().zip(&self.values.values) {
+        for (column, value) in self.columns.iter().zip(&self.values) {
             match value.datatype() {
-                None if column.nullable => Ok(()),
-                None => Err(Error::value(format!(
+                DataType::Null if column.nullable => Ok(()),
+                DataType::Null => Err(Error::value(format!(
                     "NULL value is not allowed for column {}",
                     column.name
                 ))),
-                Some(ref datatype) if datatype != &column.datatype => Err(Error::value(format!(
+                datatype if datatype != column.datatype => Err(Error::value(format!(
                     "Invalid datatype {} for column {}",
                     datatype, column.name
                 ))),
@@ -114,7 +155,7 @@ mod tests {
     #[test]
     fn test_values_codec() -> Result<()> {
         let columns = Columns::from(vec![ColumnBuilder::new("", DataType::String)
-            .primary_key()
+            .primary()
             .build_unchecked()]);
         let values = Values::from(vec![Value::String("hello".to_string())]);
 

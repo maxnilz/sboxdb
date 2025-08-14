@@ -1,0 +1,19 @@
+Stmt: 
+CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
+
+Tokens: 
+  Keyword(Create)
+  Keyword(Unique)
+  Keyword(Index)
+  Keyword(If)
+  Keyword(Not)
+  Keyword(Exists)
+  Ident("index1", false)
+  Keyword(On)
+  Ident("table1", false)
+  LParen
+  Ident("col1", false)
+  Comma
+  Ident("col2", false)
+  RParen
+  Semicolon

@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -29,6 +31,25 @@ pub struct Column {
     pub unique: bool,
 }
 
+impl Display for Column {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.name, self.datatype)?;
+        if self.primary_key {
+            write!(f, " PRIMARY KEY")?;
+        }
+        if !self.nullable {
+            write!(f, " NOT NULL")?;
+        }
+        if let Some(default) = &self.default {
+            write!(f, " DEFAULT {}", default)?;
+        }
+        if self.unique {
+            write!(f, " UNIQUE")?;
+        }
+        Ok(())
+    }
+}
+
 impl Column {
     fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
@@ -43,13 +64,18 @@ impl Column {
         }
         // Validate default data type
         if let Some(default) = &self.default {
-            if let Some(datatype) = default.datatype() {
-                if datatype != self.datatype {
-                    return Err(Error::value(format!(
-                        "Default value for column {} has datatype {}, expect {}",
-                        self.name, datatype, self.datatype
-                    )));
-                }
+            let datatype = default.datatype();
+            if datatype == DataType::Null {
+                return Err(Error::value(format!(
+                    "Default value for column {} can't be NULL",
+                    self.name
+                )));
+            }
+            if datatype != self.datatype {
+                return Err(Error::value(format!(
+                    "Default value for column {} has datatype {}, expect {}",
+                    self.name, datatype, self.datatype
+                )));
             }
             if !self.nullable {
                 return Err(Error::value(format!(
@@ -94,40 +120,54 @@ impl ColumnBuilder {
     }
 
     /// Mark this column as a primary key
-    pub fn primary_key(mut self) -> Self {
+    pub fn primary(mut self) -> Self {
         self.primary_key = true;
         self.nullable = false; // Primary keys are automatically not nullable
         self.unique = true; // Primary keys are automatically unique
         self
     }
 
+    /// Set whether this column is primary key
+    pub fn primary_key(self, primary_key: bool) -> Self {
+        if !primary_key {
+            return self;
+        }
+        self.primary()
+    }
+
     /// Set whether this column is nullable
     pub fn nullable(mut self, nullable: bool) -> Self {
-        self.nullable = nullable;
+        if !self.primary_key {
+            self.nullable = nullable;
+        }
         self
     }
 
     /// Mark this column as not nullable
-    pub fn not_null(mut self) -> Self {
-        self.nullable = false;
-        self
+    pub fn not_null(self) -> Self {
+        self.nullable(false)
     }
 
     /// Set whether this column is unique
     pub fn uniqueness(mut self, unique: bool) -> Self {
-        self.unique = unique;
+        if !self.primary_key {
+            self.unique = unique;
+        }
         self
     }
 
     /// Mark this column as unique
-    pub fn unique(mut self) -> Self {
-        self.unique = true;
-        self
+    pub fn unique(self) -> Self {
+        self.uniqueness(true)
     }
 
     /// Set the default value for this column
-    pub fn default_value(mut self, value: Value) -> Self {
-        self.default = Some(value);
+    pub fn default_value(self, value: Value) -> Self {
+        self.default(Some(value))
+    }
+
+    pub fn default(mut self, default: Option<Value>) -> Self {
+        self.default = default;
         self
     }
 

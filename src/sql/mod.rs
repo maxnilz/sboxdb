@@ -1,2 +1,3 @@
+pub mod execution;
 pub mod parser;
-mod plan;
+pub mod plan;

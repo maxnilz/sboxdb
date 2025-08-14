@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::sync::Arc;
 
 use crate::apply_each;
 use crate::catalog::r#type::DataType;
@@ -49,13 +48,13 @@ pub enum Plan {
     Projection(Projection),
     /// Scan rows from a table/relation.
     TableScan(TableScan),
-    /// Produces the output of running another query.  This is used to
+    /// Produces the output of running another query. This is used to
     /// implement SQL subqueries
     Subquery(Subquery),
     /// Aliased relation provides, or changes, the name of a relation.
     SubqueryAlias(SubqueryAlias),
     /// Join two logical plans on one or more join columns.
-    /// This is used to implement SQL `JOIN`
+    /// This is used to implement SQL `JOIN`.
     Join(Join),
     /// Filters rows from its input that do not match an
     /// expression (essentially a WHERE clause with a predicate
@@ -84,18 +83,18 @@ pub enum Plan {
 impl Plan {
     pub fn schema(&self) -> &LogicalSchema {
         match self {
-            Plan::Transaction(_) => &EMPTY_SCHEMA,
+            Plan::Transaction(_)
+            | Plan::CreateIndex(_)
+            | Plan::DropTable(_)
+            | Plan::DropIndex(_) => &EMPTY_SCHEMA,
             Plan::CreateTable(CreateTable { schema, .. }) => schema,
-            Plan::CreateIndex(CreateIndex { schema, .. }) => schema,
-            Plan::DropTable(DropTable { schema, .. }) => schema,
-            Plan::DropIndex(DropIndex { schema, .. }) => schema,
             Plan::Insert(Insert { output_schema, .. }) => output_schema,
             Plan::Update(Update { output_schema, .. }) => output_schema,
             Plan::Delete(Delete { output_schema, .. }) => output_schema,
             Plan::Values(Values { schema, .. }) => schema,
             Plan::Projection(Projection { output_schema, .. }) => output_schema,
             Plan::TableScan(TableScan { output_schema, .. }) => output_schema,
-            Plan::Subquery(Subquery { subquery }) => subquery.schema(),
+            Plan::Subquery(Subquery { subquery, .. }) => subquery.schema(),
             Plan::SubqueryAlias(SubqueryAlias { schema, .. }) => schema,
             Plan::Join(Join { schema, .. }) => schema,
             Plan::Filter(Filter { input, .. }) => input.schema(),
@@ -105,6 +104,32 @@ impl Plan {
             Plan::Explain(Explain { output_schema, .. }) => output_schema,
         }
     }
+
+    /// traverse all the exprs in given plan node recursively.
+    pub fn visit_exprs<F>(&self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&Expr) -> Result<VisitRecursion>,
+    {
+        self.walk(|node| match node {
+            Plan::Values(Values { values, .. }) => {
+                let exprs: Vec<&Expr> = values.iter().flatten().collect();
+                apply_each!(f; exprs)
+            }
+            Plan::Projection(Projection { exprs, .. }) => apply_each!(f; exprs),
+            Plan::TableScan(TableScan { filters, .. }) => apply_each!(f; filters),
+            Plan::Join(Join { filter, .. }) => apply_each!(f, filter),
+            Plan::Filter(Filter { predicate, .. }) => apply_each!(f, predicate),
+            Plan::Aggregate(Aggregate { group_expr, aggr_expr, .. }) => {
+                apply_each!(f; group_expr)?.when_sibling(|| apply_each!(f; aggr_expr))
+            }
+            Plan::Sort(Sort { expr, .. }) => {
+                let exprs: Vec<&Expr> = expr.iter().map(|it| &it.expr).collect();
+                apply_each!(f; exprs)
+            }
+            _ => Ok(VisitRecursion::Continue),
+        })?;
+        Ok(())
+    }
 }
 
 impl TreeNode for Plan {
@@ -112,11 +137,14 @@ impl TreeNode for Plan {
     where
         F: FnMut(&Self) -> Result<VisitRecursion>,
     {
+        // visit any subquery in expr...
         let mut visit_expr = |e: &Expr| {
             e.walk(|expr| match expr {
                 Expr::Exists(Exists { subquery, .. })
                 | Expr::ScalarSubquery(subquery)
                 | Expr::InSubquery(InSubquery { subquery, .. }) => {
+                    // Apply the given visit function on a dummy logical
+                    // subquery node.
                     f(&Plan::Subquery(subquery.clone()))
                 }
                 _ => Ok(VisitRecursion::Continue),
@@ -136,7 +164,7 @@ impl TreeNode for Plan {
             Plan::Projection(Projection { input, exprs, .. }) => {
                 apply_each!(visit_expr; exprs)?.when_sibling(|| apply_each!(f, input))
             }
-            Plan::Subquery(Subquery { subquery }) => apply_each!(f, subquery),
+            Plan::Subquery(Subquery { subquery, .. }) => apply_each!(f, subquery),
             Plan::SubqueryAlias(SubqueryAlias { input, .. }) => apply_each!(f, input),
             Plan::Filter(Filter { input, predicate, .. }) => {
                 apply_each!(visit_expr, predicate)?.when_sibling(|| apply_each!(f, input))
@@ -161,7 +189,8 @@ impl TreeNode for Plan {
 
 impl Display for Plan {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut visitor = TxtVisitor::new(f, true);
+        let with_schema = f.alternate();
+        let mut visitor = IndentVisitor::new(f, with_schema);
         match self.visit(&mut visitor) {
             Ok(_) => Ok(()),
             Err(_) => Err(std::fmt::Error),
@@ -169,7 +198,7 @@ impl Display for Plan {
     }
 }
 
-struct TxtVisitor<'a, 'b> {
+struct IndentVisitor<'a, 'b> {
     f: &'a mut Formatter<'b>,
     /// If true, includes summarized schema information
     with_schema: bool,
@@ -177,13 +206,11 @@ struct TxtVisitor<'a, 'b> {
     indent: usize,
 }
 
-impl<'a, 'b> TxtVisitor<'a, 'b> {
+impl<'a, 'b> IndentVisitor<'a, 'b> {
     fn new(f: &'a mut Formatter<'b>, with_schema: bool) -> Self {
         Self { f, with_schema, indent: 0 }
     }
-}
 
-impl<'a, 'b> TxtVisitor<'a, 'b> {
     fn display_plan<'c>(&self, node: &'c Plan) -> impl Display + 'c {
         struct Wrapper<'a>(&'a Plan);
         impl Display for Wrapper<'_> {
@@ -223,7 +250,7 @@ impl<'a, 'b> TxtVisitor<'a, 'b> {
                         write!(f, "DML: op=[Update] table=[{table}]")
                     }
                     Plan::Delete(Delete { table, .. }) => {
-                        write!(f, "DML: op=[Update] table=[{table}]")
+                        write!(f, "DML: op=[Delete] table=[{table}]")
                     }
                     Plan::Values(values) => {
                         let values = values
@@ -315,7 +342,7 @@ impl<'a, 'b> TxtVisitor<'a, 'b> {
                         };
                         write!(f, "Limit:{skip}{fetch}")
                     }
-                    Plan::Explain(Explain { analyse, verbose, .. }) => {
+                    Plan::Explain(Explain { physical: analyse, verbose, .. }) => {
                         write!(f, "Explain: analyse: {analyse}, verbose: {verbose}")
                     }
                 }
@@ -343,7 +370,7 @@ impl<'a, 'b> TxtVisitor<'a, 'b> {
     }
 }
 
-impl<'a, 'b, 'n> TreeNodeVisitor<'n> for TxtVisitor<'a, 'b> {
+impl<'a, 'b, 'n> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
     type Node = Plan;
 
     fn f_down(&mut self, node: &'n Self::Node) -> Result<VisitRecursion> {
@@ -368,24 +395,24 @@ impl<'a, 'b, 'n> TreeNodeVisitor<'n> for TxtVisitor<'a, 'b> {
 
 #[derive(Clone, Debug)]
 pub struct Explain {
-    pub analyse: bool,
+    pub physical: bool,
     pub verbose: bool,
-    pub plan: Arc<Plan>,
+    pub plan: Box<Plan>,
     pub output_schema: LogicalSchema,
 }
 
 impl Explain {
-    pub fn new(plan: Plan, verbose: bool, analyse: bool) -> Self {
+    pub fn new(plan: Plan, verbose: bool, physical: bool) -> Self {
         let fields: Fields = vec![FieldBuilder::new("plan", DataType::String).build()].into();
         let output_schema = LogicalSchema::from_unqualified_fields(fields).unwrap();
-        Self { plan: Arc::new(plan), analyse, verbose, output_schema }
+        Self { plan: Box::new(plan), physical, verbose, output_schema }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Limit {
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// Number of rows to skip before fetch
     pub skip: Option<u64>,
     /// Maximum number of rows to fetch,
@@ -395,7 +422,7 @@ pub struct Limit {
 
 impl Limit {
     pub fn new(input: Plan, skip: Option<u64>, fetch: Option<u64>) -> Self {
-        Self { input: Arc::new(input), skip, fetch }
+        Self { input: Box::new(input), skip, fetch }
     }
 }
 
@@ -404,12 +431,12 @@ pub struct Sort {
     /// The sort expressions
     pub expr: Vec<SortExpr>,
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
 }
 
 impl Sort {
     pub fn new(expr: Vec<SortExpr>, input: Plan) -> Self {
-        Self { expr, input: Arc::new(input) }
+        Self { expr, input: Box::new(input) }
     }
 }
 
@@ -436,7 +463,7 @@ impl Display for SortExpr {
 #[derive(Clone, Debug)]
 pub struct Aggregate {
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// Grouping expressions
     pub group_expr: Vec<Expr>,
     /// Aggregate expressions
@@ -450,7 +477,7 @@ impl Aggregate {
         let schema = input.schema();
         let fields = group_expr.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
         let output_schema = LogicalSchema::from_unqualified_fields(fields.into())?;
-        Ok(Self { input: Arc::new(input), group_expr, aggr_expr, output_schema })
+        Ok(Self { input: Box::new(input), group_expr, aggr_expr, output_schema })
     }
 }
 
@@ -470,7 +497,7 @@ pub struct Filter {
     /// The predicate expression, which must have Boolean type.
     pub predicate: Expr,
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
 }
 
 impl Filter {
@@ -481,7 +508,7 @@ impl Filter {
                 "Invalid filter result type, expect boolean, got {datatype}"
             )));
         }
-        Ok(Self { predicate: expr, input: Arc::new(input) })
+        Ok(Self { predicate: expr, input: Box::new(input) })
     }
 }
 
@@ -489,9 +516,9 @@ impl Filter {
 #[derive(Clone, Debug)]
 pub struct Join {
     /// Left input
-    pub left: Arc<Plan>,
+    pub left: Box<Plan>,
     /// Right input
-    pub right: Arc<Plan>,
+    pub right: Box<Plan>,
     /// Join type
     pub join_type: JoinType,
     /// Join condition
@@ -508,7 +535,7 @@ impl Join {
         filter: Expr,
         schema: LogicalSchema,
     ) -> Self {
-        Self { left: Arc::new(left), right: Arc::new(right), join_type, filter, schema }
+        Self { left: Box::new(left), right: Box::new(right), join_type, filter, schema }
     }
 }
 
@@ -545,7 +572,7 @@ impl Display for JoinType {
 #[derive(Clone, Debug)]
 pub struct SubqueryAlias {
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// The alias for the input relation
     pub alias: TableReference,
     /// The schema with qualified field names
@@ -556,11 +583,11 @@ impl SubqueryAlias {
     pub fn try_new(plan: Plan, alias: impl Into<TableReference>) -> Result<Self> {
         let alias = alias.into();
         let input_fields = plan.schema().fields();
-        let schema = LogicalSchema::new(
+        let schema = LogicalSchema::try_new(
             input_fields.clone(),
             vec![Some(alias.clone()); input_fields.len()],
         )?;
-        Ok(Self { input: Arc::new(plan), alias, schema })
+        Ok(Self { input: Box::new(plan), alias, schema })
     }
 }
 
@@ -582,7 +609,9 @@ pub struct TableScan {
     pub projection: Option<Vec<usize>>,
     /// Optional expressions to be used as filters
     pub filters: Vec<Expr>,
-    /// The schema description of the output
+    /// The schema description of the output, if
+    /// the projection is None, it should be same
+    /// as the relation schema.
     pub output_schema: LogicalSchema,
 }
 
@@ -597,11 +626,10 @@ pub struct TableScanBuilder {
 impl TableScanBuilder {
     /// Create a new TableScanBuilder.
     pub fn new(relation: impl Into<TableReference>, table_schema: &LogicalSchema) -> Self {
-        let projection = (0..table_schema.fields().len()).map(|i| i).collect::<Vec<_>>();
         Self {
             relation: relation.into(),
             schema: table_schema.clone(),
-            projection: Some(projection),
+            projection: None,
             filters: vec![],
             output_schema: table_schema.clone(),
         }
@@ -649,21 +677,21 @@ pub struct Projection {
     /// The list of expressions
     pub exprs: Vec<Expr>,
     /// The incoming logical plan
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// The schema description of the output
     pub output_schema: LogicalSchema,
 }
 
 impl Projection {
     pub fn new(exprs: Vec<Expr>, input: Plan, output_schema: LogicalSchema) -> Self {
-        Self { exprs, input: Arc::new(input), output_schema }
+        Self { exprs, input: Box::new(input), output_schema }
     }
 
     pub fn try_new(exprs: Vec<Expr>, input: Plan) -> Result<Self> {
         let schema = input.schema();
         let fields = exprs.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
         let output_schema = LogicalSchema::from_unqualified_fields(fields.into())?;
-        Ok(Self { exprs, input: Arc::new(input), output_schema })
+        Ok(Self { exprs, input: Box::new(input), output_schema })
     }
 }
 
@@ -672,7 +700,7 @@ pub struct Delete {
     /// The table
     pub table: TableReference,
     /// Input source for delete
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// The output schema is always a single column with the number of rows affected
     pub output_schema: LogicalSchema,
 }
@@ -681,8 +709,8 @@ impl Delete {
     pub fn new(table: impl Into<TableReference>, input: Plan) -> Self {
         Self {
             table: table.into(),
-            input: Arc::new(input),
-            output_schema: schema_affected_rows_count(),
+            input: Box::new(input),
+            output_schema: LogicalSchema::schema_affected_rows_count(),
         }
     }
 }
@@ -692,7 +720,7 @@ pub struct Update {
     /// The table
     pub table: TableReference,
     /// Input source for update
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// The output schema is always a single column with the number of rows affected
     pub output_schema: LogicalSchema,
 }
@@ -701,8 +729,8 @@ impl Update {
     pub fn new(table: impl Into<TableReference>, input: Plan) -> Self {
         Self {
             table: table.into(),
-            input: Arc::new(input),
-            output_schema: schema_affected_rows_count(),
+            input: Box::new(input),
+            output_schema: LogicalSchema::schema_affected_rows_count(),
         }
     }
 }
@@ -712,7 +740,7 @@ pub struct Insert {
     /// The table
     pub table: TableReference,
     /// Input source for insertion
-    pub input: Arc<Plan>,
+    pub input: Box<Plan>,
     /// The output schema is always a single column with the number of rows affected
     pub output_schema: LogicalSchema,
 }
@@ -721,19 +749,10 @@ impl Insert {
     pub fn new(table: impl Into<TableReference>, input: Plan) -> Self {
         Self {
             table: table.into(),
-            input: Arc::new(input),
-            output_schema: schema_affected_rows_count(),
+            input: Box::new(input),
+            output_schema: LogicalSchema::schema_affected_rows_count(),
         }
     }
-}
-
-fn schema_affected_rows_count() -> LogicalSchema {
-    LogicalSchema::from_unqualified_fields(Fields::from(vec![FieldBuilder::new(
-        "count",
-        DataType::Integer,
-    )
-    .build()]))
-    .unwrap()
 }
 
 /// Values expression. See
@@ -749,7 +768,7 @@ pub struct Values {
 
 impl Values {
     pub fn try_new(values: Vec<Vec<Expr>>, schema: LogicalSchema) -> Result<Self> {
-        let n = schema.fields().len();
+        let n = schema.len();
         if n == 0 {
             return Err(Error::parse("Values list cannot be zero length"));
         }
@@ -782,15 +801,18 @@ impl Values {
 pub struct DropIndex {
     /// The index name
     pub name: String,
+    pub table_reference: TableReference,
     /// Option to not error if table not exists
     pub if_exists: bool,
-    /// The schema description of the output, should be empty.
-    pub schema: LogicalSchema,
 }
 
 impl DropIndex {
-    pub fn new(name: impl Into<String>, if_exists: bool) -> Self {
-        Self { name: name.into(), if_exists, schema: LogicalSchema::empty() }
+    pub fn new(
+        name: impl Into<String>,
+        table_reference: impl Into<TableReference>,
+        if_exists: bool,
+    ) -> Self {
+        Self { name: name.into(), table_reference: table_reference.into(), if_exists }
     }
 }
 
@@ -800,13 +822,11 @@ pub struct DropTable {
     pub relation: TableReference,
     /// Option to not error if table not exists
     pub if_exists: bool,
-    /// The schema description of the output, should be empty.
-    pub schema: LogicalSchema,
 }
 
 impl DropTable {
     pub fn new(relation: impl Into<TableReference>, if_exists: bool) -> Self {
-        Self { relation: relation.into(), if_exists, schema: LogicalSchema::empty() }
+        Self { relation: relation.into(), if_exists }
     }
 }
 
@@ -815,7 +835,7 @@ impl DropTable {
 pub struct CreateTable {
     /// The table relation
     pub relation: TableReference,
-    /// The schema description of the output.
+    /// The table schema
     pub schema: LogicalSchema,
     /// Option to not error if table already exists
     pub if_not_exists: bool,
@@ -844,8 +864,6 @@ pub struct CreateIndex {
     pub unique: bool,
     /// Option to not error if index already exists
     pub if_not_exists: bool,
-    /// The schema description of the output, should be empty.
-    pub schema: LogicalSchema,
 }
 
 impl CreateIndex {
@@ -856,13 +874,6 @@ impl CreateIndex {
         unique: bool,
         if_not_exists: bool,
     ) -> Self {
-        Self {
-            name: name.into(),
-            relation: relation.into(),
-            columns,
-            unique,
-            if_not_exists,
-            schema: LogicalSchema::empty(),
-        }
+        Self { name: name.into(), relation: relation.into(), columns, unique, if_not_exists }
     }
 }

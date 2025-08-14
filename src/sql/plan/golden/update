@@ -1,0 +1,19 @@
+Stmt: 
+UPDATE users
+SET name = 'Alice Smith',
+    email = 'alice.smith@example.com'
+WHERE id = 1;
+
+Logical Plan:
+--------------
+
+DML: op=[Update] table=[users]
+  Projection: users.id AS id, Alice Smith AS name, alice.smith@example.com AS email
+    TableScan: users filters=[users.id=1]
+
+Logical Plan with schema:
+-------------------------
+
+DML: op=[Update] table=[users] [count:Integer;N]
+  Projection: users.id AS id, Alice Smith AS name, alice.smith@example.com AS email [id:Integer;N, name:String;N, email:String;N]
+    TableScan: users filters=[users.id=1] [id:Integer;N, name:String;N, email:String;N]

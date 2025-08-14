@@ -1,0 +1,9 @@
+Stmt: 
+DELETE FROM users where id = 1;
+
+Parsed Stmts:
+------------
+
+DELETE FROM users
+WHERE
+id = 1

@@ -32,14 +32,13 @@ pub enum Statement {
     /// ```
     CreateIndex(CreateIndex),
     /// ```sql
-    /// DROP [TABLE, INDEX, ...]
+    /// DROP TABLE
     /// ```
-    Drop {
-        /// The type of the object to drop: TABLE, INDEX, etc.
-        object_type: ObjectType,
-        if_exists: bool,
-        object_name: Ident,
-    },
+    DropTable { if_exists: bool, table_name: Ident },
+    /// ```sql
+    /// DROP INDEX
+    /// ```
+    DropIndex { if_exists: bool, table_name: Ident, index_name: Ident },
     /// ```sql
     /// ALTER TABLE
     /// ```
@@ -65,8 +64,8 @@ pub enum Statement {
     /// EXPLAIN <statement>
     /// ```
     Explain {
-        /// Carry out the command and show actual run times and other statistics.
-        analyze: bool,
+        /// Display physical plan
+        physical: bool,
         /// Display additional information regarding the plan.
         verbose: bool,
         /// A SQL query that specifies what to explain
@@ -89,10 +88,17 @@ impl std::fmt::Display for Statement {
             Statement::Rollback => write!(f, "ROLLBACK"),
             Statement::CreateTable(create_table) => create_table.fmt(f),
             Statement::CreateIndex(create_index) => create_index.fmt(f),
-            Statement::Drop { object_type, if_exists, object_name } => {
+            Statement::DropTable { table_name, if_exists } => {
                 write!(
                     f,
-                    "DROP {object_type} {s_if_exists}{object_name}",
+                    "DROP TABLE {s_if_exists}{table_name}",
+                    s_if_exists = if *if_exists { "IF EXISTS " } else { "" }
+                )
+            }
+            Statement::DropIndex { index_name, table_name, if_exists } => {
+                write!(
+                    f,
+                    "DROP INDEX {s_if_exists}{index_name} ON {table_name}",
                     s_if_exists = if *if_exists { "IF EXISTS " } else { "" }
                 )
             }
@@ -120,7 +126,7 @@ impl std::fmt::Display for Statement {
                 };
                 Ok(())
             }
-            Statement::Explain { analyze, verbose, statement } => {
+            Statement::Explain { physical: analyze, verbose, statement } => {
                 write!(f, "EXPLAIN")?;
                 if *analyze {
                     write!(f, " ANALYZE")?;
@@ -479,6 +485,17 @@ impl std::fmt::Display for JoinConstraint {
 
 pub enum TableFactor {
     Table { name: Ident, alias: Option<String> },
+    // TODO: does not support lateral derived subquery as table factor yet.
+    //  e.g.,
+    //  ```sql
+    //  SELECT *
+    //  FROM employees e
+    //  JOIN LATERAL (
+    //      SELECT *
+    //      FROM projects p
+    //      WHERE p.manager_id = e.id   -- ✅ OK: e.id visible
+    //  ) AS sub ON true;
+    //  ```
     Derived { subquery: Box<Query>, alias: Option<String> },
 }
 
@@ -615,20 +632,6 @@ impl std::fmt::Display for CreateIndex {
         write!(f, "{}", display_comma_separated(&self.column_names))?;
         write!(f, ")")?;
         Ok(())
-    }
-}
-
-pub enum ObjectType {
-    Table,
-    Index,
-}
-
-impl std::fmt::Display for ObjectType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ObjectType::Table => write!(f, "TABLE"),
-            ObjectType::Index => write!(f, "INDEX"),
-        }
     }
 }
 

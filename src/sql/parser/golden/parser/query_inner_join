@@ -1,0 +1,21 @@
+Stmt: 
+SELECT
+    users.name AS user_name,
+    orders.id AS order_id,
+    products.name AS product_name
+FROM
+    users
+    JOIN orders ON users.id = orders.user_id
+    JOIN products ON orders.product_id = products.id;
+
+Parsed Stmts:
+------------
+
+SELECT
+  users.name AS user_name,
+  orders.id AS order_id,
+  products.name AS product_name
+FROM
+  users
+  JOIN orders ON users.id = orders.user_id
+  JOIN products ON orders.product_id = products.id

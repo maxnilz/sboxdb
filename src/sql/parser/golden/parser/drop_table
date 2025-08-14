@@ -1,0 +1,7 @@
+Stmt: 
+DROP TABLE foo
+
+Parsed Stmts:
+------------
+
+DROP TABLE foo

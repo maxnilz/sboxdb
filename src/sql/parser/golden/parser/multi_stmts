@@ -1,0 +1,22 @@
+Stmt: 
+SELECT * FROM foo; SELECT * FROM bar;
+
+Parsed Stmts:
+------------
+
+stmt 0
+------
+
+SELECT
+  *
+FROM
+  foo
+
+stmt 1
+------
+
+SELECT
+  *
+FROM
+  bar
+

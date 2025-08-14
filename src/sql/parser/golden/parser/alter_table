@@ -1,0 +1,11 @@
+Stmt: 
+ALTER TABLE foo
+   ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
+   DROP COLUMN if EXISTS col2;
+
+Parsed Stmts:
+------------
+
+ALTER TABLE foo 
+  ADD COLUMN IF NOT EXISTS col1 TEXT DEFAULT 'a' NOT NULL,
+  DROP COLUMN IF EXISTS col2

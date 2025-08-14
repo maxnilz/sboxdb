@@ -1,4 +1,4 @@
-use crate::access::expression::Expression;
+use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
 use crate::access::value::Tuple;
@@ -32,18 +32,18 @@ pub trait Transaction: Catalog {
     fn read_only(&self) -> bool;
 
     /// Commits the transaction
-    fn commit(self) -> Result<()>;
+    fn commit(&self) -> Result<()>;
     /// Rolls back the transaction
-    fn rollback(self) -> Result<()>;
+    fn rollback(&self) -> Result<()>;
 
     /// Inserts a new table row
-    fn insert(&mut self, table: &str, tuple: Tuple) -> Result<PrimaryKey>;
+    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey>;
     /// Deletes a table row
-    fn delete(&mut self, table: &str, pk: &PrimaryKey) -> Result<()>;
+    fn delete(&self, table: &str, pk: &PrimaryKey) -> Result<()>;
     /// Reads a table row, if it exists
     fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
-    /// Scan a table
-    fn scan(&self, table: &str, predicate: Option<Expression>) -> Result<Scan>;
+    /// Scan a table with optional pushdown eligible predicate
+    fn scan(&self, table: &str, predicate: Option<Predicate>) -> Result<Scan>;
     /// drop table data
     fn drop(&self, table: &str) -> Result<()>;
 

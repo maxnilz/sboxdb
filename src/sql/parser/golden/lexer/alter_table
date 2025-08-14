@@ -1,0 +1,27 @@
+Stmt: 
+ALTER TABLE foo
+    ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
+    DROP COLUMN if EXISTS col2;
+
+Tokens: 
+  Keyword(Alter)
+  Keyword(Table)
+  Ident("foo", false)
+  Keyword(Add)
+  Keyword(Column)
+  Keyword(If)
+  Keyword(Not)
+  Keyword(Exists)
+  Ident("col1", false)
+  Keyword(Text)
+  Keyword(Not)
+  Keyword(Null)
+  Keyword(Default)
+  String("a")
+  Comma
+  Keyword(Drop)
+  Keyword(Column)
+  Keyword(If)
+  Keyword(Exists)
+  Ident("col2", false)
+  Semicolon

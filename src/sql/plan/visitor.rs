@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::error::Result;
 
 #[macro_export]
@@ -148,6 +150,24 @@ impl VisitRecursion {
             VisitRecursion::Continue => f(),
             VisitRecursion::Jump | VisitRecursion::Stop => Ok(self),
         }
+    }
+}
+
+/// Helper trait for implementing [`TreeNode`] that have children stored as
+/// `Arc`s. If some trait object, such as `dyn T`, implements this trait,
+/// its related `Arc<dyn T>` will automatically implement [`TreeNode`].
+pub trait DynTreeNode {
+    /// Returns all children of the specified `TreeNode`.
+    fn arc_children(&self) -> Vec<&Arc<Self>>;
+}
+
+/// Blanket implementation for any `Arc<T>` where `T` implements [`DynTreeNode`]
+impl<T: DynTreeNode + ?Sized> TreeNode for Arc<T> {
+    fn visit_children<F>(&self, mut f: F) -> Result<VisitRecursion>
+    where
+        F: FnMut(&Self) -> Result<VisitRecursion>,
+    {
+        apply_each!(f; self.arc_children())
     }
 }
 

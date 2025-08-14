@@ -1,0 +1,8 @@
+Stmt: 
+DROP TABLE foo;
+
+Tokens: 
+  Keyword(Drop)
+  Keyword(Table)
+  Ident("foo", false)
+  Semicolon

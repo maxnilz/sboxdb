@@ -119,3 +119,21 @@ where
 {
     DisplaySeparated { slice, sep: None, inline: false }
 }
+
+pub fn dedent(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    // Find the minimum leading whitespace
+    let min_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    // Remove the common ident from each line
+    lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| &line[min_indent.min(line.len())..])
+        .collect::<Vec<_>>()
+        .join("\n")
+}

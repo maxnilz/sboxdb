@@ -5,7 +5,7 @@
 sql_stmt          := transaction_stmt 
                    | ddl_stmt 
                    | dml_stmt 
-                   | "EXPLAIN" ( "ANALYZE" | "VERBOSE" ) sql_stmt ;
+                   | "EXPLAIN" ( "PHYSICAL" | "VERBOSE" ) sql_stmt ;
 
 -- TXN =================================================================================
 
@@ -21,7 +21,8 @@ rollback_stmt     := "ROLLBACK" ;
 
 ddl_stmt          := create_table_stmt
                    | create_index_stmt
-                   | drop_object_stmt
+                   | drop_table_stmt
+                   | drop_index_stmt
                    | alter_table_stmt
 
 create_table_stmt := "CREATE" "TABLE" [ "IF" "NOT" "EXISTS" ] identifier "(" column_def ("," column_def)* ")" ;
@@ -43,7 +44,8 @@ column_constraint  := "PRIMARY KEY"
 create_index_stmt := "CREATE" [ "UNIQUE" ] "INDEX" [ "IF" "NOT" "EXISTS" ] identifier
                      "ON" identifier "(" identifier ("," identifier)* ")" ;
 
-drop_object_stmt   := "DROP" ( "TABLE" | "INDEX" ) [ "IF" "EXISTS" ] identifier ;
+drop_table_stmt   := "DROP" "TABLE" [ "IF" "EXISTS" ] identifier ;
+drop_index_stmt   := "DROP" "INDEX" [ "IF" "EXISTS" ] identifier ON identifier;
 
 alter_table_stmt  := "ALTER" "TABLE" [ "IF" "EXISTS" ] identifier alter_operation ("," alter_operation)* ;
 alter_operation   := "ADD" "COLUMN"  [ "IF" "NOT" "EXISTS" ] column_def

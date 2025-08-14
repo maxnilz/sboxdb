@@ -1,0 +1,23 @@
+Stmt: 
+ CREATE TABLE if not exists foo(
+  col1 integer primary key,
+  col2 varchar(20) NOT NULL,
+  col3 integer default 1,
+  col4 double default 3.14,
+  col5 double default -2.1E-4 + 2,
+  col6 text default 'a' NOT NULL,
+  "col 7" text NULL
+);
+
+Parsed Stmts:
+------------
+
+CREATE TABLE IF NOT EXISTS foo (
+  col1 INTEGER PRIMARY KEY,
+  col2 TEXT NOT NULL,
+  col3 INTEGER DEFAULT 1,
+  col4 FLOAT DEFAULT 3.14,
+  col5 FLOAT DEFAULT -2.1E-4 + 2,
+  col6 TEXT DEFAULT 'a' NOT NULL,
+  "col 7" TEXT
+)

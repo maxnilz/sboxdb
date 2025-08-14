@@ -18,7 +18,6 @@ use crate::sql::parser::ast::InsertSource;
 use crate::sql::parser::ast::Join as SQLJoin;
 use crate::sql::parser::ast::JoinConstraint;
 use crate::sql::parser::ast::JoinOperator;
-use crate::sql::parser::ast::ObjectType;
 use crate::sql::parser::ast::Query;
 use crate::sql::parser::ast::SelectItem;
 use crate::sql::parser::ast::Statement;
@@ -58,7 +57,7 @@ use crate::sql::plan::plan::TableScanBuilder;
 use crate::sql::plan::plan::Transaction;
 use crate::sql::plan::plan::Update;
 use crate::sql::plan::plan::Values;
-use crate::sql::plan::schema::Field;
+use crate::sql::plan::schema::FieldBuilder;
 use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
@@ -68,7 +67,9 @@ struct Context {
     /// The query schema of the outer query plan, used to resolve
     /// the fields in subquery.
     outer_query_schema: Option<LogicalSchema>,
-    /// The joined schemas of all FROM clauses planned so far.
+    /// The joined schemas of all FROM clauses planned so far. When
+    /// planning LATERAL in the FROM/JOIN clauses, this should become
+    /// a suffix of the `outer_query_schema`(Unimplemented yet).
     outer_from_schema: Option<LogicalSchema>,
 }
 
@@ -101,12 +102,16 @@ impl Context {
     }
 
     /// Extends the FROM schema, returning the existing one, if any
-    pub fn extend_outer_from_schema(&mut self, schema: &LogicalSchema) -> Result<()> {
+    pub fn extend_outer_from_schema(
+        &mut self,
+        schema: &LogicalSchema,
+    ) -> Result<Option<LogicalSchema>> {
+        let prev = self.outer_from_schema.clone();
         match self.outer_from_schema.as_mut() {
             Some(from_schema) => from_schema.merge(schema),
             None => self.outer_from_schema = Some(schema.clone()),
         };
-        Ok(())
+        Ok(prev)
     }
 }
 
@@ -122,14 +127,14 @@ impl Context {
 ///
 /// It does not perform type coercion, or perform optimization, which are done
 /// by subsequent passes.
-struct Planner {
-    catalog: Box<dyn Catalog>,
+pub struct Planner {
+    catalog: Arc<dyn Catalog>,
     ident_normalizer: IdentNormalizer,
 }
 
 impl Planner {
     #[allow(dead_code)]
-    pub fn new(catalog: Box<dyn Catalog>) -> Self {
+    pub fn new(catalog: Arc<dyn Catalog>) -> Self {
         let ident_normalizer = IdentNormalizer::new(true);
         Self { catalog, ident_normalizer }
     }
@@ -149,11 +154,17 @@ impl Planner {
                 self.create_table_to_plan(context, sql_create_table)
             }
             Statement::CreateIndex(sql_create_index) => self.create_index_to_plan(sql_create_index),
-            Statement::Drop { object_type, object_name, if_exists } => {
-                self.drop_obj_to_plan(object_type, object_name, if_exists)
+            Statement::DropTable { table_name, if_exists } => {
+                let relation = TableReference::new(&self.normalize_ident(&table_name));
+                Ok(Plan::DropTable(DropTable::new(relation, if_exists)))
+            }
+            Statement::DropIndex { index_name, table_name, if_exists } => {
+                let name = self.normalize_ident(&index_name);
+                let table = self.normalize_ident(&table_name);
+                Ok(Plan::DropIndex(DropIndex::new(name, table, if_exists)))
             }
             Statement::AlterTable { .. } => {
-                self.semantic_err(Error::parse("ALTER TABLE not supported yet"))
+                self.unimplemented_err(Error::parse("ALTER TABLE not supported yet"))
             }
             Statement::Insert(insert) => self.insert_to_plan(context, insert),
             Statement::Update(update) => self.update_to_plan(context, update),
@@ -161,9 +172,9 @@ impl Planner {
                 self.delete_to_plan(context, table, selection)
             }
             Statement::Select { query } => self.query_to_plan(context, *query),
-            Statement::Explain { analyze, verbose, statement } => {
+            Statement::Explain { physical, verbose, statement } => {
                 let plan = self.sql_statement_to_plan(*statement)?;
-                Ok(Plan::Explain(Explain::new(plan, verbose, analyze)))
+                Ok(Plan::Explain(Explain::new(plan, verbose, physical)))
             }
         }
     }
@@ -258,8 +269,9 @@ impl Planner {
             SelectItem::WildcardExpr(wildcard) => match wildcard {
                 WildcardExpr::QualifiedWildcard(idents) => {
                     if idents.len() != 1 {
-                        return self
-                            .semantic_err("Multiple qualified wildcard idents not supported yet");
+                        return self.unimplemented_err(
+                            "Multiple qualified wildcard idents not supported yet",
+                        );
                     }
                     let table = self.normalize_ident(&idents[0]);
                     let q = TableReference::from(table);
@@ -289,12 +301,12 @@ impl Planner {
 
     fn plan_table_with_joins(&self, context: &mut Context, t: TableWithJoins) -> Result<Plan> {
         let mut left = self.plan_table_factor(context, t.relation)?;
-        let old_outer_from_schema = context.outer_from_schema();
+        let prev_outer_from_schema = context.outer_from_schema();
         for join in t.joins {
             context.extend_outer_from_schema(left.schema())?;
             left = self.plan_relation_join(context, left, join)?;
         }
-        context.set_outer_from_schema(old_outer_from_schema);
+        context.set_outer_from_schema(prev_outer_from_schema);
         Ok(left)
     }
 
@@ -423,7 +435,7 @@ impl Planner {
                     }
                     Some(sqlexpr) => {
                         let expr = self.sqlexpr_to_expr(context, sqlexpr, scan.schema())?;
-                        expr.cast_to(&f.datatype, scan.schema())
+                        expr.can_cast_to(&f.datatype, scan.schema())
                     }
                 }?;
                 Ok(Expr::Alias(Alias::new(expr, None::<&str>, &f.name)))
@@ -455,10 +467,10 @@ impl Planner {
         // column, and should use the default value as the value of i-th
         // table column.
         let (insertion_schema, value_indices) = if insert.columns.is_empty() {
-            let value_indices = (0..table_schema.fields().len()).map(Some).collect::<Vec<_>>();
+            let value_indices = (0..table_schema.len()).map(Some).collect::<Vec<_>>();
             (table_schema.clone(), value_indices)
         } else {
-            let mut value_indices = vec![None; table_schema.fields().len()];
+            let mut value_indices = vec![None; table_schema.len()];
             let fields: Fields = insert
                 .columns
                 .into_iter()
@@ -478,14 +490,14 @@ impl Planner {
                 .collect::<Result<Vec<_>>>()?
                 .into();
             let qualifiers = vec![Some(TableReference::new(&table)); fields.len()];
-            (LogicalSchema::new(fields, qualifiers)?, value_indices)
+            (LogicalSchema::try_new(fields, qualifiers)?, value_indices)
         };
 
         // parse the origin source plan with the input insertion schema.
         let source = match insert.source {
             InsertSource::Select(query) => {
                 let plan = self.query_to_plan(context, *query)?;
-                if plan.schema().fields().len() != insertion_schema.fields().len() {
+                if plan.schema().len() != insertion_schema.len() {
                     return Err(Error::parse(
                         "Query output columns doesn't match the insert query",
                     ));
@@ -520,9 +532,9 @@ impl Planner {
                         .default
                         .clone()
                         .unwrap_or(Expr::Value(Value::Null))
-                        .cast_to(&target_field.datatype, &LogicalSchema::empty())?,
+                        .can_cast_to(&target_field.datatype, &LogicalSchema::empty())?,
                     Some(j) => Expr::FieldReference(source.schema().field_reference(j))
-                        .cast_to(&target_field.datatype, source.schema())?,
+                        .can_cast_to(&target_field.datatype, source.schema())?,
                 };
                 Ok(Expr::Alias(Alias::new(expr, None::<&str>, &target_field.name)))
             })
@@ -533,24 +545,6 @@ impl Planner {
         let projection = Plan::Projection(Projection::new(exprs, source, table_schema));
 
         Ok(Plan::Insert(Insert::new(table, projection)))
-    }
-
-    fn drop_obj_to_plan(
-        &self,
-        object_type: ObjectType,
-        object_name: Ident,
-        if_exists: bool,
-    ) -> Result<Plan> {
-        match object_type {
-            ObjectType::Table => {
-                let relation = TableReference::new(&self.normalize_ident(&object_name));
-                Ok(Plan::DropTable(DropTable::new(relation, if_exists)))
-            }
-            ObjectType::Index => {
-                let name = self.normalize_ident(&object_name);
-                Ok(Plan::DropIndex(DropIndex::new(name, if_exists)))
-            }
-        }
     }
 
     fn create_index_to_plan(&self, a: SQLCreateIndex) -> Result<Plan> {
@@ -589,14 +583,13 @@ impl Planner {
                     .map(|sqlexpr| self.sqlexpr_to_expr(context, sqlexpr, &empty_schema))
                     .transpose()?;
                 let datatype = self.sql_convert_data_type(&it.datatype)?;
-                Ok(Field {
-                    name: self.normalize_ident(&it.name),
-                    datatype,
-                    primary_key: it.primary_key,
-                    nullable: it.nullable,
-                    unique: it.unique,
-                    default,
-                })
+                let field = FieldBuilder::new(self.normalize_ident(&it.name), datatype)
+                    .primary_key(it.primary_key)
+                    .nullable(it.nullable)
+                    .uniqueness(it.unique)
+                    .default(default)
+                    .build();
+                Ok(field)
             })
             .collect::<Result<Vec<_>>>()?
             .into();
@@ -719,7 +712,7 @@ impl Planner {
             SQLExpr::InList { expr, list, negated } => {
                 self.parse_inlist_to_expr(context, *expr, list, negated, schema)
             }
-            SQLExpr::Tuple(_) => self.semantic_err("Expr tuple not supported yet"),
+            SQLExpr::Tuple(_) => self.unimplemented_err("Expr tuple not supported yet"),
             SQLExpr::Exists { subquery, negated } => {
                 self.parse_exists_subquery_to_expr(context, *subquery, negated, schema)
             }
@@ -740,9 +733,9 @@ impl Planner {
                 //   ROW_NUMBER(), RANK(), SUM() OVER(...), COUNT() OVER(...)
                 //  4. UDFs(User Defined Functions)...
                 // TODO: Support scalar function and aggregation function.
-                self.semantic_err("Function not supported yet")
+                self.unimplemented_err("Function not supported yet")
             }
-            _ => self.semantic_err(format!("Unsupported sqlexpr {}", sqlexpr)),
+            _ => self.semantic_err(format!("Unknown sqlexpr {}", sqlexpr)),
         }
     }
 
@@ -754,9 +747,9 @@ impl Planner {
         negated: bool,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let old_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
+        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
         let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(old_outer_query_schema);
+        context.set_outer_query_schema(prev_outer_query_schema);
 
         // validate the subplan produce a single column.
         let fields = subplan.schema().fields();
@@ -768,7 +761,7 @@ impl Planner {
         }
 
         let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
-        Ok(Expr::InSubquery(InSubquery::new(subplan, expr, negated)))
+        Ok(Expr::InSubquery(InSubquery::try_new(subplan, expr, negated)?))
     }
 
     fn parse_scalar_subquery_to_expr(
@@ -777,9 +770,9 @@ impl Planner {
         subquery: Query,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let old_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
+        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
         let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(old_outer_query_schema);
+        context.set_outer_query_schema(prev_outer_query_schema);
 
         // validate the subplan produce a single column.
         let fields = subplan.schema().fields();
@@ -789,8 +782,7 @@ impl Planner {
                 fields.names().join(",")
             ));
         }
-
-        Ok(Expr::ScalarSubquery(Subquery::new(subplan)))
+        Ok(Expr::ScalarSubquery(Subquery::try_new(subplan)?))
     }
 
     fn parse_exists_subquery_to_expr(
@@ -800,11 +792,11 @@ impl Planner {
         negated: bool,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let old_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
+        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
         let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(old_outer_query_schema);
+        context.set_outer_query_schema(prev_outer_query_schema);
 
-        Ok(Expr::Exists(Exists::new(subplan, negated)))
+        Ok(Expr::Exists(Exists::try_new(subplan, negated)?))
     }
 
     fn parse_inlist_to_expr(
@@ -862,12 +854,10 @@ impl Planner {
                     // otherwise wrap it with negative operator
                     let operand = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
                     let (datatype, _) = operand.datatype_and_nullable(schema)?;
-                    match datatype {
-                        DataType::Integer | DataType::Float => {
-                            Ok(Expr::Negative(Box::new(operand)))
-                        }
-                        _ => self.semantic_err(format!("- cannot be used with {datatype}")),
+                    if !datatype.is_numeric() {
+                        return self.semantic_err(format!("- cannot be used with {datatype}"));
                     }
+                    Ok(Expr::Negative(Box::new(operand)))
                 }
             },
             UnaryOperator::Not => {
@@ -900,11 +890,11 @@ impl Planner {
         }
 
         // check the outer query schema
-        if let Some(outer) = &context.outer_from_schema {
+        if let Some(outer) = &context.outer_query_schema {
             if let Some((field, Some(f))) =
                 outer.field_reference_by_qname(&Some(TableReference::new(&table)), &ident)
             {
-                return Ok(Expr::OuterReferenceColumn(f.datatype.clone(), field));
+                return Ok(Expr::OuterFieldReference(f.datatype.clone(), field));
             }
         }
 
@@ -922,9 +912,9 @@ impl Planner {
             return Ok(Expr::FieldReference(field));
         }
         // check the outer query schema
-        if let Some(outer) = &context.outer_from_schema {
+        if let Some(outer) = &context.outer_query_schema {
             if let Some((field, Some(col))) = outer.field_reference_by_name(&ident) {
-                return Ok(Expr::OuterReferenceColumn(col.datatype.clone(), field));
+                return Ok(Expr::OuterFieldReference(col.datatype.clone(), field));
             }
         }
         self.semantic_err(format!("Unknown identifier {}", ident))
@@ -967,6 +957,10 @@ impl Planner {
     fn semantic_err<T, E: ToString>(&self, msg: E) -> Result<T> {
         Err(Error::parse(msg))
     }
+
+    fn unimplemented_err<T, E: ToString>(&self, msg: E) -> Result<T> {
+        Err(Error::unimplemented(msg))
+    }
 }
 
 pub struct IdentNormalizer {
@@ -993,19 +987,54 @@ impl IdentNormalizer {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use std::io::Write;
+
+    use goldenfile::Mint;
+
     use super::*;
     use crate::catalog::column::ColumnBuilder;
     use crate::catalog::index::Index;
     use crate::catalog::index::Indexes;
     use crate::catalog::schema::Schema;
     use crate::catalog::schema::Schemas;
+    use crate::sql::parser::display_utils;
+    use crate::sql::parser::Parser;
 
-    #[test]
-    fn test_ddl_stmts() -> Result<()> {
-        let cases = vec![
-            // query with join
-            r###"
+    const GOLDEN_DIR: &str = "src/sql/plan/golden";
+
+    macro_rules! test_logical_planner {
+        ($($name:ident: $stmt:expr, )*) => {
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let mut parser = Parser::new($stmt)?;
+                    let stmt = parser.parse_statement()?;
+
+                    let catalog: Arc<dyn Catalog> = Arc::new(TestCatalog {});
+                    let planner = Planner::new(catalog);
+                    let plan = planner.sql_statement_to_plan(stmt)?;
+
+                    let mut mint = Mint::new(GOLDEN_DIR);
+                    let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
+
+                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+
+                    write!(f, "Logical Plan:\n")?;
+                    write!(f, "--------------\n\n")?;
+                    write!(f, "{}\n\n", plan)?;
+
+                    write!(f, "Logical Plan with schema:\n")?;
+                    write!(f, "-------------------------\n\n")?;
+                    write!(f, "{:#}\n", plan)?;
+                    Ok(())
+                }
+            )*
+        }
+    }
+
+    test_logical_planner! {
+        query_with_join: r#"
             SELECT
                 users.name AS user_name,
                 orders.id AS order_id,
@@ -1015,10 +1044,9 @@ mod tests {
                 JOIN orders ON users.id = orders.user_id
                 JOIN products ON orders.product_id = products.id
             WHERE
-               users.name IN (SELECT name from users WHERE email = 'admin@example.com');
-            "###,
-            // query with alias and join
-            r###"
+               users.name IN (SELECT name from users WHERE email = 'admin@example.com');        
+        "#,
+        query_with_alias_join: r#"
             SELECT
                 a.name AS user_name,
                 orders.id AS order_id,
@@ -1028,52 +1056,32 @@ mod tests {
                 JOIN orders ON a.id = orders.user_id
                 JOIN products ON orders.product_id = products.id
             WHERE
-               a.name IN (SELECT name from users WHERE email = 'admin@example.com');
-            "###,
-            // query with group by, limit, offset
-            r###"
-            SELECT name FROM users GROUP BY name ORDER BY name DESC limit 1 offset 1;
-            "###,
-            // insert with select
-            r###"
+               a.name IN (SELECT name from users WHERE email = 'admin@example.com');        
+        "#,
+        query_with_groupby_limit_offset: "SELECT name FROM users GROUP BY name ORDER BY name DESC limit 1 offset 1;",
+        insert_with_select: r#"
             INSERT INTO users (id, name, email)
             SELECT id, name, email
             FROM old_users
-            WHERE active is true;
-            "###,
-            // insert with values
-            r###"
+            WHERE active = true;            
+        "#,
+        insert_with_values: r#"
             INSERT INTO users (id, name, email)
             VALUES
               (1, 'Alice', 'alice@example.com'),
               (2, 'Bob', 'bob@example.com'),
               (3, 'Charlie', 'charlie@example.com');
-            "###,
-            // update
-            r###"
+        "#,
+        update: r#"
             UPDATE users
             SET name = 'Alice Smith',
                 email = 'alice.smith@example.com'
             WHERE id = 1;
-            "###,
-            // delete
-            r###"
-            DELETE FROM users where id = 1;
-            "###,
-        ];
-        for (i, &sql) in cases.iter().enumerate() {
-            let mut parser = crate::sql::parser::Parser::new(sql)?;
-            let stmt = parser.parse_statement()?;
-            let catalog: Box<dyn Catalog> = Box::new(TestCatalog {});
-            let planner = Planner::new(catalog);
-            let plan = planner.sql_statement_to_plan(stmt)?;
-            println!("{}==> \n{:#}\n", i, plan);
-        }
-
-        Ok(())
+        "#,
+        delete: "DELETE FROM users where id = 1;",
     }
 
-    struct TestCatalog {}
+    pub struct TestCatalog {}
 
     impl Catalog for TestCatalog {
         fn read_table(&self, table: &str) -> Result<Option<Schema>> {
@@ -1084,7 +1092,7 @@ mod tests {
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("users", columns.into())))
+                    Ok(Some(Schema::new("users", columns)))
                 }
                 "old_users" => {
                     let columns = vec![
@@ -1093,7 +1101,7 @@ mod tests {
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
                         ColumnBuilder::new("active", DataType::Boolean).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("old_users", columns.into())))
+                    Ok(Some(Schema::new("old_users", columns)))
                 }
                 "orders" => {
                     let columns = vec![
@@ -1102,14 +1110,14 @@ mod tests {
                         ColumnBuilder::new("product_id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("amound", DataType::Float).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("orders", columns.into())))
+                    Ok(Some(Schema::new("orders", columns)))
                 }
                 "products" => {
                     let columns = vec![
                         ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("products", columns.into())))
+                    Ok(Some(Schema::new("products", columns)))
                 }
                 _ => Err(Error::value(format!("Table {} not found", table))),
             }

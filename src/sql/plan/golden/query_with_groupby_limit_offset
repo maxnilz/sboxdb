@@ -1,0 +1,20 @@
+Stmt: 
+SELECT name FROM users GROUP BY name ORDER BY name DESC limit 1 offset 1;
+
+Logical Plan:
+--------------
+
+Limit: fetch=1
+  Sort: name DESC
+    Projection: name
+      Aggregate: groupBy=[users.name], aggr=[]
+        TableScan: users
+
+Logical Plan with schema:
+-------------------------
+
+Limit: fetch=1 [name:String;N]
+  Sort: name DESC [name:String;N]
+    Projection: name [name:String;N]
+      Aggregate: groupBy=[users.name], aggr=[] [name:String;N]
+        TableScan: users [id:Integer;N, name:String;N, email:String;N]

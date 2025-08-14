@@ -1,5 +1,5 @@
 pub mod engine;
-mod expression;
-mod kv;
+pub mod kv;
+pub mod predicate;
 mod raft;
-mod value;
+pub mod value;

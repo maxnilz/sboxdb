@@ -485,7 +485,7 @@ impl<T: Storage> Transaction<T> {
     /// Commits the transaction, by removing it from the active set. This will
     /// immediately make its writes visible to subsequent transactions. Also
     /// removes its TxnWrite records, which are no longer needed.
-    pub fn commit(self) -> Result<()> {
+    pub fn commit(&self) -> Result<()> {
         if self.st.read_only {
             return Ok(());
         }
@@ -495,10 +495,10 @@ impl<T: Storage> Transaction<T> {
         Ok(())
     }
 
-    /// Rollback the transaction  by undoing all written versions and removing
+    /// Rollback the transaction by undoing all written versions and removing
     /// it from the active set. The active set snapshot is left behind, since
     /// this is needed for time travel queries at this version.
-    pub fn rollback(self) -> Result<()> {
+    pub fn rollback(&self) -> Result<()> {
         if self.st.read_only {
             return Ok(());
         }

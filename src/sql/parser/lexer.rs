@@ -128,6 +128,7 @@ pub enum Keyword {
     Delete,
     Explain,
     Analyze,
+    PHYSICAL,
     Verbose,
 }
 
@@ -195,6 +196,7 @@ impl Keyword {
             "DELETE" => Self::Delete,
             "EXPLAIN" => Self::Explain,
             "ANALYZE" => Self::Analyze,
+            "PHYSICAL" => Self::PHYSICAL,
             "VERBOSE" => Self::Verbose,
             _ => return None,
         };
@@ -264,6 +266,7 @@ impl Keyword {
             Keyword::Delete => "DELETE",
             Keyword::Explain => "EXPLAIN",
             Keyword::Analyze => "ANALYZE",
+            Keyword::PHYSICAL => "PHYSICAL",
             Keyword::Verbose => "VERBOSE",
         }
     }
@@ -460,55 +463,62 @@ impl<'a> Iterator for Lexer<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use goldenfile::Mint;
+
+    use super::super::display_utils;
     use super::*;
 
-    #[test]
-    fn test_ddl_stmts() -> Result<()> {
-        let cases = vec![
-            // create table
-            (r###"
+    const GOLDEN_DIR: &str = "src/sql/parser/golden/lexer";
+
+    macro_rules! test_lex_stmts {
+        ($($name:ident: $stmt:expr, )*) => {
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let mut tokens = vec![];
+                    let mut lexer = Lexer::new($stmt);
+                    while let Some(tok) = lexer.next().transpose()? {
+                        tokens.push(tok)
+                    }
+                    let mut mint = Mint::new(GOLDEN_DIR);
+                    let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
+
+                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Tokens: \n")?;
+                    for token in &tokens {
+                        write!(f, "  {:?}\n", token)?;
+                    }
+                    Ok(())
+                }
+            )*
+        };
+    }
+
+    test_lex_stmts! {
+        create_table: r#"
             CREATE TABLE if not exists foo(
-              col1 integer primary key,
-              col2 varchar(20) NOT NULL,
-              col3 integer default 1,
-              col4 double default 3.14,
-              col5 double default -2.1E-4 + 2,
-              col6 text default 'a' NOT NULL,
-              "col 7" text NULL
+                col1 integer primary key,
+                col2 varchar(20) NOT NULL,
+                col3 integer default 1,
+                col4 double default 3.14,
+                col5 double default -2.1E-4 + 2,
+                col6 text default 'a' NOT NULL,
+                "col 7" text NULL
             );
-            "###),
-            // create index
-            (r###"
-            CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
-            "###),
-            // drop table
-            (r###"
-            DROP TABLE foo;
-            "###),
-            // drop index
-            (r###"
-            DROP INDEX bar;
-            "###),
-            // alter table
-            (r###"
+        "#,
+
+        create_index: "CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);",
+
+        drop_table: "DROP TABLE foo;",
+
+        drop_index: "DROP INDEX bar ON foo;",
+
+        alter_table: r#"
             ALTER TABLE foo
                 ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
                 DROP COLUMN if EXISTS col2;
-            "###),
-        ];
-
-        for (i, sql) in cases.iter().enumerate() {
-            let mut tokens = vec![];
-            let mut lexer = Lexer::new(sql);
-            while let Some(tok) = lexer.next().transpose()? {
-                tokens.push(tok)
-            }
-            print!("{} ==>", i);
-            for token in &tokens {
-                print!("{:?},", token)
-            }
-            println!()
-        }
-        Ok(())
+        "#,
     }
 }

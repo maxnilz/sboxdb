@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -20,16 +22,44 @@ pub struct Schema {
     pub columns: Columns,
 }
 
+impl Default for Schema {
+    fn default() -> Self {
+        Schema::empty()
+    }
+}
+
+impl Display for Schema {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let sep = if f.alternate() { "\n" } else { "" };
+        write!(f, "TABLE {}(", self.name)?;
+        write!(f, "{}", sep)?;
+        for (i, col) in self.columns.iter().enumerate() {
+            write!(f, "{}", col)?;
+            if i < self.columns.len() - 1 {
+                write!(f, ", {}", sep)?;
+            }
+        }
+        write!(f, ")")?;
+        Ok(())
+    }
+}
+
 /// A table scan iterator
 pub type Schemas = Box<dyn DoubleEndedIterator<Item = Schema>>;
 
 impl Schema {
-    pub fn new(name: impl Into<String>, columns: Columns) -> Schema {
-        Schema { name: name.into(), columns }
+    pub fn new(name: impl Into<String>, columns: impl Into<Columns>) -> Schema {
+        Schema { name: name.into(), columns: columns.into() }
+    }
+
+    pub fn try_new(name: impl Into<String>, columns: impl Into<Columns>) -> Result<Schema> {
+        let schema = Schema { name: name.into(), columns: columns.into() };
+        schema.validate()?;
+        Ok(schema)
     }
 
     pub fn empty() -> Schema {
-        Schema { name: "".to_string(), columns: Columns::empty() }
+        Schema::new("", Columns::empty())
     }
 
     pub fn validate(&self) -> Result<()> {

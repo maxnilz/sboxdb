@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::catalog::column::Column;
 use crate::catalog::column::Columns;
 use crate::error::Error;
 use crate::error::Result;
@@ -11,7 +10,13 @@ pub enum IndexType {
     HashIndex,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+impl Default for IndexType {
+    fn default() -> Self {
+        IndexType::HashIndex
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Index {
     /// Index name
     pub name: String,
@@ -26,25 +31,21 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn new(name: String, tblname: String, columns: Vec<Column>, uniqueness: bool) -> Index {
+    pub fn new(
+        name: impl Into<String>,
+        tblname: impl Into<String>,
+        columns: impl Into<Columns>,
+        uniqueness: bool,
+    ) -> Index {
         Index {
-            name,
+            name: name.into(),
             index_type: IndexType::HashIndex,
             uniqueness,
-            tblname,
-            columns: Columns::from(columns),
+            tblname: tblname.into(),
+            columns: columns.into(),
         }
     }
 
-    pub fn from(name: &str, tblname: &str, columns: Columns, uniqueness: bool) -> Index {
-        Index {
-            name: name.to_string(),
-            tblname: tblname.to_string(),
-            index_type: IndexType::HashIndex,
-            columns,
-            uniqueness,
-        }
-    }
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(Error::value("Index name can't be empty"));

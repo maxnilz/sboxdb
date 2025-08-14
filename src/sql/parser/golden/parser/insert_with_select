@@ -1,0 +1,22 @@
+Stmt: 
+INSERT INTO users (id, name, email)
+SELECT id, name, email
+FROM old_users
+WHERE active = true;            
+
+Parsed Stmts:
+------------
+
+INERT INTO users (
+  id,
+  name,
+  email
+)
+SELECT
+  id,
+  name,
+  email
+FROM
+  old_users
+WHERE
+  active = true

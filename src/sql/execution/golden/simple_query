@@ -1,0 +1,27 @@
+Stmt: 
+SELECT *, 1+1 FROM users
+
+Logical Plan:
+--------------
+
+Projection: users.id, users.name, users.email, 1+1
+  TableScan: users
+
+Physical Plan:
+---------------
+
+ProjectionExec: id@0, name@1, email@2, 1+1
+  SeqScanExec: users
+
+Result:
+-------
+
++----+---------+---------------------+-------+
+| id | name    | email               | 1 + 1 |
++----+---------+---------------------+-------+
+| 1  | Alice   | alice@example.com   | 2     |
+| 2  | Bob     | bob@example.com     | 2     |
+| 3  | Charlie | charlie@example.com | 2     |
++----+---------+---------------------+-------+
+
+

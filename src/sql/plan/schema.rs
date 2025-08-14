@@ -9,8 +9,11 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 
 use crate::catalog::column::Column;
+use crate::catalog::column::ColumnBuilder;
 use crate::catalog::column::ColumnRef;
+use crate::catalog::column::Columns;
 use crate::catalog::r#type::DataType;
+use crate::catalog::r#type::Value;
 use crate::catalog::schema::Schema;
 use crate::error::Error;
 use crate::error::Result;
@@ -60,6 +63,20 @@ impl From<&str> for TableReference {
 impl From<String> for TableReference {
     fn from(s: String) -> Self {
         TableReference(Arc::from(s))
+    }
+}
+
+impl From<TableReference> for String {
+    fn from(r: TableReference) -> Self {
+        r.to_string()
+    }
+}
+
+impl Deref for TableReference {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_str()
     }
 }
 
@@ -157,6 +174,35 @@ impl Fields {
     pub fn names(&self) -> Vec<String> {
         self.0.iter().map(|it| it.name.clone()).collect()
     }
+
+    pub fn to_columns<F>(&self, mut default_evalf: F) -> Result<Columns>
+    where
+        F: FnMut(&str, Option<Expr>) -> Result<Option<Value>>,
+    {
+        self.iter()
+            .map(|it| {
+                ColumnBuilder::new(&it.name, it.datatype.clone())
+                    .primary_key(it.primary_key)
+                    .nullable(it.nullable)
+                    .uniqueness(it.unique)
+                    .default(default_evalf(&it.name, it.default.clone())?)
+                    .build()
+            })
+            .collect()
+    }
+
+    pub fn to_columns_with_value_as_default(&self) -> Result<Columns> {
+        self.to_columns(|col, default| match default {
+            None => Ok(None),
+            Some(expr) => match expr {
+                Expr::Value(v) => Ok(Some(v)),
+                _ => Err(Error::internal(format!(
+                    "Expect value expr for column: {}, got: {}",
+                    col, expr
+                ))),
+            },
+        })
+    }
 }
 
 impl FromIterator<Field> for Fields {
@@ -219,9 +265,55 @@ impl FieldBuilder {
         }
     }
 
-    /// Set whether this field is nullable
+    /// Mark this column as a primary key
+    pub fn primary(mut self) -> Self {
+        self.primary_key = true;
+        self.nullable = false; // Primary keys are automatically not nullable
+        self.unique = true; // Primary keys are automatically unique
+        self
+    }
+
+    /// Set whether this column is primary key
+    pub fn primary_key(self, primary_key: bool) -> Self {
+        if !primary_key {
+            return self;
+        }
+        self.primary()
+    }
+
+    /// Set whether this column is nullable
     pub fn nullable(mut self, nullable: bool) -> Self {
-        self.nullable = nullable;
+        if !self.primary_key {
+            self.nullable = nullable;
+        }
+        self
+    }
+
+    /// Mark this column as not nullable
+    pub fn not_null(self) -> Self {
+        self.nullable(false)
+    }
+
+    /// Set whether this column is unique
+    pub fn uniqueness(mut self, unique: bool) -> Self {
+        if !self.primary_key {
+            self.unique = unique;
+        }
+        self
+    }
+
+    /// Mark this column as unique
+    pub fn unique(self) -> Self {
+        self.uniqueness(true)
+    }
+
+    /// Set the default value for this column
+    pub fn default_value(self, expr: Expr) -> Self {
+        self.default(Some(expr))
+    }
+
+    pub fn default(mut self, default: Option<Expr>) -> Self {
+        self.default = default;
         self
     }
 
@@ -238,12 +330,8 @@ impl FieldBuilder {
     }
 }
 
-/// Logical schema at planner where each field have an optional table reference,
-/// typically the table name or table alias, to tracks which table/relation each
-/// field belongs to. It is different from the [`Schema`] where it has an
-/// aggregated/unified single qualifier, typically the table name, for all the columns.
 #[derive(Clone, Debug)]
-pub struct LogicalSchema {
+struct LogicalSchemaInner {
     /// A sequence of fields that describe the schema.
     fields: Fields,
     /// Optional qualifiers for each column in this schema to specify the source
@@ -252,45 +340,102 @@ pub struct LogicalSchema {
 }
 
 pub static EMPTY_SCHEMA: LazyLock<LogicalSchema> = LazyLock::new(|| LogicalSchema::empty());
+
+/// Logical schema at planner where each field have an optional table reference,
+/// typically the table name or table alias, to tracks which table/relation each
+/// field belongs to. It is different from the [`Schema`] where it has an
+/// aggregated/unified single qualifier, typically the table name, for all the columns.
+///
+/// It is designed to be cheap to clone
+#[derive(Clone, Debug)]
+pub struct LogicalSchema {
+    inner: Arc<LogicalSchemaInner>,
+}
+
 impl LogicalSchema {
     pub fn empty() -> Self {
-        Self { fields: Fields::empty(), qualifiers: vec![] }
+        Self { inner: Arc::new(LogicalSchemaInner { fields: Fields::empty(), qualifiers: vec![] }) }
     }
 
-    pub fn new(fields: Fields, qualifiers: Vec<Option<TableReference>>) -> Result<Self> {
+    pub fn try_new(
+        fields: impl Into<Fields>,
+        qualifiers: Vec<Option<TableReference>>,
+    ) -> Result<Self> {
+        let fields = fields.into();
         if fields.len() != qualifiers.len() {
             return Err(Error::internal("Invalid fields and qualifiers size"));
         }
-        let schema = LogicalSchema { fields, qualifiers };
+        let schema = Self::new(fields, qualifiers);
         schema.check_names()?;
         Ok(schema)
+    }
+
+    fn new(fields: impl Into<Fields>, qualifiers: Vec<Option<TableReference>>) -> Self {
+        Self { inner: Arc::new(LogicalSchemaInner { fields: fields.into(), qualifiers }) }
     }
 
     pub fn from_unqualified_fields(fields: Fields) -> Result<Self> {
         let sz = fields.len();
-        let schema = LogicalSchema { fields, qualifiers: vec![None; sz] };
+        let schema = Self::new(fields, vec![None; sz]);
         schema.check_names()?;
         Ok(schema)
     }
 
+    pub fn schema_affected_rows_count() -> LogicalSchema {
+        LogicalSchema::from_unqualified_fields(Fields::from(vec![FieldBuilder::new(
+            "count",
+            DataType::Integer,
+        )
+        .build()]))
+        .unwrap()
+    }
+
+    pub fn is_affected_rows_count_schema(&self) -> Result<()> {
+        let sz = self.len();
+        if sz != 1 {
+            return Err(Error::internal(format!(
+                "Expect one single field output scheme, got {}",
+                sz
+            )));
+        }
+        let field = self.field(0);
+        if field.datatype != DataType::Integer {
+            return Err(Error::internal(format!(
+                "Expect one single integer field as output, got {}",
+                field.datatype
+            )));
+        }
+        if field.name != "count" {
+            return Err(Error::internal(format!("Expect count as field name, got {}", field.name)));
+        }
+        Ok(())
+    }
+
     pub fn fields(&self) -> &Fields {
-        &self.fields
+        &self.inner.fields
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.fields.len()
     }
 
     pub fn field(&self, index: usize) -> &FieldRef {
-        &self.fields[index]
+        &self.inner.fields[index]
     }
 
     pub fn field_by_ref(&self, field: &FieldReference) -> Result<FieldRef> {
         let relation = &field.relation;
         if let Some(idx) = self.field_index_by_name(relation, &field.name) {
-            return Ok(self.fields[idx].clone());
+            return Ok(self.inner.fields[idx].clone());
         }
         Err(Error::parse(format!("Column {} not found", field.name)))
     }
 
     pub fn field_reference(&self, index: usize) -> FieldReference {
-        FieldReference::new(self.fields[index].name.clone(), self.qualifiers[index].clone())
+        FieldReference::new(
+            self.inner.fields[index].name.clone(),
+            self.inner.qualifiers[index].clone(),
+        )
     }
 
     /// Get a logical field reference from the given ident by checking whether the given
@@ -314,8 +459,8 @@ impl LogicalSchema {
         ident: &str,
     ) -> Option<(FieldReference, Option<FieldRef>)> {
         if let Some(idx) = self.field_index_by_name(qualifier, ident) {
-            let q = &self.qualifiers[idx];
-            let f = &self.fields[idx];
+            let q = &self.inner.qualifiers[idx];
+            let f = &self.inner.fields[idx];
             return Some((FieldReference::new(&f.name, q.clone()), Some(f.clone())));
         }
         // no qualified column found
@@ -325,15 +470,15 @@ impl LogicalSchema {
     /// Searches for a column by name, returning it along with its table
     /// reference if found
     pub fn find(&self, name: &str) -> Option<(Option<TableReference>, &FieldRef)> {
-        if let Some((i, f)) = self.fields.find(name) {
-            let q = self.qualifiers[i].clone();
+        if let Some((i, f)) = self.inner.fields.find(name) {
+            let q = self.inner.qualifiers[i].clone();
             return Some((q, f));
         }
         None
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Option<&TableReference>, &FieldRef)> {
-        self.fields.iter().zip(self.qualifiers.iter()).map(|(f, q)| (q.as_ref(), f))
+        self.inner.fields.iter().zip(self.inner.qualifiers.iter()).map(|(f, q)| (q.as_ref(), f))
     }
 
     pub fn field_index_by_name(
@@ -363,7 +508,7 @@ impl LogicalSchema {
     /// Modify this schema by appending the fields from the supplied schema, ignoring any
     /// duplicate fields.
     pub fn merge(&mut self, other: &LogicalSchema) {
-        if other.fields.is_empty() {
+        if other.inner.fields.is_empty() {
             return;
         }
 
@@ -372,7 +517,7 @@ impl LogicalSchema {
 
         let self_fields: HashSet<(Option<&TableReference>, &FieldRef)> = self.iter().collect();
         let self_field_names =
-            self.fields.iter().map(|it| it.name.as_str()).collect::<HashSet<_>>();
+            self.inner.fields.iter().map(|it| it.name.as_str()).collect::<HashSet<_>>();
         for (q, f) in other.iter() {
             let dup = match q {
                 None => self_field_names.contains(f.name.as_str()),
@@ -385,10 +530,10 @@ impl LogicalSchema {
             new_qualifiers.push(q.cloned());
         }
 
-        let mut fields = self.fields.to_vec();
+        let mut fields = self.inner.fields.to_vec();
         fields.extend(new_fields);
-        self.fields = fields.into();
-        self.qualifiers.extend(new_qualifiers)
+        let inner = LogicalSchemaInner { fields: Fields::from(fields), qualifiers: new_qualifiers };
+        self.inner = Arc::new(inner);
     }
 
     /// Create a new schema that contains the fields from this schema followed by the fields
@@ -397,32 +542,32 @@ impl LogicalSchema {
         let mut fields = Vec::new();
         let mut qualifiers = Vec::new();
 
-        fields.extend_from_slice(self.fields.as_ref());
-        qualifiers.extend_from_slice(&self.qualifiers);
+        fields.extend_from_slice(self.inner.fields.as_ref());
+        qualifiers.extend_from_slice(&self.inner.qualifiers);
 
-        fields.extend_from_slice(other.fields.as_ref());
-        qualifiers.extend_from_slice(&other.qualifiers);
+        fields.extend_from_slice(other.inner.fields.as_ref());
+        qualifiers.extend_from_slice(&other.inner.qualifiers);
 
-        Ok(Self { fields: fields.into(), qualifiers })
+        Ok(Self::new(fields, qualifiers))
     }
 
     fn check_names(&self) -> Result<()> {
         let mut qualified_names = BTreeSet::new();
         let mut unqualified_names = BTreeSet::new();
-        for (c, q) in self.fields.iter().zip(&self.qualifiers) {
+        for (q, f) in self.iter() {
             if let Some(q) = q {
-                if !qualified_names.insert((q, &c.name)) {
+                if !qualified_names.insert((q, &f.name)) {
                     return Err(Error::parse(format!(
                         "Invalid schema, duplicate qualified column {}.{}",
-                        q, &c.name
+                        q, &f.name
                     )));
                 }
                 continue;
             }
-            if !unqualified_names.insert(&c.name) {
+            if !unqualified_names.insert(&f.name) {
                 return Err(Error::parse(format!(
                     "Invalid schema, duplicate unqualified column {}",
-                    &c.name
+                    &f.name
                 )));
             }
         }
@@ -441,8 +586,8 @@ impl LogicalSchema {
 impl From<Schema> for LogicalSchema {
     fn from(schema: Schema) -> Self {
         let sz = schema.columns.len();
-        let fields = schema.columns.iter().map(|it| Field::from(it)).collect::<Vec<_>>().into();
+        let fields = schema.columns.iter().map(|it| Field::from(it)).collect::<Vec<Field>>();
         let table = TableReference::new(&schema.name);
-        Self { fields, qualifiers: vec![Some(table); sz] }
+        Self::new(fields, vec![Some(table); sz])
     }
 }

@@ -19,7 +19,6 @@ use crate::sql::parser::ast::Join;
 use crate::sql::parser::ast::JoinConstraint;
 use crate::sql::parser::ast::JoinOperator;
 use crate::sql::parser::ast::LimitClause;
-use crate::sql::parser::ast::ObjectType;
 use crate::sql::parser::ast::OrderByExpr;
 use crate::sql::parser::ast::Precedence;
 use crate::sql::parser::ast::Query;
@@ -37,7 +36,7 @@ use crate::sql::parser::lexer::Lexer;
 use crate::sql::parser::lexer::Token;
 
 pub mod ast;
-mod display_utils;
+pub mod display_utils;
 mod lexer;
 
 pub struct Parser {
@@ -109,10 +108,10 @@ impl Parser {
     }
 
     fn parse_explain(&mut self) -> Result<Statement> {
-        let analyze = self.parse_keyword(Keyword::Analyze);
+        let physical = self.parse_keyword(Keyword::PHYSICAL);
         let verbose = self.parse_keyword(Keyword::Verbose);
         let statement = self.parse_statement()?;
-        Ok(Statement::Explain { analyze, verbose, statement: Box::new(statement) })
+        Ok(Statement::Explain { physical, verbose, statement: Box::new(statement) })
     }
 
     fn parse_dml_delete(&mut self) -> Result<Statement> {
@@ -220,15 +219,19 @@ impl Parser {
     }
 
     fn parse_ddl_drop(&mut self) -> Result<Statement> {
-        let object_type = self.expect_one_of_keywords(&[Keyword::Table, Keyword::Index])?;
-        let object_type = match object_type {
-            Keyword::Table => ObjectType::Table,
-            Keyword::Index => ObjectType::Index,
-            _ => unreachable!(),
-        };
-        let if_exists = self.parse_keywords(&[Keyword::If, Keyword::Exists]);
-        let object_name = self.parse_ident()?;
-        Ok(Statement::Drop { object_type, if_exists, object_name })
+        if self.parse_keyword(Keyword::Table) {
+            let if_exists = self.parse_keywords(&[Keyword::If, Keyword::Exists]);
+            let table_name = self.parse_ident()?;
+            return Ok(Statement::DropTable { table_name, if_exists });
+        }
+        if self.parse_keyword(Keyword::Index) {
+            let if_exists = self.parse_keywords(&[Keyword::If, Keyword::Exists]);
+            let index_name = self.parse_ident()?;
+            self.expect_keyword(&Keyword::On)?;
+            let table_name = self.parse_ident()?;
+            return Ok(Statement::DropIndex { index_name, table_name, if_exists });
+        }
+        unreachable!()
     }
 
     fn parse_ddl_create(&mut self) -> Result<Statement> {
@@ -1077,14 +1080,47 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use goldenfile::Mint;
+
+    use super::display_utils;
     use super::*;
 
-    #[test]
-    fn test_ddl_stmts() -> Result<()> {
-        let cases = vec![
-            // creat table
-            (r###"
-            CREATE TABLE if not exists foo(
+    const GOLDEN_DIR: &str = "src/sql/parser/golden/parser";
+
+    macro_rules! test_parse_stmt {
+        ($($name:ident: $stmt:expr, )*) => {
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let mut parser = Parser::new($stmt)?;
+                    let stmts = parser.parse_statements()?;
+
+                    let mut mint = Mint::new(GOLDEN_DIR);
+                    let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
+
+                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Parsed Stmts:\n")?;
+                    write!(f, "------------\n\n")?;
+                    if stmts.len() == 1 {
+                        write!(f, "{:#}\n", stmts[0])?;
+                        return Ok(())
+                    }
+                    for (i, stmt) in stmts.iter().enumerate() {
+                        write!(f, "stmt {}\n", i)?;
+                        write!(f, "------\n\n")?;
+                        write!(f, "{:#}\n\n",  stmt)?;
+                    }
+                    Ok(())
+                }
+            )*
+        }
+    }
+
+    test_parse_stmt! {
+        create_table: r#"
+             CREATE TABLE if not exists foo(
               col1 integer primary key,
               col2 varchar(20) NOT NULL,
               col3 integer default 1,
@@ -1093,31 +1129,17 @@ mod tests {
               col6 text default 'a' NOT NULL,
               "col 7" text NULL
             );
-            "###),
-            // create index
-            (r###"
-            CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);
-            "###),
-            // drop table
-            (r###"
-            DROP TABLE foo;
-            "###),
-            // drop index
-            (r###"
-            DROP INDEX bar;
-            "###),
-            // alter table
-            (r###"
-            ALTER TABLE foo
+        "#,
+        create_index: "CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);",
+        drop_table: "DROP TABLE foo",
+        drop_index: "DROP INDEX bar ON foo",
+        alter_table: r#"
+             ALTER TABLE foo
                 ADD COLUMN IF NOT EXISTS col1 TEXT NOT NULL default 'a',
                 DROP COLUMN if EXISTS col2;
-            "###),
-            // query
-            (r###"
-            SELECT a, count(*) FROM foo JOIN b ON a.id = b.id LEFT JOIN c ON a.id = c.id where a = 1 and b = 2 group by a order by a LIMIT 0, 10;
-            "###),
-            // query
-            (r###"
+        "#,
+        query_left_join_with_agg: "SELECT a, count(*) FROM foo JOIN b ON a.id = b.id LEFT JOIN c ON a.id = c.id where a = 1 and b = 2 group by a order by a LIMIT 0, 10;",
+        query_inner_join: r#"
             SELECT
                 users.name AS user_name,
                 orders.id AS order_id,
@@ -1126,51 +1148,27 @@ mod tests {
                 users
                 JOIN orders ON users.id = orders.user_id
                 JOIN products ON orders.product_id = products.id;
-            "###),
-            // insert with select
-            (r###"
+        "#,
+        insert_with_select: r#"
             INSERT INTO users (id, name, email)
             SELECT id, name, email
             FROM old_users
             WHERE active = true;            
-            "###),
-            // insert with values
-            (r###"
+        "#,
+        insert_with_values: r#"
             INSERT INTO users (id, name, email)
             VALUES
               (1, 'Alice', 'alice@example.com'),
               (2, 'Bob', 'bob@example.com'),
               (3, 'Charlie', 'charlie@example.com');
-            "###),
-            // update
-            (r###"
+        "#,
+        update: r#"
             UPDATE users
             SET name = 'Alice Smith',
                 email = 'alice.smith@example.com'
             WHERE id = 1;
-            "###),
-            // delete
-            (r###"
-            DELETE FROM users where id = 1;
-            "###),
-        ];
-        for (i, &sql) in cases.iter().enumerate() {
-            let mut parser = Parser::new(sql)?;
-            let stmt = parser.parse_statement()?;
-            println!("{}==> \n{:#}\n", i, stmt);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_multiple_stmts() -> Result<()> {
-        let sql = "SELECT * FROM foo; SELECT * FROM bar;";
-        let mut parser = Parser::new(sql)?;
-        let stmts = parser.parse_statements()?;
-        for (i, stmt) in stmts.iter().enumerate() {
-            println!("{}==> \n{}\n", i, stmt);
-        }
-        Ok(())
+        "#,
+        delete: "DELETE FROM users where id = 1;",
+        multi_stmts: "SELECT * FROM foo; SELECT * FROM bar;",
     }
 }

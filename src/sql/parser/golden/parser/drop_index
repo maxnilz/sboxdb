@@ -1,0 +1,7 @@
+Stmt: 
+DROP INDEX bar ON foo
+
+Parsed Stmts:
+------------
+
+DROP INDEX bar ON foo
