@@ -1,0 +1,31 @@
+Stmt: 
+-----
+EXPLAIN physical verbose SELECT * FROM users
+
+Logical Plan:
+--------------
+
+Explain: analyse: true, verbose: true
+  Projection: users.id, users.name, users.email
+    TableScan: users
+
+Physical Plan:
+---------------
+
+ExplainExec:
+  ProjectionExec: id@0, name@1, email@2
+    SeqScanExec: users
+
+Result:
+-------
+
++---------------+---------------------------------------------------------------------------------------+
+| type          | plan                                                                                  |
++---------------+---------------------------------------------------------------------------------------+
+| logical plan  | Projection: users.id, users.name, users.email [id:Integer, name:String, email:String] |
+|               |   TableScan: users [id:Integer, name:String, email:String]                            |
+| physical plan | ProjectionExec: id@0, name@1, email@2                                                 |
+|               |   SeqScanExec: users                                                                  |
++---------------+---------------------------------------------------------------------------------------+
+
+

@@ -44,7 +44,7 @@ impl ExecutionPlan for CreateTableExec {
         LogicalSchema::empty()
     }
 
-    fn init(&self) -> Result<()> {
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
         Ok(())
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
@@ -97,7 +97,7 @@ impl ExecutionPlan for CreateIndexExec {
         LogicalSchema::empty()
     }
 
-    fn init(&self) -> Result<()> {
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
         Ok(())
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
@@ -142,7 +142,7 @@ impl ExecutionPlan for DropTableExec {
     fn schema(&self) -> LogicalSchema {
         LogicalSchema::empty()
     }
-    fn init(&self) -> Result<()> {
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
         Ok(())
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
@@ -184,7 +184,7 @@ impl ExecutionPlan for DropIndexExec {
     fn schema(&self) -> LogicalSchema {
         LogicalSchema::empty()
     }
-    fn init(&self) -> Result<()> {
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
         Ok(())
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {

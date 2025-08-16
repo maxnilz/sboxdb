@@ -339,8 +339,8 @@ impl Planner {
         match constraint {
             JoinConstraint::On(expr) => {
                 let schema = left.schema().join(right.schema())?;
-                let expr = self.sqlexpr_to_expr(context, expr, &schema)?;
-                Ok(Plan::Join(Join::new(left, right, typ, expr, schema)))
+                let join_constraint = self.sqlexpr_to_expr(context, expr, &schema)?;
+                Ok(Plan::Join(Join::new(left, right, typ, join_constraint, schema)))
             }
         }
     }

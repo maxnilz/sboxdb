@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
@@ -19,7 +21,11 @@ pub trait Engine {
     fn begin_as_of(&self, version: u64) -> Result<Self::Transaction>;
 }
 
-pub type Scan = Box<dyn DoubleEndedIterator<Item = Result<Tuple>>>;
+pub trait ScanIterator: DoubleEndedIterator<Item = Result<Tuple>> + Debug {}
+
+impl ScanIterator for std::vec::IntoIter<Result<Tuple>> {}
+
+pub type Scan = Box<dyn ScanIterator>;
 
 pub type IndexScan = Box<dyn DoubleEndedIterator<Item = (IndexKey, Vec<Tuple>)>>;
 

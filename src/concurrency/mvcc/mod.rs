@@ -664,6 +664,7 @@ impl<'a, T: Storage + 'a> Scan<'a, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct ScanIterator<'a> {
     inner: Peekable<VersionIterator<'a>>,
     last_back: Option<Vec<u8>>,
@@ -730,6 +731,7 @@ impl<'a> DoubleEndedIterator for ScanIterator<'a> {
     }
 }
 
+#[derive(Debug)]
 struct VersionIterator<'a> {
     st: &'a TransactionState,
     inner: Box<dyn storage::ScanIterator<'a>>,

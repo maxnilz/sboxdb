@@ -5,7 +5,7 @@
 sql_stmt          := transaction_stmt 
                    | ddl_stmt 
                    | dml_stmt 
-                   | "EXPLAIN" ( "PHYSICAL" | "VERBOSE" ) sql_stmt ;
+                   | "EXPLAIN" ["PHYSICAL"] ["VERBOSE"] sql_stmt ;
 
 -- TXN =================================================================================
 

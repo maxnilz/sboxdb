@@ -1,0 +1,30 @@
+Stmt: 
+-----
+SELECT id, name, email FROM users ORDER BY name DESC, email ASC
+
+Logical Plan:
+--------------
+
+Sort: name DESC, email ASC
+  Projection: users.id, users.name, users.email
+    TableScan: users
+
+Physical Plan:
+---------------
+
+SortExec: name@1 DESC, email@2 ASC
+  ProjectionExec: id@0, name@1, email@2
+    SeqScanExec: users
+
+Result:
+-------
+
++----+---------+---------------------+
+| id | name    | email               |
++----+---------+---------------------+
+| 3  | Charlie | charlie@example.com |
+| 2  | Bob     | bob@example.com     |
+| 1  | Alice   | alice@example.com   |
++----+---------+---------------------+
+
+

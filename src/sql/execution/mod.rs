@@ -7,6 +7,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::sql::execution::compiler::ExecutionPlan;
 use crate::sql::execution::context::Context;
+use crate::sql::execution::display::TabularDisplay;
 use crate::sql::plan::schema::LogicalSchema;
 
 mod compiler;
@@ -18,12 +19,12 @@ mod expr;
 mod query;
 
 #[derive(Clone)]
-pub struct ExecutionEngine {}
+pub struct Scheduler {}
 
-impl ExecutionEngine {
+impl Scheduler {
     /// Execute a physical query plan.
     pub fn execute(ctx: &mut dyn Context, executor: Arc<dyn ExecutionPlan>) -> Result<ResultSet> {
-        executor.init()?;
+        executor.init(ctx)?;
         Self::poll_executor(ctx, executor)
     }
 
@@ -36,7 +37,7 @@ impl ExecutionEngine {
             let rb = rb.into_inner()?;
             rs.tuples.extend(rb.tuples);
 
-            if num_tuples < ctx.vector_size() {
+            if !rb.has_next || num_tuples < ctx.vector_size() {
                 break;
             }
         }
@@ -74,51 +75,7 @@ impl ResultSet {
 
 impl Display for ResultSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.tuples.is_empty() {
-            return writeln!(f, "Empty result set");
-        }
-        let fields = self.schema.fields();
-
-        // Calculate initial widths with column name
-        let mut widths = vec![0; fields.len()];
-        for (i, field) in fields.iter().enumerate() {
-            widths[i] = field.name.len();
-        }
-        // Update widths with respect to data widths
-        for tuple in &self.tuples {
-            for (i, value) in tuple.iter().enumerate() {
-                widths[i] = widths[i].max(value.to_string().len());
-            }
-        }
-
-        let print_border = |f: &mut Formatter<'_>| -> std::fmt::Result {
-            write!(f, "+")?;
-            for width in &widths {
-                write!(f, "{:-<width$}+", "", width = width + 2)?;
-            }
-            writeln!(f)
-        };
-
-        // Print header
-        print_border(f)?;
-        write!(f, "|")?;
-        for (i, field) in fields.iter().enumerate() {
-            write!(f, " {:width$} |", field.name, width = widths[i])?;
-        }
-        writeln!(f)?;
-        print_border(f)?;
-
-        // Print rows
-        for tuple in &self.tuples {
-            write!(f, "|")?;
-            for (i, value) in tuple.iter().enumerate() {
-                write!(f, " {:width$} |", value, width = widths[i])?;
-            }
-            writeln!(f)?;
-        }
-        print_border(f)?;
-
-        Ok(())
+        TabularDisplay::new(&self.schema, &self.tuples).fmt(f)
     }
 }
 
@@ -160,7 +117,7 @@ mod tests {
             let plan = self.planner.sql_statement_to_plan(stmt)?;
             let executor = self.compiler.build_execution_plan(plan)?;
             let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 10);
-            ExecutionEngine::execute(ctx, executor)
+            Scheduler::execute(ctx, executor)
         }
 
         fn logical_plan(&self, query: &str) -> Result<Plan> {
@@ -174,8 +131,8 @@ mod tests {
         }
 
         fn execute(&self, executor: Arc<dyn ExecutionPlan>) -> Result<ResultSet> {
-            let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 10);
-            ExecutionEngine::execute(ctx, executor)
+            let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 2);
+            Scheduler::execute(ctx, executor)
         }
     }
 
@@ -217,7 +174,9 @@ mod tests {
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
 
-                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Stmt: \n")?;
+                    write!(f, "-----\n")?;
+                    write!(f, "{}\n\n", display_utils::dedent($stmt))?;
 
                     let plan = session.logical_plan($stmt)?;
 
@@ -245,5 +204,12 @@ mod tests {
 
     test_physical_planner! {
         simple_query: "SELECT *, 1+1 FROM users",
+        alias: "SELECT a.* FROM (SELECT * FROM users) AS a",
+        query_filer_simple: "SELECT *, 1+1 FROM users WHERE id = 1",
+        query_filter_const: "SELECT *, 1+1 FROM users WHERE 1=1",
+        query_filter_conj_or: "SELECT *, 1+1 FROM users WHERE id = 1 OR id = 2 OR id = 3",
+        limit: "SELECT *, 1+1 FROM users WHERE id = 1 OR id = 2 OR id = 3 offset 2 limit 4",
+        sort: "SELECT id, name, email FROM users ORDER BY name DESC, email ASC",
+        explain: "EXPLAIN physical verbose SELECT * FROM users",
     }
 }

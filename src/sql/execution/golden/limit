@@ -1,0 +1,30 @@
+Stmt: 
+-----
+SELECT *, 1+1 FROM users WHERE id = 1 OR id = 2 OR id = 3 offset 2 limit 4
+
+Logical Plan:
+--------------
+
+Limit: skip=2 fetch=4
+  Projection: users.id, users.name, users.email, 1 + 1
+    Filter: users.id = 1 OR users.id = 2 OR users.id = 3
+      TableScan: users
+
+Physical Plan:
+---------------
+
+LimitExec:  skip=2 fetch=4
+  ProjectionExec: id@0, name@1, email@2, 1 + 1
+    FilterExec: id@0 = 1 OR id@0 = 2 OR id@0 = 3
+      SeqScanExec: users
+
+Result:
+-------
+
++----+---------+---------------------+-------+
+| id | name    | email               | 1 + 1 |
++----+---------+---------------------+-------+
+| 3  | Charlie | charlie@example.com | 2     |
++----+---------+---------------------+-------+
+
+

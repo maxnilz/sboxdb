@@ -10,11 +10,12 @@ use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
-use crate::sql::execution::context::PlanContext;
 use crate::sql::execution::compiler::RecordBatch;
+use crate::sql::execution::compiler::RecordBatchBuilder;
+use crate::sql::execution::context::PlanContext;
 use crate::sql::execution::Context;
-use crate::sql::execution::ExecutionEngine;
 use crate::sql::execution::ExecutionPlan;
+use crate::sql::execution::Scheduler;
 use crate::sql::plan::expr::BinaryTypeCoercer;
 use crate::sql::plan::expr::Operator;
 use crate::sql::plan::schema::FieldReference;
@@ -70,8 +71,14 @@ impl PhysicalExpr for ValueExec {
         Ok(self.value.datatype())
     }
 
-    fn evaluate(&self, _ctx: &mut dyn Context, _batch: &RecordBatch) -> Result<Values> {
-        Ok(vec![self.value.clone()].into())
+    fn evaluate(&self, _ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+        let n = batch.num_tuples();
+        if n == 0 {
+            // In case of it is a dumpy RecordBatch, we need to
+            // return a single scalar value.
+            return Ok(vec![self.value.clone()].into());
+        }
+        Ok(vec![self.value.clone(); n].into())
     }
 }
 
@@ -262,7 +269,7 @@ impl PhysicalExpr for BinaryExprExec {
                 .collect(),
             Operator::Or => zip
                 .map(|(l, r)| match (l, r) {
-                    (Value::Boolean(lhs), Value::Boolean(rhs)) => Ok(Value::Boolean(lhs && rhs)),
+                    (Value::Boolean(lhs), Value::Boolean(rhs)) => Ok(Value::Boolean(lhs || rhs)),
                     (Value::Boolean(lhs), Value::Null) if lhs => Ok(Value::Boolean(true)),
                     (Value::Boolean(_), Value::Null) => Ok(Value::Null),
                     (Value::Null, Value::Boolean(rhs)) if rhs => Ok(Value::Boolean(true)),
@@ -300,7 +307,7 @@ impl Display for BinaryExprExec {
 
         let prec = self.op.prec_value();
         write_child(f, &self.left, prec)?;
-        write!(f, "{}", self.op)?;
+        write!(f, " {} ", self.op)?;
         write_child(f, &self.right, prec)?;
         Ok(())
     }
@@ -522,7 +529,7 @@ impl InListExec {
         schema: &LogicalSchema,
     ) -> Result<Self> {
         let expr_type = expr.data_type(schema)?;
-        let batch = RecordBatch::new_empty_with_schema(schema);
+        let batch = RecordBatchBuilder::new(schema).build();
         let mut static_list = HashSet::new();
         for it in list.iter() {
             let typ = it.data_type(schema)?;
@@ -619,7 +626,7 @@ impl ExistsExec {
         ctx: &mut dyn Context,
         batch: &RecordBatch,
     ) -> Result<Values> {
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         let exists = !rs.is_empty();
         let value = if !self.negated { Value::Boolean(exists) } else { Value::Boolean(!exists) };
         let values = vec![value; batch.num_tuples()];
@@ -632,9 +639,9 @@ impl ExistsExec {
         schema: &LogicalSchema,
         tuple: &Values,
     ) -> Result<bool> {
-        let batch = RecordBatch::from_tuples_ref(schema, vec![tuple]);
+        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
@@ -703,7 +710,7 @@ impl ScalarSubqueryExec {
         ctx: &mut dyn Context,
         batch: &RecordBatch,
     ) -> Result<Values> {
-        let mut rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.tuples.len() != 1 && rs.tuples[0].len() != 1 {
             return Err(Error::internal("Expect single value from the scalar subquery"));
         }
@@ -717,9 +724,9 @@ impl ScalarSubqueryExec {
         schema: &LogicalSchema,
         tuple: &Values,
     ) -> Result<Value> {
-        let batch = RecordBatch::from_tuples_ref(schema, vec![tuple]);
+        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
-        let mut rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
@@ -798,7 +805,7 @@ impl InSubqueryExec {
         ctx: &mut dyn Context,
         batch: &RecordBatch,
     ) -> Result<Values> {
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.num_cols() != 1 {
             return Err(Error::internal(format!(
                 "InSubquery is expected to produce one column only, got {}",
@@ -827,9 +834,9 @@ impl InSubqueryExec {
         schema: &LogicalSchema,
         tuple: &Values,
     ) -> Result<bool> {
-        let batch = RecordBatch::from_tuples_ref(schema, vec![tuple]);
+        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch.clone())?;
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;

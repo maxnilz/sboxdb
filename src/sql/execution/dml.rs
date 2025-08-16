@@ -8,9 +8,10 @@ use crate::access::value::Values;
 use crate::catalog::r#type::Value;
 use crate::error::Result;
 use crate::sql::execution::compiler::RecordBatch;
+use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::Context;
-use crate::sql::execution::ExecutionEngine;
 use crate::sql::execution::ExecutionPlan;
+use crate::sql::execution::Scheduler;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 
@@ -42,11 +43,11 @@ impl ExecutionPlan for InsertExec {
         self.output_schema.clone()
     }
 
-    fn init(&self) -> Result<()> {
-        self.input.init()
+    fn init(&self, ctx: &mut dyn Context) -> Result<()> {
+        self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
@@ -55,7 +56,9 @@ impl ExecutionPlan for InsertExec {
             rows_affected += 1;
         }
         let output_row: Values = vec![Value::Integer(rows_affected)].into();
-        Ok(Some(RecordBatch::new(&self.output_schema, vec![output_row])))
+        let rb =
+            RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
+        Ok(Some(rb))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -97,11 +100,11 @@ impl ExecutionPlan for UpdateExec {
         self.output_schema.clone()
     }
 
-    fn init(&self) -> Result<()> {
-        self.input.init()
+    fn init(&self, ctx: &mut dyn Context) -> Result<()> {
+        self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
@@ -113,7 +116,9 @@ impl ExecutionPlan for UpdateExec {
             rows_affected += 1;
         }
         let output_row: Values = vec![Value::Integer(rows_affected)].into();
-        Ok(Some(RecordBatch::new(&self.output_schema, vec![output_row])))
+        let rb =
+            RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
+        Ok(Some(rb))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -155,11 +160,11 @@ impl ExecutionPlan for DeleteExec {
         self.output_schema.clone()
     }
 
-    fn init(&self) -> Result<()> {
-        self.input.init()
+    fn init(&self, ctx: &mut dyn Context) -> Result<()> {
+        self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
@@ -170,7 +175,9 @@ impl ExecutionPlan for DeleteExec {
             rows_affected += 1;
         }
         let output_row: Values = vec![Value::Integer(rows_affected)].into();
-        Ok(Some(RecordBatch::new(&self.output_schema, vec![output_row])))
+        let rb =
+            RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
+        Ok(Some(rb))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

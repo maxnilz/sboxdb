@@ -17,10 +17,10 @@ Projection: users.name AS user_name, orders.id AS order_id, products.name AS pro
   Filter: users.name IN (Subquery(correlated: false, ...))
     Subquery:
       Projection: users.name
-        Filter: users.email=admin@example.com
+        Filter: users.email = admin@example.com
           TableScan: users
-    Inner Join: orders.product_id=products.id
-      Inner Join: users.id=orders.user_id
+    Inner Join: orders.product_id = products.id
+      Inner Join: users.id = orders.user_id
         TableScan: users
         TableScan: orders
       TableScan: products
@@ -32,10 +32,10 @@ Projection: users.name AS user_name, orders.id AS order_id, products.name AS pro
   Filter: users.name IN (Subquery(correlated: false, ...)) [id:Integer;N, name:String;N, email:String;N, id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N, id:Integer;N, name:String;N]
     Subquery: [name:String;N]
       Projection: users.name [name:String;N]
-        Filter: users.email=admin@example.com [id:Integer;N, name:String;N, email:String;N]
+        Filter: users.email = admin@example.com [id:Integer;N, name:String;N, email:String;N]
           TableScan: users [id:Integer;N, name:String;N, email:String;N]
-    Inner Join: orders.product_id=products.id [id:Integer;N, name:String;N, email:String;N, id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N, id:Integer;N, name:String;N]
-      Inner Join: users.id=orders.user_id [id:Integer;N, name:String;N, email:String;N, id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N]
+    Inner Join: orders.product_id = products.id [id:Integer;N, name:String;N, email:String;N, id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N, id:Integer;N, name:String;N]
+      Inner Join: users.id = orders.user_id [id:Integer;N, name:String;N, email:String;N, id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N]
         TableScan: users [id:Integer;N, name:String;N, email:String;N]
         TableScan: orders [id:Integer;N, user_id:Integer;N, product_id:Integer;N, amound:Float;N]
       TableScan: products [id:Integer;N, name:String;N]

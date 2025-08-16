@@ -85,6 +85,7 @@ impl Storage for Memory {
     }
 }
 
+#[derive(Debug)]
 pub struct VecDequeIterator {
     deque: VecDeque<(Vec<u8>, Vec<u8>)>,
 }

@@ -460,7 +460,7 @@ impl Display for BinaryExpr {
 
         let prec = self.op.prec_value();
         write_child(f, self.left.as_ref(), prec)?;
-        write!(f, "{}", self.op)?;
+        write!(f, " {} ", self.op)?;
         write_child(f, self.right.as_ref(), prec)?;
         Ok(())
     }

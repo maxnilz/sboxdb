@@ -70,7 +70,10 @@ pub fn prefix_range(prefix: &[u8]) -> (Bound<Vec<u8>>, Bound<Vec<u8>>) {
     (start, end)
 }
 
-pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a {}
+pub trait ScanIterator<'a>:
+    DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Debug + 'a
+{
+}
 
 // A blanket implementation to ensure that any type T that satisfies the
 // constraints of being a DoubleEndedIterator with an item type of
@@ -81,7 +84,7 @@ pub trait ScanIterator<'a>: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)
 // ScanIterator trait for each type. The blanket implementation simplifies
 // this by automatically making many potential iterator types available as
 // ScanIterator instances without additional code.
-impl<'a, T> ScanIterator<'a> for T where
+impl<'a, T: Debug> ScanIterator<'a> for T where
     T: DoubleEndedIterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 'a
 {
 }

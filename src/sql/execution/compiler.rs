@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::fmt::Formatter;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use crate::sql::execution::ddl::CreateIndexExec;
 use crate::sql::execution::ddl::CreateTableExec;
 use crate::sql::execution::ddl::DropIndexExec;
 use crate::sql::execution::ddl::DropTableExec;
+use crate::sql::execution::display::TabularDisplay;
 use crate::sql::execution::dml::DeleteExec;
 use crate::sql::execution::dml::InsertExec;
 use crate::sql::execution::dml::UpdateExec;
@@ -31,8 +33,13 @@ use crate::sql::execution::expr::OuterFieldReferenceExec;
 use crate::sql::execution::expr::PhysicalExpr;
 use crate::sql::execution::expr::ScalarSubqueryExec;
 use crate::sql::execution::expr::ValueExec;
+use crate::sql::execution::query::ExplainExec;
+use crate::sql::execution::query::FilterExec;
+use crate::sql::execution::query::LimitExec;
 use crate::sql::execution::query::ProjectionExec;
 use crate::sql::execution::query::SeqScanExec;
+use crate::sql::execution::query::SortExec;
+use crate::sql::execution::query::SortExprExec;
 use crate::sql::execution::query::SubqueryAliasExec;
 use crate::sql::execution::query::ValuesExec;
 use crate::sql::plan::expr::Alias;
@@ -47,9 +54,14 @@ use crate::sql::plan::expr::Operator;
 use crate::sql::plan::expr::Subquery;
 use crate::sql::plan::plan::CreateTable;
 use crate::sql::plan::plan::Delete;
+use crate::sql::plan::plan::Explain;
+use crate::sql::plan::plan::Filter;
 use crate::sql::plan::plan::Insert;
+use crate::sql::plan::plan::Join;
+use crate::sql::plan::plan::Limit;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::Projection;
+use crate::sql::plan::plan::Sort;
 use crate::sql::plan::plan::SubqueryAlias;
 use crate::sql::plan::plan::Update;
 use crate::sql::plan::schema::FieldReference;
@@ -71,7 +83,7 @@ pub trait ExecutionPlan: Debug + Display {
     fn schema(&self) -> LogicalSchema;
 
     /// Initialize the executor.
-    fn init(&self) -> Result<()>;
+    fn init(&self, ctx: &mut dyn Context) -> Result<()>;
 
     /// Yields the next batch of tuples from this executor.
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>>;
@@ -163,18 +175,41 @@ impl Compiler {
                 let input = self.build_execution_plan(*input)?;
                 Ok(Arc::new(SubqueryAliasExec::new(input, schema, alias)))
             }
-            Plan::Join(_) => {
+            Plan::Join(Join { left, right, join_type, constraint, schema }) => {
                 // By default, the Logical Join node is execute by HashJoin.
                 // TODO: Have the physical optimizer rewrite it to other types of join if
                 //  applicable. In case of physical optimizer kicks in, it is expected to
                 //  see new physical node like MergeSortJoin, NestedLoopJoin, etc.
+                let constraint = self.build_physical_expr(constraint, &schema)?;
+                let left = self.build_execution_plan(*left)?;
+                let right = self.build_execution_plan(*right)?;
                 todo!()
             }
-            Plan::Filter(_) => todo!(),
+            Plan::Filter(Filter { predicate, input }) => {
+                let pred = self.build_physical_expr(predicate, input.schema())?;
+                let input = self.build_execution_plan(*input)?;
+                Ok(Arc::new(FilterExec::new(input, pred)))
+            }
             Plan::Aggregate(_) => todo!(),
-            Plan::Sort(_) => todo!(),
-            Plan::Limit(_) => todo!(),
-            Plan::Explain(_) => todo!(),
+            Plan::Sort(Sort { input, expr }) => {
+                let order = expr
+                    .into_iter()
+                    .map(|it| {
+                        let expr = self.build_physical_expr(it.expr, input.schema())?;
+                        Ok(SortExprExec::new(expr, it.asc))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let input = self.build_execution_plan(*input)?;
+                Ok(Arc::new(SortExec::new(input, order)))
+            }
+            Plan::Limit(Limit { input, skip, fetch }) => {
+                let input = self.build_execution_plan(*input)?;
+                Ok(Arc::new(LimitExec::new(input, skip, fetch)))
+            }
+            Plan::Explain(Explain { physical, verbose, plan, output_schema }) => {
+                let executor = self.build_execution_plan(*plan.clone())?;
+                Ok(Arc::new(ExplainExec::new(*plan, executor, verbose, physical, output_schema)))
+            }
             _ => Err(Error::internal(format!("Unexpected logical plan: {}", plan))),
         }
     }
@@ -287,7 +322,7 @@ impl Compiler {
             default
                 .map(|expr| {
                     let expr = self.build_physical_expr(expr, &EMPTY_SCHEMA)?;
-                    let values = expr.evaluate(ctx, &RecordBatch::new_empty())?;
+                    let values = expr.evaluate(ctx, &RecordBatchBuilder::empty_schema().build())?;
                     values.into_iter().next().ok_or_else(|| {
                         Error::value(format!("Invalid default expr on column {}", col_name))
                     })
@@ -301,6 +336,10 @@ impl Compiler {
 pub struct RecordBatchInner {
     pub schema: LogicalSchema,
     pub tuples: Vec<Values>,
+    // If we know there is no more batch in the pipe,
+    // set it explicitly to allow the scheduler do
+    // short-circuit.
+    pub has_next: bool,
 }
 
 /// A dataset with multiple row-wise values
@@ -309,22 +348,9 @@ pub struct RecordBatch(Arc<RecordBatchInner>);
 
 impl RecordBatch {
     pub fn new(schema: &LogicalSchema, tuples: Vec<Values>) -> Self {
-        Self(Arc::new(RecordBatchInner { schema: schema.clone(), tuples }))
+        Self(Arc::new(RecordBatchInner { schema: schema.clone(), tuples, has_next: true }))
     }
 
-    pub fn new_empty() -> Self {
-        Self::new(&LogicalSchema::empty(), vec![])
-    }
-
-    pub fn new_empty_with_schema(schema: &LogicalSchema) -> Self {
-        Self::new(schema, vec![])
-    }
-    pub fn from_tuples_ref(schema: &LogicalSchema, tuples: Vec<&Values>) -> Self {
-        // TODO: tuples' clone is expensive here!!!
-        let tuples =
-            tuples.into_iter().map(|row| Values::from(row.to_vec())).collect::<Vec<Values>>();
-        Self::new(schema, tuples)
-    }
     pub fn into_inner(self) -> Result<RecordBatchInner> {
         Arc::into_inner(self.0)
             .ok_or(Error::internal("Cannot convert RecordBatchRef into RecordBatch"))
@@ -340,6 +366,51 @@ impl Deref for RecordBatch {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Display for RecordBatch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        TabularDisplay::new(&self.schema, &self.tuples).fmt(f)
+    }
+}
+
+pub struct RecordBatchBuilder {
+    schema: LogicalSchema,
+    tuples: Vec<Values>,
+    has_next: bool,
+}
+
+impl RecordBatchBuilder {
+    pub fn new(schema: &LogicalSchema) -> Self {
+        Self { schema: schema.clone(), tuples: Vec::new(), has_next: true }
+    }
+
+    pub fn empty_schema() -> Self {
+        Self { schema: EMPTY_SCHEMA.clone(), tuples: Vec::new(), has_next: true }
+    }
+
+    pub fn extend(mut self, tuples: Vec<Values>) -> Self {
+        self.tuples.extend(tuples);
+        self
+    }
+
+    pub fn nomore(mut self) -> Self {
+        self.has_next = false;
+        self
+    }
+
+    pub fn tuples_ref(self, tuples: Vec<&Values>) -> Self {
+        // TODO: tuples' clone is expensive here!!!
+        let tuples =
+            tuples.into_iter().map(|row| Values::from(row.to_vec())).collect::<Vec<Values>>();
+        self.extend(tuples)
+    }
+
+    pub fn build(self) -> RecordBatch {
+        let inner =
+            RecordBatchInner { schema: self.schema, tuples: self.tuples, has_next: self.has_next };
+        RecordBatch(Arc::new(inner))
     }
 }
 

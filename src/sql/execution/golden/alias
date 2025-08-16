@@ -1,0 +1,32 @@
+Stmt: 
+-----
+SELECT a.* FROM (SELECT * FROM users) AS a
+
+Logical Plan:
+--------------
+
+Projection: a.id, a.name, a.email
+  SubqueryAlias: a
+    Projection: users.id, users.name, users.email
+      TableScan: users
+
+Physical Plan:
+---------------
+
+ProjectionExec: id@0, name@1, email@2
+  SubqueryAlias: a
+    ProjectionExec: id@0, name@1, email@2
+      SeqScanExec: users
+
+Result:
+-------
+
++----+---------+---------------------+
+| id | name    | email               |
++----+---------+---------------------+
+| 1  | Alice   | alice@example.com   |
+| 2  | Bob     | bob@example.com     |
+| 3  | Charlie | charlie@example.com |
++----+---------+---------------------+
+
+

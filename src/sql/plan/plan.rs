@@ -117,7 +117,7 @@ impl Plan {
             }
             Plan::Projection(Projection { exprs, .. }) => apply_each!(f; exprs),
             Plan::TableScan(TableScan { filters, .. }) => apply_each!(f; filters),
-            Plan::Join(Join { filter, .. }) => apply_each!(f, filter),
+            Plan::Join(Join { constraint, .. }) => apply_each!(f, constraint),
             Plan::Filter(Filter { predicate, .. }) => apply_each!(f, predicate),
             Plan::Aggregate(Aggregate { group_expr, aggr_expr, .. }) => {
                 apply_each!(f; group_expr)?.when_sibling(|| apply_each!(f; aggr_expr))
@@ -180,8 +180,8 @@ impl TreeNode for Plan {
             }
             Plan::Limit(Limit { input, .. }) => apply_each!(f, input),
             Plan::Explain(Explain { plan, .. }) => apply_each!(f, plan),
-            Plan::Join(Join { left, right, filter, .. }) => {
-                apply_each!(visit_expr, filter)?.when_sibling(|| apply_each!(f, left, right))
+            Plan::Join(Join { left, right, constraint, .. }) => {
+                apply_each!(visit_expr, constraint)?.when_sibling(|| apply_each!(f, left, right))
             }
         }
     }
@@ -307,8 +307,8 @@ impl<'a, 'b> IndentVisitor<'a, 'b> {
                     Plan::SubqueryAlias(SubqueryAlias { alias, .. }) => {
                         write!(f, "SubqueryAlias: {alias}")
                     }
-                    Plan::Join(Join { join_type, filter, .. }) => {
-                        write!(f, "{join_type} Join: {filter}")
+                    Plan::Join(Join { join_type, constraint, .. }) => {
+                        write!(f, "{join_type} Join: {constraint}")
                     }
                     Plan::Filter(Filter { predicate, .. }) => {
                         write!(f, "Filter: {predicate}")
@@ -403,7 +403,11 @@ pub struct Explain {
 
 impl Explain {
     pub fn new(plan: Plan, verbose: bool, physical: bool) -> Self {
-        let fields: Fields = vec![FieldBuilder::new("plan", DataType::String).build()].into();
+        let fields: Fields = vec![
+            FieldBuilder::new("type", DataType::String).build(),
+            FieldBuilder::new("plan", DataType::String).build(),
+        ]
+        .into();
         let output_schema = LogicalSchema::from_unqualified_fields(fields).unwrap();
         Self { plan: Box::new(plan), physical, verbose, output_schema }
     }
@@ -521,8 +525,8 @@ pub struct Join {
     pub right: Box<Plan>,
     /// Join type
     pub join_type: JoinType,
-    /// Join condition
-    pub filter: Expr,
+    /// Join constraint
+    pub constraint: Expr,
     /// The output schema, containing fields from the left and right inputs
     pub schema: LogicalSchema,
 }
@@ -532,10 +536,10 @@ impl Join {
         left: Plan,
         right: Plan,
         join_type: JoinType,
-        filter: Expr,
+        constraint: Expr,
         schema: LogicalSchema,
     ) -> Self {
-        Self { left: Box::new(left), right: Box::new(right), join_type, filter, schema }
+        Self { left: Box::new(left), right: Box::new(right), join_type, constraint, schema }
     }
 }
 

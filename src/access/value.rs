@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use crate::error::Result;
 pub struct ValuesRef(Arc<Values>);
 
 /// Tabular values, i.e., tuple values
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Values(Vec<Value>);
 
 impl Values {
@@ -54,6 +55,12 @@ impl Deref for Values {
 
     fn deref(&self) -> &[Value] {
         &self.0
+    }
+}
+
+impl DerefMut for Values {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
@@ -153,7 +154,44 @@ impl PartialEq for Value {
                 }
             }
             (Value::String(a), Value::String(b)) => a == b,
-            _ => false, // Different variants are never equal
+
+            // Cross-type numeric equality
+            (Value::Integer(a), Value::Float(b)) => *a as f64 == *b,
+            (Value::Float(a), Value::Integer(b)) => *a == *b as f64,
+
+            // Different variants types are never equal
+            _ => false,
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        use std::cmp::Ordering;
+
+        // First check equality for efficiency
+        if self == other {
+            return Some(Ordering::Equal);
+        }
+
+        match (self, other) {
+            // Same types - direct comparison
+            (Value::Boolean(a), Value::Boolean(b)) => a.partial_cmp(b),
+            (Value::Integer(a), Value::Integer(b)) => a.partial_cmp(b),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::String(a), Value::String(b)) => a.partial_cmp(b),
+            (Value::Null, Value::Null) => Some(Ordering::Equal),
+
+            // Cross-type numeric comparisons
+            (Value::Integer(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
+            (Value::Float(a), Value::Integer(b)) => a.partial_cmp(&(*b as f64)),
+
+            // Null comparisons
+            (Value::Null, _) => Some(Ordering::Less),
+            (_, Value::Null) => Some(Ordering::Greater),
+
+            // Different types that can't be compared
+            _ => None,
         }
     }
 }
@@ -182,6 +220,12 @@ impl Hash for Value {
                 s.hash(state);
             }
         }
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Value::Null
     }
 }
 

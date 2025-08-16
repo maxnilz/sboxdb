@@ -1,18 +1,20 @@
 Stmt: 
 -----
-SELECT *, 1+1 FROM users
+SELECT *, 1+1 FROM users WHERE 1=1
 
 Logical Plan:
 --------------
 
 Projection: users.id, users.name, users.email, 1 + 1
-  TableScan: users
+  Filter: 1 = 1
+    TableScan: users
 
 Physical Plan:
 ---------------
 
 ProjectionExec: id@0, name@1, email@2, 1 + 1
-  SeqScanExec: users
+  FilterExec: 1 = 1
+    SeqScanExec: users
 
 Result:
 -------
