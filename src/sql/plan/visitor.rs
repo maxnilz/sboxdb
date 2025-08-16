@@ -40,6 +40,44 @@ pub trait TreeNode: Sized {
     /// Use higher-ranked trait bounds(HRTB) to allow the visitor handle tree
     /// nodes borrowed with any lifetime, instead of a fixed one which is not
     /// feasible in case of the visitor pattern.
+    ///
+    /// NB: datafusion is using the fixed lifetime annotation on self, i.e.,
+    /// fn visit<'n, V>(&'n self, visitor: &mut V)...,  which can be improved
+    /// to get more flexibility. e.g., the main shortcoming is related to closure
+    /// capture, like the following example:
+    ///
+    /// ```ignore
+    ///
+    /// use crate::error::Result;
+    ///
+    /// trait TreeNode: Sized {
+    ///     fn visit<'n, V>(&'n self, visitor: &mut V) -> Result<VisitRecursion>
+    ///         where
+    ///             V: TreeNodeVisitor<'n, Node = Self>{}
+    ///
+    ///     // With the above visit lifetime bound, it would require the visit_children
+    ///     // also use the same lifetime bound on the node.
+    ///     fn visit_children<'n, F>(&'n self, f: F) -> Result<VisitRecursion>
+    ///         where
+    ///             F: FnMut(&'n Self) -> Result<VisitRecursion>;
+    /// }
+    ///
+    /// // And this would limit the closure capture like this:
+    /// struct Node;
+    /// impl Node {
+    ///     fn new() -> Self { Node }
+    /// }
+    /// impl TreeNode for Node {
+    ///     fn visit_children<'n, F>(&'n self, f: F) -> Result<VisitRecursion>
+    ///     where
+    ///         F: FnMut(&'n Self) -> Result<VisitRecursion>
+    ///     {
+    ///         // This would limit closure capture - can't create temporary nodes
+    ///         f(&Node::new()) // This won't work with fixed lifetime bounds
+    ///     }
+    /// }
+    ///
+    /// ```
     fn visit<V>(&self, visitor: &mut V) -> Result<VisitRecursion>
     where
         V: for<'n> TreeNodeVisitor<'n, Node = Self>,

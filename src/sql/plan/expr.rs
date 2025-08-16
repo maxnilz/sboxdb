@@ -289,7 +289,6 @@ impl Expr {
 }
 
 impl TreeNode for Expr {
-    #[allow(clippy::needless_lifetimes)]
     fn visit_children<F>(&self, mut f: F) -> Result<VisitRecursion>
     where
         F: FnMut(&Self) -> Result<VisitRecursion>,
