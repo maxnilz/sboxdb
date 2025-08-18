@@ -35,6 +35,7 @@ use crate::sql::execution::expr::ScalarSubqueryExec;
 use crate::sql::execution::expr::ValueExec;
 use crate::sql::execution::query::ExplainExec;
 use crate::sql::execution::query::FilterExec;
+use crate::sql::execution::query::HashJoinExecBuilder;
 use crate::sql::execution::query::LimitExec;
 use crate::sql::execution::query::ProjectionExec;
 use crate::sql::execution::query::SeqScanExec;
@@ -162,7 +163,7 @@ impl Compiler {
                 //  see new physical plan node like, IndexScan, etc.
                 Ok(Arc::new(SeqScanExec::try_new(t)?))
             }
-            Plan::Subquery(Subquery { subquery, correlated }) => {
+            Plan::Subquery(_) => {
                 // TODO: The Subquery is a node for subquery in Expr here.
                 //  Although subquery is generated in the Explain stmt, During
                 //  the logical planning we are not transforming the subquery
@@ -175,15 +176,20 @@ impl Compiler {
                 let input = self.build_execution_plan(*input)?;
                 Ok(Arc::new(SubqueryAliasExec::new(input, schema, alias)))
             }
-            Plan::Join(Join { left, right, join_type, constraint, schema }) => {
-                // By default, the Logical Join node is execute by HashJoin.
+            Plan::Join(Join { left, right, join_type, constraint, schema, on }) => {
+                // By default, the Logical Join node is executed by HashJoin.
                 // TODO: Have the physical optimizer rewrite it to other types of join if
                 //  applicable. In case of physical optimizer kicks in, it is expected to
                 //  see new physical node like MergeSortJoin, NestedLoopJoin, etc.
-                let constraint = self.build_physical_expr(constraint, &schema)?;
-                let left = self.build_execution_plan(*left)?;
-                let right = self.build_execution_plan(*right)?;
-                todo!()
+                let exec = HashJoinExecBuilder::new()
+                    .left(self.build_execution_plan(*left)?)
+                    .right(self.build_execution_plan(*right)?)
+                    .constraint(self.build_physical_expr(constraint, &schema)?)
+                    .schema(schema)
+                    .keys(on)
+                    .join_type(join_type)
+                    .build()?;
+                Ok(Arc::new(exec))
             }
             Plan::Filter(Filter { predicate, input }) => {
                 let pred = self.build_physical_expr(predicate, input.schema())?;

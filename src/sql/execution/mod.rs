@@ -211,5 +211,6 @@ mod tests {
         limit: "SELECT *, 1+1 FROM users WHERE id = 1 OR id = 2 OR id = 3 offset 2 limit 4",
         sort: "SELECT id, name, email FROM users ORDER BY name DESC, email ASC",
         explain: "EXPLAIN physical verbose SELECT * FROM users",
+        join: "SELECT a.*, b.id AS b_id, b.name AS b_name, b.email AS b_email FROM users AS a JOIN users AS b ON a.id = b.id",
     }
 }

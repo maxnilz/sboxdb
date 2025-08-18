@@ -1,0 +1,36 @@
+Stmt: 
+-----
+SELECT a.*, b.id AS b_id, b.name AS b_name, b.email AS b_email FROM users AS a JOIN users AS b ON a.id = b.id
+
+Logical Plan:
+--------------
+
+Projection: a.id, a.name, a.email, b.id AS b_id, b.name AS b_name, b.email AS b_email
+  Inner Join: a.id = b.id
+    SubqueryAlias: a
+      TableScan: users
+    SubqueryAlias: b
+      TableScan: users
+
+Physical Plan:
+---------------
+
+ProjectionExec: id@0, name@1, email@2, id@3, name@4, email@5
+  Inner HashJoinExec: id@0 = id@0, Constraint: id@0 = id@3
+    SubqueryAlias: a
+      SeqScanExec: users
+    SubqueryAlias: b
+      SeqScanExec: users
+
+Result:
+-------
+
++----+---------+---------------------+------+---------+---------------------+
+| id | name    | email               | b_id | b_name  | b_email             |
++----+---------+---------------------+------+---------+---------------------+
+| 1  | Alice   | alice@example.com   | 1    | Alice   | alice@example.com   |
+| 2  | Bob     | bob@example.com     | 2    | Bob     | bob@example.com     |
+| 3  | Charlie | charlie@example.com | 3    | Charlie | charlie@example.com |
++----+---------+---------------------+------+---------+---------------------+
+
+

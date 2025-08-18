@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::fmt::Formatter;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -107,6 +108,25 @@ impl PartialEq for Field {
             && self.primary_key == other.primary_key
             && self.nullable == other.nullable
             && self.unique == other.unique
+    }
+}
+
+impl Display for Field {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.name, self.datatype)?;
+        if self.primary_key {
+            write!(f, " PK")?;
+        }
+        if self.unique {
+            write!(f, " UNIQUE")?;
+        }
+        if !self.nullable {
+            write!(f, " NOT NULL")?;
+        }
+        if let Some(default) = &self.default {
+            write!(f, " DEFAULT {}", default)?;
+        }
+        Ok(())
     }
 }
 
@@ -548,7 +568,10 @@ impl LogicalSchema {
         fields.extend_from_slice(other.inner.fields.as_ref());
         qualifiers.extend_from_slice(&other.inner.qualifiers);
 
-        Ok(Self::new(fields, qualifiers))
+        let out = Self::new(fields, qualifiers);
+        out.check_names()?;
+
+        Ok(out)
     }
 
     fn check_names(&self) -> Result<()> {
@@ -589,5 +612,20 @@ impl From<Schema> for LogicalSchema {
         let fields = schema.columns.iter().map(|it| Field::from(it)).collect::<Vec<Field>>();
         let table = TableReference::new(&schema.name);
         Self::new(fields, vec![Some(table); sz])
+    }
+}
+
+impl Display for LogicalSchema {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, (q, field)) in self.iter().enumerate() {
+            match q {
+                None => write!(f, "{}", field)?,
+                Some(q) => write!(f, "{}.{}", q, field)?,
+            }
+            if i < self.len() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        Ok(())
     }
 }

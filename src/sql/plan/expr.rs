@@ -180,6 +180,30 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Return a flat vector of top-level conjuncts
+    pub fn flatten_top_and(self) -> Result<Vec<Expr>> {
+        let mut out = vec![];
+        let mut stack = vec![self];
+        while let Some(expr) = stack.pop() {
+            match expr {
+                Expr::BinaryExpr(BinaryExpr { left, op, right }) if op == Operator::And => {
+                    stack.push(*right);
+                    stack.push(*left);
+                }
+                other => out.push(other),
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn is_field_ref(&self) -> Option<FieldReference> {
+        match self {
+            Expr::Alias(Alias { expr, .. }) => expr.is_field_ref(),
+            Expr::FieldReference(fr) => Some(fr.clone()),
+            _ => None,
+        }
+    }
+
     pub fn to_field(&self, schema: &LogicalSchema) -> Result<Field> {
         let name = match self {
             Expr::Alias(Alias { name, .. }) => name.clone(),
@@ -533,7 +557,7 @@ impl<'a> BinaryTypeCoercer<'a> {
 }
 
 /// Logical binary operators applied to logical expressions
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
 pub enum Operator {
     /// Plus, e.g. `a + b`
     Plus,

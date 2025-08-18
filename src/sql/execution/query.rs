@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
@@ -17,9 +18,11 @@ use crate::sql::execution::display::DisplayableExecutionPlan;
 use crate::sql::execution::expr::PhysicalExpr;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionPlan;
+use crate::sql::execution::Scheduler;
 use crate::sql::plan::plan::JoinType;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::TableScan;
+use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 
@@ -746,25 +749,166 @@ impl Display for SortExec {
     }
 }
 
-/// Hash join physical executor, it is implemented as a pipeline breaker
+#[derive(Debug, Default)]
+pub struct HashJoinExecBuilder {
+    left: Option<Arc<dyn ExecutionPlan>>,
+    right: Option<Arc<dyn ExecutionPlan>>,
+    join_type: Option<JoinType>,
+    keys: Vec<(FieldReference, FieldReference)>,
+    constraint: Option<Arc<dyn PhysicalExpr>>,
+    schema: Option<LogicalSchema>,
+}
+
+impl HashJoinExecBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn left(mut self, left: Arc<dyn ExecutionPlan>) -> Self {
+        self.left = Some(left);
+        self
+    }
+
+    pub fn right(mut self, right: Arc<dyn ExecutionPlan>) -> Self {
+        self.right = Some(right);
+        self
+    }
+
+    pub fn join_type(mut self, join_type: JoinType) -> Self {
+        self.join_type = Some(join_type);
+        self
+    }
+
+    pub fn keys(mut self, keys: Vec<(FieldReference, FieldReference)>) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    pub fn constraint(mut self, constraint: Arc<dyn PhysicalExpr>) -> Self {
+        self.constraint = Some(constraint);
+        self
+    }
+
+    pub fn schema(mut self, schema: LogicalSchema) -> Self {
+        self.schema = Some(schema);
+        self
+    }
+
+    pub fn build(mut self) -> Result<HashJoinExec> {
+        let left = self.left.ok_or_else(|| Error::internal("left input is required"))?;
+        let right = self.right.ok_or_else(|| Error::internal("right input is required"))?;
+        let join_type = self.join_type.ok_or_else(|| Error::internal("join type is required"))?;
+        if join_type != JoinType::Inner {
+            return Err(Error::internal("Support inner join only"));
+        }
+        let constraint =
+            self.constraint.ok_or_else(|| Error::internal("constraint is required"))?;
+        let schema = self.schema.ok_or_else(|| Error::internal("schema is required"))?;
+
+        if self.keys.is_empty() {
+            return Err(Error::unimplemented(
+                "Hash join without equijoin keys is not supported yet",
+            ));
+        }
+        if self.keys.len() > 1 {
+            return Err(Error::unimplemented(
+                "Hash join multiple equijoin keys is not supported yet",
+            ));
+        }
+        let (l, r) = self.keys.remove(0);
+        let il = left
+            .schema()
+            .field_index_by_name(&l.relation, &l.name)
+            .ok_or_else(|| Error::internal(format!("unknown left field {}", l)))?;
+        let ir = right
+            .schema()
+            .field_index_by_name(&r.relation, &r.name)
+            .ok_or_else(|| Error::internal(format!("unknown right field {}", r)))?;
+
+        Ok(HashJoinExec {
+            left,
+            right,
+            join_type: join_type,
+            il,
+            ir,
+            constraint,
+            schema,
+            hashtable: RefCell::new(HashMap::new()),
+            result: RefCell::new(None),
+        })
+    }
+}
+
+/// A straw man hash join physical executor, it is implemented as a pipeline breaker
 /// that needs all tuples before joining.
-/// TODO: support spill to disk.
+/// TODO: in-memory hash join for now, support spill to disk.
 #[derive(Debug)]
 pub struct HashJoinExec {
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
     join_type: JoinType,
+    // index for left schema field.
+    il: usize,
+    // index for right schema field.
+    ir: usize,
+    constraint: Arc<dyn PhysicalExpr>,
     schema: LogicalSchema,
+
+    // mutable states
+    //
+    // hash table for in-memory probe.
+    hashtable: RefCell<HashMap<Value, Vec<Values>>>,
+    // for simplicity, join the result in memory in advance
+    // then emit batch by batch, maybe do the prob on the
+    // fly later.
+    result: RefCell<Option<Vec<Values>>>,
 }
 
 impl HashJoinExec {
-    pub fn new(
-        left: Arc<dyn ExecutionPlan>,
-        right: Arc<dyn ExecutionPlan>,
-        join_type: JoinType,
-        schema: LogicalSchema,
-    ) -> Self {
-        Self { left, right, join_type, schema }
+    /// Build the left side plan into a hash table for probe later by
+    /// poll the whole data from the left executor.
+    fn build_left(&self, ctx: &mut dyn Context) -> Result<()> {
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.left))?;
+        let i = self.il;
+        let mut hashtable = self.hashtable.borrow_mut();
+        for row in rs.tuples {
+            let key = row[i].clone();
+            match hashtable.get_mut(&key) {
+                Some(entry) => entry.push(row),
+                None => {
+                    hashtable.insert(key, vec![row]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn prob(&self, row: Values) -> Vec<Values> {
+        let key = &row[self.ir];
+        let hashtable = self.hashtable.borrow();
+        let entries = hashtable.get(key);
+        if entries.is_none() {
+            return vec![];
+        }
+        let entries = entries.unwrap();
+        let mut output = vec![];
+        for row in entries {
+            let mut ans = row.clone();
+            ans.extend(row.clone());
+            output.push(ans);
+        }
+        output
+    }
+
+    fn strawman_join(&self, ctx: &mut dyn Context) -> Result<()> {
+        let mut results = vec![];
+        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.right))?;
+        for row in rs.tuples {
+            let output = self.prob(row);
+            results.extend(output)
+        }
+        self.result.swap(&RefCell::new(Some(results)));
+        Ok(())
     }
 }
 
@@ -780,11 +924,41 @@ impl ExecutionPlan for HashJoinExec {
     fn init(&self, ctx: &mut dyn Context) -> Result<()> {
         self.left.init(ctx)?;
         self.right.init(ctx)?;
+
+        // build the hashtable from left input.
+        self.build_left(ctx)?;
+
         Ok(())
     }
 
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        todo!()
+        if self.result.borrow().is_none() {
+            self.strawman_join(ctx)?;
+        }
+
+        let mut result_borrow = self.result.borrow_mut();
+        let result = result_borrow.as_mut().unwrap();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        let mut n = ctx.vector_size().min(result.len());
+        let mut tuples = vec![];
+        loop {
+            let tuple = result.remove(0);
+            let ok = self
+                .constraint
+                .evaluate(ctx, &RecordBatch::new(&self.schema, vec![tuple.clone()]))?
+                .bool()?;
+            if !ok {
+                continue;
+            }
+            tuples.push(tuple);
+            n -= 1;
+            if n == 0 {
+                break;
+            }
+        }
+        Ok(Some(RecordBatch::new(&self.schema, tuples)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -794,7 +968,12 @@ impl ExecutionPlan for HashJoinExec {
 
 impl Display for HashJoinExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        write!(f, "{} HashJoinExec:", self.join_type)?;
+        let fl = self.left.schema().field(self.il).clone();
+        let fr = self.right.schema().field(self.ir).clone();
+        write!(f, " {}@{} = {}@{}", &fl.name, self.il, &fr.name, self.ir)?;
+        write!(f, ", Constraint: {}", self.constraint)?;
+        Ok(())
     }
 }
 

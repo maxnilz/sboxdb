@@ -6,11 +6,14 @@ use crate::catalog::r#type::DataType;
 use crate::error::Error;
 use crate::error::Result;
 use crate::format_expr_vec;
+use crate::sql::plan::expr::BinaryExpr;
 use crate::sql::plan::expr::Exists;
 use crate::sql::plan::expr::Expr;
 use crate::sql::plan::expr::InSubquery;
+use crate::sql::plan::expr::Operator;
 use crate::sql::plan::expr::Subquery;
 use crate::sql::plan::schema::FieldBuilder;
+use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
@@ -523,27 +526,72 @@ pub struct Join {
     pub left: Box<Plan>,
     /// Right input
     pub right: Box<Plan>,
+    /// The original join constraint
+    pub constraint: Expr,
+    /// Normalized equijoin atoms, e.g., left.k = right.k, extracted from
+    /// the original join constraint.
+    pub on: Vec<(FieldReference, FieldReference)>,
     /// Join type
     pub join_type: JoinType,
-    /// Join constraint
-    pub constraint: Expr,
     /// The output schema, containing fields from the left and right inputs
     pub schema: LogicalSchema,
 }
 
 impl Join {
-    pub fn new(
+    pub fn try_new(
         left: Plan,
         right: Plan,
         join_type: JoinType,
         constraint: Expr,
         schema: LogicalSchema,
-    ) -> Self {
-        Self { left: Box::new(left), right: Box::new(right), join_type, constraint, schema }
+    ) -> Result<Self> {
+        // Split the join constraint into join keys and residual filter
+        // by flatten the expr into a top-level CNF(k-ary AND) and check
+        // if the expr can be treated as join key element-wise.
+        let conjuncts = constraint.clone().flatten_top_and()?;
+        let mut equijoin_keys = vec![];
+        enum Side {
+            None,
+            Left,
+            Right,
+        }
+        let side_of_fr = |fr: &FieldReference, ls: &LogicalSchema, rs: &LogicalSchema| -> Side {
+            if let Some(_) = ls.field_reference_by_qname(&fr.relation, &fr.name) {
+                return Side::Left;
+            }
+            if let Some(_) = rs.field_reference_by_qname(&fr.relation, &fr.name) {
+                return Side::Right;
+            }
+            Side::None
+        };
+        for expr in conjuncts {
+            match expr {
+                Expr::BinaryExpr(BinaryExpr { left: ea, op, right: eb }) if op == Operator::Eq => {
+                    if let (Some(fra), Some(frb)) = (ea.is_field_ref(), eb.is_field_ref()) {
+                        let ls = left.schema();
+                        let rs = right.schema();
+                        match (side_of_fr(&fra, ls, rs), side_of_fr(&frb, ls, rs)) {
+                            (Side::Left, Side::Right) => equijoin_keys.push((fra, frb)),
+                            (Side::Right, Side::Left) => equijoin_keys.push((frb, fra)),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Self {
+            left: Box::new(left),
+            right: Box::new(right),
+            constraint,
+            on: equijoin_keys,
+            join_type,
+            schema,
+        })
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
 pub enum JoinType {
     /// Inner Join - Returns only rows where there is a matching value in both tables based on the join condition.
     /// For example, if joining table A and B on A.id = B.id, only rows where A.id equals B.id will be included.

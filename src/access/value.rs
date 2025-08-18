@@ -32,6 +32,19 @@ impl Values {
         }
         Ok(self.0.remove(0))
     }
+
+    pub fn bool(self) -> Result<bool> {
+        let scalar = self.scalar()?;
+        match scalar {
+            Value::Null => Ok(false),
+            Value::Boolean(b) => Ok(b),
+            _ => Err(Error::internal(format!("Expect boolean value got {}", scalar.datatype()))),
+        }
+    }
+
+    pub fn extend(&mut self, other: Values) {
+        self.0.extend(other.0)
+    }
 }
 
 impl From<Vec<Value>> for Values {
