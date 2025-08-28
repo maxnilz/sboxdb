@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::access::engine::Scan;
 use crate::access::predicate::Predicate;
-use crate::access::value::Values;
+use crate::access::value::Tuple;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
@@ -29,13 +29,13 @@ use crate::sql::plan::schema::TableReference;
 #[derive(Debug)]
 pub struct ValuesExec {
     schema: LogicalSchema,
-    values: Vec<Vec<Arc<dyn PhysicalExpr>>>,
+    rows: Vec<Vec<Arc<dyn PhysicalExpr>>>,
     cursor: Cell<usize>,
 }
 
 impl ValuesExec {
     pub fn try_new(schema: LogicalSchema, values: Vec<Vec<Arc<dyn PhysicalExpr>>>) -> Result<Self> {
-        Ok(Self { schema, values, cursor: Cell::new(0) })
+        Ok(Self { schema, rows: values, cursor: Cell::new(0) })
     }
 }
 
@@ -53,28 +53,27 @@ impl ExecutionPlan for ValuesExec {
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
         let cursor = self.cursor.get();
-        if cursor >= self.values.len() {
+        if cursor >= self.rows.len() {
             return Ok(None);
         }
-        let to = self.values.len().min(cursor + ctx.vector_size());
+        let to = self.rows.len().min(cursor + ctx.vector_size());
 
         // Dummy batch for cell expr evaluation
         let batch = RecordBatchBuilder::new(&self.schema).build();
-        let result = self.values[cursor..to]
+        let result = self.rows[cursor..to]
             .iter()
             .map(|tuple_exprs| {
-                let res = tuple_exprs
+                tuple_exprs
                     .iter()
                     .map(|cell| {
                         let values = cell.evaluate(ctx, &batch)?;
                         Ok(values.scalar()?)
                     })
-                    .collect::<Result<Vec<Value>>>();
-                res
+                    .collect::<Result<Vec<Value>>>()
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .map(|tuple| Values::from(tuple))
+            .map(|values| Tuple::from(values))
             .collect();
 
         self.cursor.set(to);
@@ -85,7 +84,7 @@ impl ExecutionPlan for ValuesExec {
 impl Display for ValuesExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let values = self
-            .values
+            .rows
             .iter()
             .take(3)
             .map(|row| {
@@ -133,17 +132,17 @@ impl ExecutionPlan for ProjectionExec {
             return Ok(None);
         }
         let rb = rb.unwrap().into_inner()?;
-        let mut output_tuples = vec![];
-        for tuple in rb.tuples {
-            let mut output_tuple = vec![];
-            let batch = RecordBatch::new(&rb.schema, vec![tuple]);
+        let mut output_rows = vec![];
+        for row in rb.rows {
+            let mut output_row = vec![];
+            let batch = RecordBatch::new(&rb.schema, vec![row]);
             for expr in &self.exprs {
                 let values = expr.evaluate(ctx, &batch)?;
-                output_tuple.push(values.scalar()?)
+                output_row.push(values.scalar()?)
             }
-            output_tuples.push(Values::from(output_tuple));
+            output_rows.push(Tuple::from(output_row));
         }
-        Ok(Some(RecordBatch::new(&rb.schema, output_tuples)))
+        Ok(Some(RecordBatch::new(&rb.schema, output_rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -218,19 +217,19 @@ impl ExecutionPlan for SeqScanExec {
         let mut scan_borrow = self.scan.borrow_mut();
         let scan =
             scan_borrow.as_mut().ok_or_else(|| Error::internal("SeqScanExec not initialized"))?;
-        let mut tuples = vec![];
-        let mut num_tuples = 0;
-        while let Some(tuple) = scan.next().transpose()? {
-            tuples.push(tuple.values);
-            num_tuples += 1;
-            if num_tuples == ctx.vector_size() {
+        let mut rows = vec![];
+        let mut num_rows = 0;
+        while let Some(row) = scan.next().transpose()? {
+            rows.push(row.tuple);
+            num_rows += 1;
+            if num_rows == ctx.vector_size() {
                 break;
             }
         }
-        if tuples.is_empty() {
+        if rows.is_empty() {
             return Ok(None);
         }
-        Ok(Some(RecordBatch::new(&self.output_schema, tuples)))
+        Ok(Some(RecordBatch::new(&self.output_schema, rows)))
     }
 }
 
@@ -306,8 +305,8 @@ impl ExecutionPlan for SubqueryAliasExec {
                 )));
             }
         }
-        let tuples = rs.into_inner()?.tuples;
-        Ok(Some(RecordBatch::new(&self.alias_schema, tuples)))
+        let rows = rs.into_inner()?.rows;
+        Ok(Some(RecordBatch::new(&self.alias_schema, rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -327,11 +326,11 @@ pub struct FilterExec {
     input: Arc<dyn ExecutionPlan>,
     predicate: Arc<dyn PhysicalExpr>,
 
-    buffer: RefCell<Vec<Values>>,
+    buffer: RefCell<Vec<Tuple>>,
 }
 
 impl FilterExec {
-    fn filter_source(&self, ctx: &mut dyn Context) -> Result<Option<Vec<Values>>> {
+    fn filter_source(&self, ctx: &mut dyn Context) -> Result<Option<Vec<Tuple>>> {
         let rb = self.input.execute(ctx)?;
         if rb.is_none() {
             return Ok(None);
@@ -358,7 +357,7 @@ impl FilterExec {
         let mut matches = vec![];
         let mut rb = rb.into_inner()?;
         for i in indices {
-            matches.push(std::mem::take(&mut rb.tuples[i]));
+            matches.push(std::mem::take(&mut rb.rows[i]));
         }
         Ok(Some(matches))
     }
@@ -385,13 +384,13 @@ impl ExecutionPlan for FilterExec {
 
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
         let mut n = ctx.vector_size();
-        let mut tuples = vec![];
+        let mut rows = vec![];
 
         // Consume residual first if any
         let residual = self.buffer.replace(vec![]);
         if !residual.is_empty() {
             n -= residual.len();
-            tuples.extend(residual);
+            rows.extend(residual);
         }
 
         // Filter source
@@ -406,7 +405,7 @@ impl ExecutionPlan for FilterExec {
             }
             let k = n.min(output.len());
             let residual = output.split_off(k);
-            tuples.extend(output);
+            rows.extend(output);
             n -= k;
             if n == 0 {
                 self.buffer.borrow_mut().extend(residual);
@@ -414,11 +413,11 @@ impl ExecutionPlan for FilterExec {
             }
         }
 
-        if tuples.is_empty() {
+        if rows.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(RecordBatch::new(&self.input.schema(), tuples)))
+        Ok(Some(RecordBatch::new(&self.input.schema(), rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -441,7 +440,7 @@ pub struct LimitExec {
     // mutable states across multiple exec
     skipped: Cell<bool>,
     fetched: Cell<u64>,
-    buffer: RefCell<Vec<Values>>,
+    buffer: RefCell<Vec<Tuple>>,
 }
 
 impl LimitExec {
@@ -468,8 +467,8 @@ impl LimitExec {
         if skip == 0 {
             return Ok(Some(()));
         }
-        // Skipped tuples
-        let mut tuples = vec![];
+        // Skipped rows
+        let mut rows = vec![];
         loop {
             let output = self.poll(ctx)?;
             if output.is_none() {
@@ -481,7 +480,7 @@ impl LimitExec {
             }
             let k = skip.min(output.len());
             let remaining = output.split_off(k);
-            tuples.extend(output);
+            rows.extend(output);
             skip -= k;
             if skip == 0 {
                 self.skipped.set(true);
@@ -489,20 +488,20 @@ impl LimitExec {
                 break;
             }
         }
-        if tuples.is_empty() {
+        if rows.is_empty() {
             return Ok(None);
         }
         Ok(Some(()))
     }
 
-    fn poll(&self, ctx: &mut dyn Context) -> Result<Option<Vec<Values>>> {
+    fn poll(&self, ctx: &mut dyn Context) -> Result<Option<Vec<Tuple>>> {
         let rb = self.input.execute(ctx)?;
         if rb.is_none() {
             return Ok(None);
         }
 
         let rb = rb.unwrap().into_inner()?;
-        Ok(Some(rb.tuples))
+        Ok(Some(rb.rows))
     }
 }
 
@@ -529,25 +528,25 @@ impl ExecutionPlan for LimitExec {
             return Ok(None);
         }
 
-        // Number of tuples this batch would need return
+        // Number of rows this batch would need return
         let mut n = ctx.vector_size().min(num_remain);
         if n == 0 {
             return Ok(None);
         }
 
-        let mut tuples = vec![];
+        let mut rows = vec![];
 
         // Consume buffered remaining first if any
         let mut buffered = self.buffer.replace(vec![]);
         if !buffered.is_empty() {
             if buffered.len() > n {
-                // buffered tuples is enough, return directly.
+                // buffered rows is enough, return directly.
                 _ = buffered.split_off(n);
-                tuples.extend(buffered);
-                return Ok(Some(RecordBatch::new(&self.input.schema(), tuples)));
+                rows.extend(buffered);
+                return Ok(Some(RecordBatch::new(&self.input.schema(), rows)));
             }
             n -= buffered.len();
-            tuples.extend(buffered);
+            rows.extend(buffered);
         }
 
         loop {
@@ -561,7 +560,7 @@ impl ExecutionPlan for LimitExec {
             }
             let k = n.min(output.len());
             let remaining = output.split_off(k);
-            tuples.extend(output);
+            rows.extend(output);
             n -= k;
             if n == 0 {
                 self.buffer.borrow_mut().extend(remaining);
@@ -569,11 +568,11 @@ impl ExecutionPlan for LimitExec {
             }
         }
 
-        if tuples.is_empty() {
+        if rows.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(RecordBatch::new(&self.input.schema(), tuples)))
+        Ok(Some(RecordBatch::new(&self.input.schema(), rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -620,7 +619,7 @@ impl Display for SortExprExec {
 }
 
 /// Sort physical executor, it is implemented as a pipeline breaker
-/// that needs all tuples before sorting.
+/// that needs all rows before sorting.
 /// TODO: support spill to disk.
 #[derive(Debug)]
 pub struct SortExec {
@@ -628,7 +627,7 @@ pub struct SortExec {
     order: Vec<SortExprExec>,
     // mutable states across multiple exec
     sorted: Cell<bool>,
-    buffer: RefCell<Vec<Values>>,
+    buffer: RefCell<Vec<Tuple>>,
 }
 
 impl SortExec {
@@ -642,17 +641,17 @@ impl SortExec {
         }
 
         let mut sortby = vec![];
-        let mut tuples = vec![];
+        let mut rows = vec![];
         while let Some(rb) = self.input.execute(ctx)? {
             // Evaluate the expr per batch, each element in the values
-            // are evaluated values for each tuple for one order item.
+            // are evaluated values for each row for one order item.
             let mut expr_values = self
                 .order
                 .iter()
                 .map(|it| it.expr.evaluate(ctx, &rb))
                 .collect::<Result<Vec<_>>>()?;
-            // Parse the values to sort criteria tuple-wise by pivot the values.
-            for i in 0..rb.num_tuples() {
+            // Parse the values to sort criteria row-wise by pivot the values.
+            for i in 0..rb.num_rows() {
                 let sort_keys = self
                     .order
                     .iter()
@@ -664,11 +663,11 @@ impl SortExec {
                     .collect::<Vec<_>>();
                 sortby.push(sort_keys);
             }
-            // Materialize the polled tuples
-            let num_tuples = rb.num_tuples();
+            // Materialize the polled rows
+            let num_rows = rb.num_rows();
             let rb = rb.into_inner()?;
-            tuples.extend(rb.tuples);
-            if !rb.has_next || num_tuples < ctx.vector_size() {
+            rows.extend(rb.rows);
+            if !rb.has_next || num_rows < ctx.vector_size() {
                 break;
             }
         }
@@ -692,12 +691,12 @@ impl SortExec {
             std::cmp::Ordering::Equal
         });
 
-        // Reorder tuples based on sorted indices
-        let sorted_tuples =
-            entries.into_iter().map(|(i, _)| std::mem::take(&mut tuples[i])).collect::<Vec<_>>();
+        // Reorder rows based on sorted indices
+        let sorted_rows =
+            entries.into_iter().map(|(i, _)| std::mem::take(&mut rows[i])).collect::<Vec<_>>();
 
-        // Materialize the sorted tuples
-        self.buffer.replace(sorted_tuples);
+        // Materialize the sorted rows
+        self.buffer.replace(sorted_rows);
         self.sorted.set(true);
 
         Ok(())
@@ -727,8 +726,8 @@ impl ExecutionPlan for SortExec {
             return Ok(None);
         }
         let n = ctx.vector_size().min(buffer.len());
-        let tuples = buffer.drain(0..n).collect::<Vec<_>>();
-        Ok(Some(RecordBatch::new(&self.input.schema(), tuples)))
+        let rows = buffer.drain(0..n).collect::<Vec<_>>();
+        Ok(Some(RecordBatch::new(&self.input.schema(), rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -840,7 +839,7 @@ impl HashJoinExecBuilder {
 }
 
 /// A straw man hash join physical executor, it is implemented as a pipeline breaker
-/// that needs all tuples before joining.
+/// that needs all rows before joining.
 /// TODO: in-memory hash join for now, support spill to disk.
 #[derive(Debug)]
 pub struct HashJoinExec {
@@ -857,11 +856,11 @@ pub struct HashJoinExec {
     // mutable states
     //
     // hash table for in-memory probe.
-    hashtable: RefCell<HashMap<Value, Vec<Values>>>,
+    hashtable: RefCell<HashMap<Value, Vec<Tuple>>>,
     // for simplicity, join the result in memory in advance
     // then emit batch by batch, maybe do the prob on the
     // fly later.
-    result: RefCell<Option<Vec<Values>>>,
+    result: RefCell<Option<Vec<Tuple>>>,
 }
 
 impl HashJoinExec {
@@ -871,7 +870,7 @@ impl HashJoinExec {
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.left))?;
         let i = self.il;
         let mut hashtable = self.hashtable.borrow_mut();
-        for row in rs.tuples {
+        for row in rs.rows {
             let key = row[i].clone();
             match hashtable.get_mut(&key) {
                 Some(entry) => entry.push(row),
@@ -883,7 +882,7 @@ impl HashJoinExec {
         Ok(())
     }
 
-    fn prob(&self, row: Values) -> Vec<Values> {
+    fn prob(&self, row: Tuple) -> Vec<Tuple> {
         let key = &row[self.ir];
         let hashtable = self.hashtable.borrow();
         let entries = hashtable.get(key);
@@ -903,7 +902,7 @@ impl HashJoinExec {
     fn strawman_join(&self, ctx: &mut dyn Context) -> Result<()> {
         let mut results = vec![];
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.right))?;
-        for row in rs.tuples {
+        for row in rs.rows {
             let output = self.prob(row);
             results.extend(output)
         }
@@ -924,15 +923,14 @@ impl ExecutionPlan for HashJoinExec {
     fn init(&self, ctx: &mut dyn Context) -> Result<()> {
         self.left.init(ctx)?;
         self.right.init(ctx)?;
-
-        // build the hashtable from left input.
-        self.build_left(ctx)?;
-
         Ok(())
     }
 
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
         if self.result.borrow().is_none() {
+            // build the hashtable from left input.
+            self.build_left(ctx)?;
+            // join
             self.strawman_join(ctx)?;
         }
 
@@ -942,23 +940,23 @@ impl ExecutionPlan for HashJoinExec {
             return Ok(None);
         }
         let mut n = ctx.vector_size().min(result.len());
-        let mut tuples = vec![];
+        let mut rows = vec![];
         loop {
-            let tuple = result.remove(0);
+            let row = result.remove(0);
             let ok = self
                 .constraint
-                .evaluate(ctx, &RecordBatch::new(&self.schema, vec![tuple.clone()]))?
+                .evaluate(ctx, &RecordBatch::new(&self.schema, vec![row.clone()]))?
                 .bool()?;
             if !ok {
                 continue;
             }
-            tuples.push(tuple);
+            rows.push(row);
             n -= 1;
             if n == 0 {
                 break;
             }
         }
-        Ok(Some(RecordBatch::new(&self.schema, tuples)))
+        Ok(Some(RecordBatch::new(&self.schema, rows)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -1012,23 +1010,23 @@ impl ExecutionPlan for ExplainExec {
     }
 
     fn execute(&self, _ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let mut tuples = vec![];
+        let mut rows = vec![];
 
         let logical_str =
             if self.verbose { format!("{:#}", self.plan) } else { format!("{}", self.plan) };
-        tuples.push(Values::from(vec![
+        rows.push(Tuple::from(vec![
             Value::String("logical plan".to_string()),
             Value::String(logical_str),
         ]));
 
         if self.physical {
-            tuples.push(Values::from(vec![
+            rows.push(Tuple::from(vec![
                 Value::String("physical plan".to_string()),
                 Value::String(format!("{}", DisplayableExecutionPlan::new(&self.executor))),
             ]))
         }
 
-        let rb = RecordBatchBuilder::new(&self.output_schema).extend(tuples).nomore().build();
+        let rb = RecordBatchBuilder::new(&self.output_schema).extend(rows).nomore().build();
         Ok(Some(rb))
     }
 

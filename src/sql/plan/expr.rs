@@ -1,6 +1,8 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Write;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 
 use crate::apply_each;
@@ -8,6 +10,7 @@ use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
+use crate::map_each_children;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::schema::Field;
 use crate::sql::plan::schema::FieldBuilder;
@@ -15,8 +18,11 @@ use crate::sql::plan::schema::FieldRef;
 use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
+use crate::sql::plan::visitor::Transformed;
 use crate::sql::plan::visitor::TreeNode;
 use crate::sql::plan::visitor::VisitRecursion;
+use crate::sql::udf::aggregate::AggregateUDF;
+use crate::sql::udf::scalar::ScalarUDF;
 
 /// Represents logical expressions such as `A + 1`.
 ///
@@ -28,7 +34,7 @@ use crate::sql::plan::visitor::VisitRecursion;
 ///    op: Operator::Plus,
 ///    right: Expr::Value(Value::Integer(1))
 /// }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Expr {
     Alias(Alias),
     Value(Value),
@@ -177,6 +183,10 @@ pub enum Expr {
     /// Casts the expression to a given type and will return a runtime error
     /// if the expression cannot be cast.
     Cast(Cast),
+    /// Call a scalar function with a set of arguments, e.g., ABS(-5).
+    ScalarFunction(ScalarFunction),
+    /// Calls an aggregate function with arguments, e.g., COUNT(*), SUM(col).
+    AggregateFunction(AggregateFunction),
 }
 
 impl Expr {
@@ -204,14 +214,16 @@ impl Expr {
         }
     }
 
-    pub fn to_field(&self, schema: &LogicalSchema) -> Result<Field> {
-        let name = match self {
-            Expr::Alias(Alias { name, .. }) => name.clone(),
-            Expr::FieldReference(FieldReference { name, .. }) => name.clone(),
-            _ => self.schema_name().to_string(),
+    pub fn to_field(&self, schema: &LogicalSchema) -> Result<(Option<TableReference>, Field)> {
+        let (relation, name) = match self {
+            Expr::Alias(Alias { relation, name, .. }) => (relation.clone(), name.clone()),
+            Expr::FieldReference(FieldReference { relation, name, .. }) => {
+                (relation.clone(), name.clone())
+            }
+            _ => (None, self.schema_name().to_string()),
         };
         let (datatype, nullable) = self.datatype_and_nullable(schema)?;
-        Ok(FieldBuilder::new(name, datatype).nullable(nullable).build())
+        Ok((relation, FieldBuilder::new(name, datatype).nullable(nullable).build()))
     }
 
     /// Wrap this expr to in a `Expr::Cast` to the target `DataType`
@@ -226,6 +238,29 @@ impl Expr {
             )));
         }
         Ok(Expr::Cast(Cast::new(self, cast_to_type.clone())))
+    }
+
+    /// Whether the expr is allowed in group by clause.
+    pub fn is_group_by_allowed_expr(&self) -> bool {
+        match self {
+            Expr::Value(_) => true,
+            Expr::FieldReference(_) => true,
+            Expr::ScalarFunction(_) => true,
+            Expr::Alias(Alias { expr, .. })
+            | Expr::Not(expr)
+            | Expr::IsNull(expr)
+            | Expr::IsNotNull(expr)
+            | Expr::IsTrue(expr)
+            | Expr::IsNotTrue(expr)
+            | Expr::IsFalse(expr)
+            | Expr::IsNotFalse(expr)
+            | Expr::Negative(expr)
+            | Expr::Cast(Cast { expr, .. }) => expr.is_group_by_allowed_expr(),
+            Expr::BinaryExpr(BinaryExpr { left, right, .. }) => {
+                left.is_group_by_allowed_expr() && right.is_group_by_allowed_expr()
+            }
+            _ => false,
+        }
     }
 
     /// The datatype and nullability the expr would produce
@@ -284,6 +319,14 @@ impl Expr {
                 let (_, nullable) = expr.datatype_and_nullable(schema)?;
                 (data_type.clone(), nullable)
             }
+            Expr::ScalarFunction(func) => {
+                let f = func.return_field(schema)?;
+                (f.datatype.clone(), f.nullable)
+            }
+            Expr::AggregateFunction(func) => {
+                let f = func.return_field(schema)?;
+                (f.datatype.clone(), f.nullable)
+            }
         };
         Ok((datatype, nullable))
     }
@@ -307,7 +350,7 @@ impl Expr {
         }
     }
 
-    fn schema_name(&self) -> impl Display + '_ {
+    pub fn schema_name(&self) -> impl Display + '_ {
         SchemaDisplay(self)
     }
 }
@@ -341,6 +384,76 @@ impl TreeNode for Expr {
             | Expr::OuterFieldReference(_, _)
             | Expr::Exists(_)
             | Expr::ScalarSubquery(_) => Ok(VisitRecursion::Continue),
+            Expr::ScalarFunction(ScalarFunction { args, .. }) => apply_each!(f; args),
+            Expr::AggregateFunction(AggregateFunction { args, .. }) => apply_each!(f; args),
+        }
+    }
+
+    fn map_children<F>(self, mut f: F) -> Result<Transformed<Self>>
+    where
+        F: FnMut(Self) -> Result<Transformed<Self>>,
+    {
+        match self {
+            Expr::Alias(alias) => {
+                f(*alias.expr)?.map_data(|c| Ok(Expr::Alias(Alias { expr: Box::new(c), ..alias })))
+            }
+            Expr::Not(expr) => f(*expr)?.map_data(|c| Ok(Expr::Not(Box::new(c)))),
+            Expr::IsNull(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsNull(Box::new(c)))),
+            Expr::IsNotNull(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsNotNull(Box::new(c)))),
+            Expr::IsTrue(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsTrue(Box::new(c)))),
+            Expr::IsNotTrue(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsNotTrue(Box::new(c)))),
+            Expr::IsFalse(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsFalse(Box::new(c)))),
+            Expr::IsNotFalse(expr) => f(*expr)?.map_data(|c| Ok(Expr::IsNotFalse(Box::new(c)))),
+            Expr::Negative(expr) => f(*expr)?.map_data(|c| Ok(Expr::Negative(Box::new(c)))),
+            Expr::InSubquery(in_subquery) => f(*in_subquery.expr)?.map_data(|c| {
+                Ok(Expr::InSubquery(InSubquery { expr: Box::new(c), ..in_subquery }))
+            }),
+            Expr::Cast(Cast { expr, data_type }) => {
+                f(*expr)?.map_data(|c| Ok(Expr::Cast(Cast { expr: Box::new(c), data_type })))
+            }
+            Expr::BinaryExpr(BinaryExpr { left, right, op }) => {
+                map_each_children!(f, *left, *right)?.map_data(|mut children| {
+                    let left = children.remove(0);
+                    let right = children.remove(0);
+                    Ok(Expr::BinaryExpr(BinaryExpr {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                        op,
+                    }))
+                })
+            }
+            Expr::Like(like) => {
+                map_each_children!(f, *like.expr, *like.pattern)?.map_data(|mut children| {
+                    let expr = children.remove(0);
+                    let pattern = children.remove(0);
+                    Ok(Expr::Like(Like {
+                        expr: Box::new(expr),
+                        pattern: Box::new(pattern),
+                        ..like
+                    }))
+                })
+            }
+            Expr::InList(inlist) => {
+                let mut children = vec![*inlist.expr];
+                children.extend(inlist.list.into_iter().map(|it| *it).collect::<Vec<_>>());
+                map_each_children!(f; children)?.map_data(|mut children| {
+                    let expr = Box::new(children.remove(0));
+                    let list = children.into_iter().map(|it| Box::new(it)).collect();
+                    Ok(Expr::InList(InList { expr, list, ..inlist }))
+                })
+            }
+            Expr::Value(_)
+            | Expr::FieldReference(_)
+            | Expr::OuterFieldReference(_, _)
+            | Expr::Exists(_)
+            | Expr::ScalarSubquery(_) => Ok(Transformed::no(self)),
+            Expr::ScalarFunction(ScalarFunction { func, args }) => map_each_children!(f; args)?
+                .map_data(|new_args| Ok(Expr::ScalarFunction(ScalarFunction::new(func, new_args)))),
+            Expr::AggregateFunction(AggregateFunction { func, args }) => {
+                map_each_children!(f; args)?.map_data(|new_args| {
+                    Ok(Expr::AggregateFunction(AggregateFunction::new(func, new_args)))
+                })
+            }
         }
     }
 }
@@ -418,11 +531,125 @@ impl Display for Expr {
             Expr::Cast(Cast { expr, data_type }) => {
                 write!(f, "CAST({expr} AS {data_type:?})")
             }
+            Expr::ScalarFunction(ScalarFunction { func, args }) => {
+                let args = args.iter().map(|it| format!("{}", it)).collect::<Vec<_>>();
+                write!(f, "{}({})", func.name(), args.join(","))
+            }
+            Expr::AggregateFunction(a) => {
+                write!(f, "{}", a)
+            }
         }
     }
 }
 
 #[derive(Clone, Debug)]
+pub struct ScalarFunction {
+    /// The function
+    pub func: Arc<dyn ScalarUDF>,
+    /// List of expressions to feed to the functions as arguments
+    pub args: Vec<Expr>,
+}
+
+impl ScalarFunction {
+    pub fn new(func: Arc<dyn ScalarUDF>, args: Vec<Expr>) -> Self {
+        Self { func, args }
+    }
+
+    pub fn return_field(&self, schema: &LogicalSchema) -> Result<FieldRef> {
+        let arg_fields = self
+            .args
+            .iter()
+            .map(|expr| {
+                let (_, field) = expr.to_field(schema)?;
+                Ok(FieldRef::new(field))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.func.return_field(&arg_fields)
+    }
+}
+
+impl PartialEq for ScalarFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.func.name() == other.func.name() && self.args == other.args
+    }
+}
+
+impl Eq for ScalarFunction {}
+
+impl PartialOrd for ScalarFunction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.func.name().partial_cmp(other.func.name()) {
+            Some(std::cmp::Ordering::Equal) => self.args.partial_cmp(&other.args),
+            other => other,
+        }
+    }
+}
+
+impl Hash for ScalarFunction {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.func.name().hash(state);
+        self.args.hash(state);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AggregateFunction {
+    /// The function
+    pub func: Arc<dyn AggregateUDF>,
+    /// List of expressions to feed to the functions as arguments
+    pub args: Vec<Expr>,
+}
+
+impl AggregateFunction {
+    pub fn new(func: Arc<dyn AggregateUDF>, args: Vec<Expr>) -> Self {
+        Self { func, args }
+    }
+
+    pub fn return_field(&self, schema: &LogicalSchema) -> Result<FieldRef> {
+        let arg_fields = self
+            .args
+            .iter()
+            .map(|expr| {
+                let (_, field) = expr.to_field(schema)?;
+                Ok(FieldRef::new(field))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.func.return_field(&arg_fields)
+    }
+}
+
+impl Display for AggregateFunction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let args = self.args.iter().map(|it| format!("{}", it)).collect::<Vec<_>>();
+        write!(f, "{}({})", self.func.name(), args.join(","))
+    }
+}
+
+impl PartialEq for AggregateFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.func.name() == other.func.name() && self.args == other.args
+    }
+}
+
+impl Eq for AggregateFunction {}
+
+impl PartialOrd for AggregateFunction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.func.name().partial_cmp(other.func.name()) {
+            Some(std::cmp::Ordering::Equal) => self.args.partial_cmp(&other.args),
+            other => other,
+        }
+    }
+}
+
+impl Hash for AggregateFunction {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.func.name().hash(state);
+        self.args.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Cast {
     /// The expression being cast
     pub expr: Box<Expr>,
@@ -437,7 +664,7 @@ impl Cast {
 }
 
 /// Binary expression
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct BinaryExpr {
     /// Left-hand side of the expression
     pub left: Box<Expr>,
@@ -557,7 +784,7 @@ impl<'a> BinaryTypeCoercer<'a> {
 }
 
 /// Logical binary operators applied to logical expressions
-#[derive(Clone, Debug, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Operator {
     /// Plus, e.g. `a + b`
     Plus,
@@ -626,7 +853,7 @@ impl Display for Operator {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct InSubquery {
     /// The expression to compare
     pub expr: Box<Expr>,
@@ -644,7 +871,7 @@ impl InSubquery {
 }
 
 /// Exists expr logical node
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Exists {
     /// Subquery that will produce rows.
     pub subquery: Subquery,
@@ -659,7 +886,7 @@ impl Exists {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Subquery {
     /// The subquery plan
     pub subquery: Box<Plan>,
@@ -680,7 +907,7 @@ impl Subquery {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct InList {
     /// The expression to compare
     pub expr: Box<Expr>,
@@ -697,7 +924,7 @@ impl InList {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Like {
     pub negated: bool,
     pub expr: Box<Expr>,
@@ -713,7 +940,7 @@ impl Like {
 }
 
 /// Alias expression
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Alias {
     pub expr: Box<Expr>,
     pub relation: Option<TableReference>,
@@ -795,6 +1022,31 @@ impl Display for SchemaDisplay<'_> {
             Expr::Cast(Cast { expr, .. }) => {
                 write!(f, "{}", SchemaDisplay(expr))
             }
+            Expr::ScalarFunction(ScalarFunction { func, args }) => {
+                write!(f, "{}", func.schema_name(&args))
+            }
+            Expr::AggregateFunction(AggregateFunction { func, args }) => {
+                write!(f, "{}", func.schema_name(&args))
+            }
         }
     }
+}
+
+/// Collect all the aggregate function recursively. They are returned in order of
+/// occurrence (depth first), with duplicates omitted.
+pub fn find_aggregate_exprs<'a>(exprs: impl IntoIterator<Item = &'a Expr>) -> Result<Vec<Expr>> {
+    let mut out = vec![];
+    for it in exprs.into_iter() {
+        it.walk(|expr| {
+            if matches!(expr, Expr::AggregateFunction { .. }) {
+                if !out.contains(expr) {
+                    out.push(expr.clone());
+                }
+                // Stop recursing down this expr once we find a match
+                return Ok(VisitRecursion::Jump);
+            }
+            Ok(VisitRecursion::Continue)
+        })?;
+    }
+    Ok(out)
 }

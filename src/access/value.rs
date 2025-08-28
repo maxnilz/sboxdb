@@ -13,14 +13,16 @@ use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ValuesRef(Arc<Values>);
+pub type TupleRef = Arc<Tuple>;
 
-/// Tabular values, i.e., tuple values
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct Values(Vec<Value>);
+/// Tabular values, i.e., tuple values. Depends on context, it can be
+/// interpreted as row-wise tuple, i.e., heterogeneous values across
+/// columns, or column-wise tuple, i.e., homogeneous values for same
+/// column.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+pub struct Tuple(Vec<Value>);
 
-impl Values {
+impl Tuple {
     pub fn into_vec(self) -> Vec<Value> {
         self.0
     }
@@ -42,19 +44,19 @@ impl Values {
         }
     }
 
-    pub fn extend(&mut self, other: Values) {
+    pub fn extend(&mut self, other: Tuple) {
         self.0.extend(other.0)
     }
 }
 
-impl From<Vec<Value>> for Values {
+impl From<Vec<Value>> for Tuple {
     fn from(values: Vec<Value>) -> Self {
         Self(values)
     }
 }
 
-impl From<Values> for HashSet<Value> {
-    fn from(values: Values) -> Self {
+impl From<Tuple> for HashSet<Value> {
+    fn from(values: Tuple) -> Self {
         let mut out = HashSet::new();
         for value in values.into_iter() {
             out.insert(value);
@@ -63,7 +65,7 @@ impl From<Values> for HashSet<Value> {
     }
 }
 
-impl Deref for Values {
+impl Deref for Tuple {
     type Target = [Value];
 
     fn deref(&self) -> &[Value] {
@@ -71,13 +73,13 @@ impl Deref for Values {
     }
 }
 
-impl DerefMut for Values {
+impl DerefMut for Tuple {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl IntoIterator for Values {
+impl IntoIterator for Tuple {
     type Item = Value;
     type IntoIter = std::vec::IntoIter<Value>;
 
@@ -86,7 +88,7 @@ impl IntoIterator for Values {
     }
 }
 
-impl<'a> IntoIterator for &'a Values {
+impl<'a> IntoIterator for &'a Tuple {
     type Item = &'a Value;
     type IntoIter = std::slice::Iter<'a, Value>;
 
@@ -97,41 +99,44 @@ impl<'a> IntoIterator for &'a Values {
 
 pub type PrimaryKey = Value;
 
-pub type IndexKey = Values;
+/// Index key composed of multiple column values.
+pub type IndexKey = Tuple;
 
+/// Schema-aware row-wise values, i.e., heterogeneous values across
+/// columns
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Tuple {
-    pub values: Values,
+pub struct Row {
+    pub tuple: Tuple,
     columns: Columns,
 }
 
-impl Tuple {
-    pub fn new(values: Values, columns: &[ColumnRef]) -> Result<Tuple> {
-        let tuple = Tuple { values, columns: Columns::from(columns) };
+impl Row {
+    pub fn new(tuple: Tuple, columns: &[ColumnRef]) -> Result<Row> {
+        let tuple = Row { tuple, columns: Columns::from(columns) };
         tuple.validate()?;
         Ok(tuple)
     }
 
     pub fn primary_key(&self) -> Result<&'_ Value> {
         let idx = self.columns.get_pk_column_idx()?;
-        self.values.get(idx).ok_or_else(|| Error::value("Primary key not found"))
+        self.tuple.get(idx).ok_or_else(|| Error::value("Primary key not found"))
     }
 
     pub fn get_value(&self, i: usize) -> Option<&'_ Value> {
-        self.values.get(i)
+        self.tuple.get(i)
     }
 
-    pub fn get_values(&self, columns: &Columns) -> Result<Values> {
+    pub fn get_values(&self, columns: &Columns) -> Result<Tuple> {
         let mut out = Vec::new();
         for column in columns.iter() {
             let idx = self.columns.get_pk_column_idx()?;
             let val = self
-                .values
+                .tuple
                 .get(idx)
                 .ok_or_else(|| Error::value(format!("Column {} is not found", column.name)))?;
             out.push(val.clone());
         }
-        Ok(Values::from(out))
+        Ok(Tuple::from(out))
     }
 
     pub fn check_columns(&self, columns: &Columns) -> Result<()> {
@@ -142,10 +147,10 @@ impl Tuple {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.values.len() != self.columns.len() {
+        if self.tuple.len() != self.columns.len() {
             return Err(Error::value("Invalid values size"));
         }
-        for (column, value) in self.columns.iter().zip(&self.values) {
+        for (column, value) in self.columns.iter().zip(&self.tuple) {
             match value.datatype() {
                 DataType::Null if column.nullable => Ok(()),
                 DataType::Null => Err(Error::value(format!(
@@ -177,17 +182,17 @@ mod tests {
         let columns = Columns::from(vec![ColumnBuilder::new("", DataType::String)
             .primary()
             .build_unchecked()]);
-        let values = Values::from(vec![Value::String("hello".to_string())]);
+        let tuple = Tuple::from(vec![Value::String("hello".to_string())]);
 
         // encode with &values.as_ref() as input arg, decode with Values
-        let enc = bincodec::serialize(&values.as_ref())?;
-        let tuple = Tuple::new(bincodec::deserialize(&enc)?, &columns)?;
-        assert_eq!(tuple.values, values);
+        let enc = bincodec::serialize(&tuple.as_ref())?;
+        let row = Row::new(bincodec::deserialize(&enc)?, &columns)?;
+        assert_eq!(row.tuple, tuple);
 
         // encode with &values as input arg, decode with Values
-        let enc = bincodec::serialize(&values)?;
-        let tuple = Tuple::new(bincodec::deserialize(&enc)?, &columns)?;
-        assert_eq!(tuple.values, values);
+        let enc = bincodec::serialize(&tuple)?;
+        let row = Row::new(bincodec::deserialize(&enc)?, &columns)?;
+        assert_eq!(row.tuple, tuple);
 
         Ok(())
     }

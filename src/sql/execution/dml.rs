@@ -3,8 +3,8 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+use crate::access::value::Row;
 use crate::access::value::Tuple;
-use crate::access::value::Values;
 use crate::catalog::r#type::Value;
 use crate::error::Result;
 use crate::sql::execution::compiler::RecordBatch;
@@ -51,11 +51,11 @@ impl ExecutionPlan for InsertExec {
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
-        for tv in rs.tuples.into_iter() {
-            txn.insert(&self.table, Tuple::new(tv, &columns)?)?;
+        for tv in rs.rows.into_iter() {
+            txn.insert(&self.table, Row::new(tv, &columns)?)?;
             rows_affected += 1;
         }
-        let output_row: Values = vec![Value::Integer(rows_affected)].into();
+        let output_row: Tuple = vec![Value::Integer(rows_affected)].into();
         let rb =
             RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
         Ok(Some(rb))
@@ -108,14 +108,14 @@ impl ExecutionPlan for UpdateExec {
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
-        for tv in rs.tuples.into_iter() {
-            let tuple = Tuple::new(tv, &columns)?;
-            let pk = tuple.primary_key()?;
+        for tv in rs.rows.into_iter() {
+            let row = Row::new(tv, &columns)?;
+            let pk = row.primary_key()?;
             txn.delete(&self.table, pk)?;
-            txn.insert(&self.table, tuple)?;
+            txn.insert(&self.table, row)?;
             rows_affected += 1;
         }
-        let output_row: Values = vec![Value::Integer(rows_affected)].into();
+        let output_row: Tuple = vec![Value::Integer(rows_affected)].into();
         let rb =
             RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
         Ok(Some(rb))
@@ -168,13 +168,13 @@ impl ExecutionPlan for DeleteExec {
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
-        for tv in rs.tuples.into_iter() {
-            let tuple = Tuple::new(tv, &columns)?;
-            let pk = tuple.primary_key()?;
+        for tv in rs.rows.into_iter() {
+            let row = Row::new(tv, &columns)?;
+            let pk = row.primary_key()?;
             txn.delete(&self.table, pk)?;
             rows_affected += 1;
         }
-        let output_row: Values = vec![Value::Integer(rows_affected)].into();
+        let output_row: Tuple = vec![Value::Integer(rows_affected)].into();
         let rb =
             RecordBatchBuilder::new(&self.output_schema).extend(vec![output_row]).nomore().build();
         Ok(Some(rb))

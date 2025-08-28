@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-use crate::access::value::Values;
+use crate::access::value::Tuple;
 use crate::error::Error;
 use crate::error::Result;
 use crate::sql::execution::compiler::ExecutionPlan;
@@ -10,6 +10,7 @@ use crate::sql::execution::context::Context;
 use crate::sql::execution::display::TabularDisplay;
 use crate::sql::plan::schema::LogicalSchema;
 
+mod aggregate;
 mod compiler;
 mod context;
 mod ddl;
@@ -30,14 +31,14 @@ impl Scheduler {
 
     /// Poll the executor until exhausted.
     fn poll_executor(ctx: &mut dyn Context, executor: Arc<dyn ExecutionPlan>) -> Result<ResultSet> {
-        let mut rs = ResultSet { schema: executor.schema(), tuples: vec![] };
+        let mut rs = ResultSet { schema: executor.schema(), rows: vec![] };
         while let Some(rb) = executor.execute(ctx)? {
-            let num_tuples = rb.num_tuples();
+            let num_rows = rb.num_rows();
 
             let rb = rb.into_inner()?;
-            rs.tuples.extend(rb.tuples);
+            rs.rows.extend(rb.rows);
 
-            if !rb.has_next || num_tuples < ctx.vector_size() {
+            if !rb.has_next || num_rows < ctx.vector_size() {
                 break;
             }
         }
@@ -47,21 +48,21 @@ impl Scheduler {
 
 pub struct ResultSet {
     schema: LogicalSchema,
-    tuples: Vec<Values>,
+    rows: Vec<Tuple>,
 }
 
 impl ResultSet {
     pub fn is_empty(&self) -> bool {
-        self.tuples.is_empty()
+        self.rows.is_empty()
     }
 
     pub fn num_cols(&self) -> usize {
         self.schema.fields().len()
     }
 
-    pub fn columnar_values_at(&self, col_idx: usize) -> Result<Values> {
+    pub fn columnar_values_at(&self, col_idx: usize) -> Result<Tuple> {
         let values = self
-            .tuples
+            .rows
             .iter()
             .map(|row| {
                 row.get(col_idx)
@@ -69,13 +70,13 @@ impl ResultSet {
                     .ok_or(Error::internal(format!("value at column {} is out of bound", col_idx)))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 }
 
 impl Display for ResultSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        TabularDisplay::new(&self.schema, &self.tuples).fmt(f)
+        TabularDisplay::new(&self.schema, &self.rows).fmt(f)
     }
 }
 
@@ -96,25 +97,29 @@ mod tests {
     use crate::sql::parser::display_utils;
     use crate::sql::parser::Parser;
     use crate::sql::plan::plan::Plan;
+    use crate::sql::plan::planner::BindContext;
     use crate::sql::plan::planner::Planner;
     use crate::storage::memory::Memory;
 
-    struct Session {
-        txn: Arc<dyn Transaction>,
+    struct TxnExecutor {
         planner: Planner,
         compiler: Compiler,
+
+        txn: Arc<dyn Transaction>,
     }
 
-    impl Session {
-        fn new(txn: Arc<dyn Transaction>) -> Self {
-            let planner = Planner::new(Arc::clone(&txn) as Arc<dyn Catalog>);
+    impl TxnExecutor {
+        fn try_new(kv: &Kv<Memory>) -> Result<Self> {
+            let txn: Arc<dyn Transaction> = Arc::new(kv.begin()?);
+            let planner = Planner::new();
             let compiler = Compiler {};
-            Self { txn, planner, compiler }
+            Ok(Self { planner, compiler, txn })
         }
         fn execute_query(&self, query: &str) -> Result<ResultSet> {
             let mut parser = Parser::new(query)?;
             let stmt = parser.parse_statement()?;
-            let plan = self.planner.sql_statement_to_plan(stmt)?;
+            let mut ctx = BindContext::new(Arc::clone(&self.txn) as Arc<dyn Catalog>);
+            let plan = self.planner.sql_statement_to_plan(&mut ctx, stmt)?;
             let executor = self.compiler.build_execution_plan(plan)?;
             let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 10);
             Scheduler::execute(ctx, executor)
@@ -123,7 +128,8 @@ mod tests {
         fn logical_plan(&self, query: &str) -> Result<Plan> {
             let mut parser = Parser::new(query)?;
             let stmt = parser.parse_statement()?;
-            self.planner.sql_statement_to_plan(stmt)
+            let mut ctx = BindContext::new(Arc::clone(&self.txn) as Arc<dyn Catalog>);
+            self.planner.sql_statement_to_plan(&mut ctx, stmt)
         }
 
         fn physical_plan(&self, plan: Plan) -> Result<Arc<dyn ExecutionPlan>> {
@@ -134,15 +140,22 @@ mod tests {
             let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 2);
             Scheduler::execute(ctx, executor)
         }
+
+        fn commit(&self) -> Result<()> {
+            self.txn.commit()
+        }
+
+        fn rollback(&self) -> Result<()> {
+            self.txn.rollback()
+        }
     }
 
     fn setup(queries: &[&str]) -> Result<Kv<Memory>> {
         let kv = Kv::new(Memory::new());
 
-        let txn: Arc<dyn Transaction> = Arc::new(kv.begin()?);
-        let session = Session::new(Arc::clone(&txn));
+        let txn = TxnExecutor::try_new(&kv)?;
         for q in queries.iter() {
-            session.execute_query(q)?;
+            txn.execute_query(q)?;
         }
         txn.commit()?;
 
@@ -167,9 +180,7 @@ mod tests {
                           (3, 'Charlie', 'charlie@example.com');",
                     ];
                     let kv = setup(&queries)?;
-
-                    let txn: Arc<dyn Transaction> = Arc::new(kv.begin()?);
-                    let session = Session::new(txn);
+                    let txn = TxnExecutor::try_new(&kv)?;
 
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
@@ -178,23 +189,25 @@ mod tests {
                     write!(f, "-----\n")?;
                     write!(f, "{}\n\n", display_utils::dedent($stmt))?;
 
-                    let plan = session.logical_plan($stmt)?;
+                    let plan = txn.logical_plan($stmt)?;
 
                     write!(f, "Logical Plan:\n")?;
                     write!(f, "--------------\n\n")?;
                     write!(f, "{}\n\n", &plan)?;
 
-                    let executor = session.physical_plan(plan)?;
+                    let executor = txn.physical_plan(plan)?;
                     let displayable = DisplayableExecutionPlan::new(&executor);
 
                     write!(f, "Physical Plan:\n")?;
                     write!(f, "---------------\n\n")?;
                     write!(f, "{}\n\n", displayable)?;
 
-                    let rs = session.execute(executor)?;
+                    let rs = txn.execute(executor)?;
                     write!(f, "Result:\n")?;
                     write!(f, "-------\n\n")?;
                     write!(f, "{}\n\n", rs)?;
+
+                    txn.rollback()?;
 
                     Ok(())
                 }
@@ -212,5 +225,7 @@ mod tests {
         sort: "SELECT id, name, email FROM users ORDER BY name DESC, email ASC",
         explain: "EXPLAIN physical verbose SELECT * FROM users",
         join: "SELECT a.*, b.id AS b_id, b.name AS b_name, b.email AS b_email FROM users AS a JOIN users AS b ON a.id = b.id",
+        simple_agg: "SELECT count(*) FROM users",
+        simple_agg_with_groupby: "SELECT id, count(*) AS a, count(*) AS b FROM users GROUP BY id ORDER BY id",
     }
 }

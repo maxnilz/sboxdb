@@ -1,0 +1,28 @@
+Stmt: 
+-----
+SELECT count(*) FROM users
+
+Logical Plan:
+--------------
+
+Projection: count(*)
+  Aggregate: groupBy=[], aggr=[count()]
+    TableScan: users
+
+Physical Plan:
+---------------
+
+ProjectionExec: count(*)@0
+  AggregateExec: groupBy[], aggr=[count()]
+    SeqScanExec: users
+
+Result:
+-------
+
++----------+
+| count(*) |
++----------+
+| 3        |
++----------+
+
+

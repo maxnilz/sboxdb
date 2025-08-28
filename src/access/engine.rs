@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
-use crate::access::value::Tuple;
+use crate::access::value::Row;
 use crate::catalog::catalog::Catalog;
 use crate::error::Result;
 
@@ -21,13 +21,13 @@ pub trait Engine {
     fn begin_as_of(&self, version: u64) -> Result<Self::Transaction>;
 }
 
-pub trait ScanIterator: DoubleEndedIterator<Item = Result<Tuple>> + Debug {}
+pub trait ScanIterator: DoubleEndedIterator<Item = Result<Row>> + Debug {}
 
-impl ScanIterator for std::vec::IntoIter<Result<Tuple>> {}
+impl ScanIterator for std::vec::IntoIter<Result<Row>> {}
 
 pub type Scan = Box<dyn ScanIterator>;
 
-pub type IndexScan = Box<dyn DoubleEndedIterator<Item = (IndexKey, Vec<Tuple>)>>;
+pub type IndexScan = Box<dyn DoubleEndedIterator<Item = (IndexKey, Vec<Row>)>>;
 
 /// Relation oriented transaction.
 pub trait Transaction: Catalog {
@@ -43,11 +43,11 @@ pub trait Transaction: Catalog {
     fn rollback(&self) -> Result<()>;
 
     /// Inserts a new table row
-    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey>;
+    fn insert(&self, table: &str, row: Row) -> Result<PrimaryKey>;
     /// Deletes a table row
     fn delete(&self, table: &str, pk: &PrimaryKey) -> Result<()>;
     /// Reads a table row, if it exists
-    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>>;
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Row>>;
     /// Scan a table with optional pushdown eligible predicate
     fn scan(&self, table: &str, predicate: Option<Predicate>) -> Result<Scan>;
     /// drop table data
@@ -59,7 +59,7 @@ pub trait Transaction: Catalog {
         table: &str,
         index: &str,
         index_key: IndexKey,
-    ) -> Result<Option<Vec<Tuple>>>;
+    ) -> Result<Option<Vec<Row>>>;
     /// Scan index entries
     fn scan_index_entries(&self, table: &str, index: &str) -> Result<IndexScan>;
 }

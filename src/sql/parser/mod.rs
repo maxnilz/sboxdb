@@ -555,13 +555,24 @@ impl Parser {
         match &next_token {
             Token::Mul => Ok(FunctionArg::Asterisk),
             tok @ Token::Ident(_, _) => match self.peek_token() {
-                Token::LParen => Ok(FunctionArg::Function(
-                    self.parse_function_call(Ident::from_ident_token(tok))?,
-                )),
-                _ => Ok(FunctionArg::Identifier(Ident::from_ident_token(tok))),
+                Token::LParen => {
+                    let func = self.parse_function_call(Ident::from_ident_token(tok))?;
+                    let expr = Expr::Function(func);
+                    Ok(FunctionArg::Expr(expr))
+                }
+                _ => {
+                    let expr = Expr::Identifier(Ident::from_ident_token(tok));
+                    Ok(FunctionArg::Expr(expr))
+                }
             },
-            Token::Number(s) => Ok(FunctionArg::Value(Value::Number(s.clone()))),
-            Token::String(s) => Ok(FunctionArg::Value(Value::String(s.clone()))),
+            Token::Number(s) => {
+                let expr = Expr::Value(Value::Number(s.clone()));
+                Ok(FunctionArg::Expr(expr))
+            }
+            Token::String(s) => {
+                let expr = Expr::Value(Value::String(s.clone()));
+                Ok(FunctionArg::Expr(expr))
+            }
             _ => self.expected("a function argument", next_token),
         }
     }

@@ -5,7 +5,7 @@ SELECT id, name, email FROM users ORDER BY name DESC, email ASC
 Logical Plan:
 --------------
 
-Sort: name DESC, email ASC
+Sort: users.name DESC, users.email ASC
   Projection: users.id, users.name, users.email
     TableScan: users
 

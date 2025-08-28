@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-use crate::access::value::Values;
+use crate::access::value::Tuple;
 use crate::catalog::r#type::Value;
 use crate::error::Result;
 use crate::sql::execution::compiler::ExecutionPlan;
@@ -66,18 +66,18 @@ impl<'a, 'b, 'n> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
 
 pub struct TabularDisplay<'a, 'b> {
     schema: &'a LogicalSchema,
-    tuples: &'b [Values],
+    rows: &'b [Tuple],
 }
 
 impl<'a, 'b> TabularDisplay<'a, 'b> {
-    pub fn new(schema: &'a LogicalSchema, tuples: &'b [Values]) -> Self {
-        Self { schema, tuples }
+    pub fn new(schema: &'a LogicalSchema, rows: &'b [Tuple]) -> Self {
+        Self { schema, rows }
     }
 }
 
 impl<'a, 'b> Display for TabularDisplay<'a, 'b> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.tuples.is_empty() {
+        if self.rows.is_empty() {
             return writeln!(f, "Empty result set");
         }
         let fields = self.schema.fields();
@@ -88,15 +88,15 @@ impl<'a, 'b> Display for TabularDisplay<'a, 'b> {
             widths[i] = field.name.len();
         }
 
-        // Prepare tuple data with split lines and calculate widths
-        let mut tuple_lines: Vec<Vec<Vec<String>>> = Vec::new();
+        // Prepare row data with split lines and calculate widths
+        let mut rows_lines: Vec<Vec<Vec<String>>> = Vec::new();
         let mut max_row_heights = Vec::new();
 
-        for tuple in self.tuples {
+        for row in self.rows {
             let mut row_lines: Vec<Vec<String>> = Vec::new();
             let mut max_height = 1;
 
-            for (i, value) in tuple.iter().enumerate() {
+            for (i, value) in row.iter().enumerate() {
                 let lines: Vec<String> = match value {
                     Value::String(s) => s.lines().map(|line| line.to_string()).collect(),
                     _ => vec![value.to_string()],
@@ -110,7 +110,7 @@ impl<'a, 'b> Display for TabularDisplay<'a, 'b> {
                 row_lines.push(lines);
             }
 
-            tuple_lines.push(row_lines);
+            rows_lines.push(row_lines);
             max_row_heights.push(max_height);
         }
 
@@ -132,8 +132,8 @@ impl<'a, 'b> Display for TabularDisplay<'a, 'b> {
         print_border(f)?;
 
         // Print rows with proper multi-line handling
-        for (tuple_idx, row_lines) in tuple_lines.iter().enumerate() {
-            let row_height = max_row_heights[tuple_idx];
+        for (row_idx, row_lines) in rows_lines.iter().enumerate() {
+            let row_height = max_row_heights[row_idx];
 
             for line_idx in 0..row_height {
                 write!(f, "|")?;

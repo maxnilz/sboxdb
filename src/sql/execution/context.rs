@@ -40,33 +40,42 @@ pub trait Context {
     ) -> crate::error::Result<Option<RecordBatchesRef>>;
 }
 
-pub struct PlanContext {}
+/// Const evaluation context used by the physical planning evaluation without dependencies
+/// for actual data retrieval like catalog, transaction, etc. E.g., to evaluate the column
+/// default value expr, the catalog/transaction is not needed.
+pub struct ConstEvalCtx {}
 
-impl Context for PlanContext {
+impl ConstEvalCtx {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Context for ConstEvalCtx {
     fn txn(&self) -> Arc<dyn Transaction> {
-        unimplemented!("PlanContext is only for physical planning use")
+        unimplemented!("ConstEvalCtx is only for physical planning use")
     }
 
     fn vector_size(&self) -> usize {
-        unimplemented!("PlanContext is only for physical planning use")
+        unimplemented!("ConstEvalCtx is only for physical planning use")
     }
 
     fn outer_query_batches(&self) -> Option<RecordBatchesRef> {
-        unimplemented!("PlanContext is only for physical planning use")
+        unimplemented!("ConstEvalCtx is only for physical planning use")
     }
 
     fn extend_outer_query_batches(
         &mut self,
         _rb: RecordBatch,
     ) -> crate::error::Result<Option<RecordBatchesRef>> {
-        unimplemented!("PlanContext is only for physical planning use")
+        unimplemented!("ConstEvalCtx is only for physical planning use")
     }
 
     fn set_outer_query_batches(
         &mut self,
         _batches: Option<RecordBatchesRef>,
     ) -> crate::error::Result<Option<RecordBatchesRef>> {
-        unimplemented!("PlanContext is only for physical planning use")
+        unimplemented!("ConstEvalCtx is only for physical planning use")
     }
 }
 

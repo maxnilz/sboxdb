@@ -5,8 +5,8 @@ Logical Plan:
 --------------
 
 Limit: fetch=1
-  Sort: name DESC
-    Projection: name
+  Sort: users.name DESC
+    Projection: users.name
       Aggregate: groupBy=[users.name], aggr=[]
         TableScan: users
 
@@ -14,7 +14,7 @@ Logical Plan with schema:
 -------------------------
 
 Limit: fetch=1 [name:String;N]
-  Sort: name DESC [name:String;N]
-    Projection: name [name:String;N]
+  Sort: users.name DESC [name:String;N]
+    Projection: users.name [name:String;N]
       Aggregate: groupBy=[users.name], aggr=[] [name:String;N]
         TableScan: users [id:Integer;N, name:String;N, email:String;N]

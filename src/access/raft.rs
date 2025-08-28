@@ -13,7 +13,7 @@ use crate::access::kv::Kv;
 use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
-use crate::access::value::Tuple;
+use crate::access::value::Row;
 use crate::catalog::catalog::Catalog;
 use crate::catalog::index::Index;
 use crate::catalog::index::Indexes;
@@ -75,7 +75,7 @@ enum Mutation<'a> {
     DeleteIndex { txn: TransactionState, table: Cow<'a, str>, index: Cow<'a, str> },
 
     /// Inserts a new table row
-    Insert { txn: TransactionState, table: Cow<'a, str>, tuple: Tuple },
+    Insert { txn: TransactionState, table: Cow<'a, str>, row: Row },
     /// Deletes a table row
     Delete { txn: TransactionState, table: Cow<'a, str>, pk: PrimaryKey },
     /// drop table data
@@ -190,8 +190,8 @@ impl Transaction for RaftTxn {
         self.client.mutate(Mutation::Rollback(self.state.clone()))
     }
 
-    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
-        self.client.mutate(Mutation::Insert { txn: self.state.clone(), table: table.into(), tuple })
+    fn insert(&self, table: &str, row: Row) -> Result<PrimaryKey> {
+        self.client.mutate(Mutation::Insert { txn: self.state.clone(), table: table.into(), row })
     }
 
     fn delete(&self, table: &str, pk: &PrimaryKey) -> Result<()> {
@@ -202,7 +202,7 @@ impl Transaction for RaftTxn {
         })
     }
 
-    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Row>> {
         self.client.query(Query::Read {
             txn: self.state.clone(),
             table: table.into(),
@@ -211,7 +211,7 @@ impl Transaction for RaftTxn {
     }
 
     fn scan(&self, table: &str, predicate: Option<Predicate>) -> Result<Scan> {
-        let result: Vec<Result<Tuple>> = self.client.query(Query::Scan {
+        let result: Vec<Result<Row>> = self.client.query(Query::Scan {
             txn: self.state.clone(),
             table: table.into(),
             predicate,
@@ -228,7 +228,7 @@ impl Transaction for RaftTxn {
         table: &str,
         index: &str,
         index_key: IndexKey,
-    ) -> Result<Option<Vec<Tuple>>> {
+    ) -> Result<Option<Vec<Row>>> {
         self.client.query(Query::ReadIndexEntry {
             txn: self.state.clone(),
             table: table.into(),
@@ -238,7 +238,7 @@ impl Transaction for RaftTxn {
     }
 
     fn scan_index_entries(&self, table: &str, index: &str) -> Result<IndexScan> {
-        let result: Vec<(IndexKey, Vec<Tuple>)> = self.client.query(Query::ScanIndexEntries {
+        let result: Vec<(IndexKey, Vec<Row>)> = self.client.query(Query::ScanIndexEntries {
             txn: self.state.clone(),
             table: table.into(),
             index: index.into(),
@@ -388,9 +388,9 @@ impl<T: Storage> State<T> {
                 let txn = self.engine.resume(txn)?;
                 bincodec::serialize(&txn.delete_index(&index, &table)?)
             }
-            Mutation::Insert { txn, table, tuple } => {
+            Mutation::Insert { txn, table, row } => {
                 let txn = self.engine.resume(txn)?;
-                bincodec::serialize(&txn.insert(&table, tuple)?)
+                bincodec::serialize(&txn.insert(&table, row)?)
             }
             Mutation::Delete { txn, table, pk } => {
                 let txn = self.engine.resume(txn)?;

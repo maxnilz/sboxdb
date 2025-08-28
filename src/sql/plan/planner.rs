@@ -2,16 +2,21 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use log::debug;
+
 use crate::catalog::catalog::Catalog;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
+use crate::format_expr_vec;
 use crate::sql::parser::ast::BinaryOperator;
 use crate::sql::parser::ast::CreateIndex as SQLCreateIndex;
 use crate::sql::parser::ast::CreateTable as SQLCreateTable;
 use crate::sql::parser::ast::DataType as SQLDataType;
 use crate::sql::parser::ast::Expr as SQLExpr;
+use crate::sql::parser::ast::Function;
+use crate::sql::parser::ast::FunctionArg;
 use crate::sql::parser::ast::Ident;
 use crate::sql::parser::ast::Insert as SQLInsert;
 use crate::sql::parser::ast::InsertSource;
@@ -27,6 +32,8 @@ use crate::sql::parser::ast::UnaryOperator;
 use crate::sql::parser::ast::Update as SQLUpdate;
 use crate::sql::parser::ast::Value as SQLValue;
 use crate::sql::parser::ast::WildcardExpr;
+use crate::sql::plan::expr::find_aggregate_exprs;
+use crate::sql::plan::expr::AggregateFunction;
 use crate::sql::plan::expr::Alias;
 use crate::sql::plan::expr::BinaryExpr;
 use crate::sql::plan::expr::Exists;
@@ -35,6 +42,7 @@ use crate::sql::plan::expr::InList;
 use crate::sql::plan::expr::InSubquery;
 use crate::sql::plan::expr::Like;
 use crate::sql::plan::expr::Operator;
+use crate::sql::plan::expr::ScalarFunction;
 use crate::sql::plan::expr::Subquery;
 use crate::sql::plan::plan::Aggregate;
 use crate::sql::plan::plan::CreateIndex;
@@ -62,8 +70,15 @@ use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
+use crate::sql::plan::visitor::Transformed;
+use crate::sql::plan::visitor::TreeNode;
+use crate::sql::plan::visitor::VisitRecursion;
+use crate::sql::udf::new_func_registry;
+use crate::sql::udf::FuncRegistry;
 
-struct Context {
+pub struct BindContext {
+    /// The transactional catalog for relation/column lookup.
+    catalog: Arc<dyn Catalog>,
     /// The query schema of the outer query plan, used to resolve
     /// the fields in subquery.
     outer_query_schema: Option<LogicalSchema>,
@@ -73,9 +88,9 @@ struct Context {
     outer_from_schema: Option<LogicalSchema>,
 }
 
-impl Context {
-    pub fn new() -> Self {
-        Self { outer_from_schema: None, outer_query_schema: None }
+impl BindContext {
+    pub fn new(catalog: Arc<dyn Catalog>) -> Self {
+        Self { catalog, outer_from_schema: None, outer_query_schema: None }
     }
 
     /// Sets the outer query schema, returning the existing one, if
@@ -128,20 +143,24 @@ impl Context {
 /// It does not perform type coercion, or perform optimization, which are done
 /// by subsequent passes.
 pub struct Planner {
-    catalog: Arc<dyn Catalog>,
     ident_normalizer: IdentNormalizer,
+    func_registry: Arc<dyn FuncRegistry>,
 }
 
 impl Planner {
     #[allow(dead_code)]
-    pub fn new(catalog: Arc<dyn Catalog>) -> Self {
+    pub fn new() -> Self {
         let ident_normalizer = IdentNormalizer::new(true);
-        Self { catalog, ident_normalizer }
+        let func_registry = new_func_registry();
+        Self { ident_normalizer, func_registry }
     }
 
     #[allow(dead_code)]
-    pub fn sql_statement_to_plan(&self, statement: Statement) -> Result<Plan> {
-        let context = &mut Context::new();
+    pub fn sql_statement_to_plan(
+        &self,
+        ctx: &mut BindContext,
+        statement: Statement,
+    ) -> Result<Plan> {
         match statement {
             Statement::Begin { read_only, as_of } => {
                 let as_of =
@@ -151,9 +170,11 @@ impl Planner {
             Statement::Commit => Ok(Plan::Transaction(Transaction::Commit)),
             Statement::Rollback => Ok(Plan::Transaction(Transaction::Abort)),
             Statement::CreateTable(sql_create_table) => {
-                self.create_table_to_plan(context, sql_create_table)
+                self.create_table_to_plan(ctx, sql_create_table)
             }
-            Statement::CreateIndex(sql_create_index) => self.create_index_to_plan(sql_create_index),
+            Statement::CreateIndex(sql_create_index) => {
+                self.create_index_to_plan(ctx, sql_create_index)
+            }
             Statement::DropTable { table_name, if_exists } => {
                 let relation = TableReference::new(&self.normalize_ident(&table_name));
                 Ok(Plan::DropTable(DropTable::new(relation, if_exists)))
@@ -166,49 +187,96 @@ impl Planner {
             Statement::AlterTable { .. } => {
                 self.unimplemented_err(Error::parse("ALTER TABLE not supported yet"))
             }
-            Statement::Insert(insert) => self.insert_to_plan(context, insert),
-            Statement::Update(update) => self.update_to_plan(context, update),
-            Statement::Delete { table, selection } => {
-                self.delete_to_plan(context, table, selection)
-            }
-            Statement::Select { query } => self.query_to_plan(context, *query),
+            Statement::Insert(insert) => self.insert_to_plan(ctx, insert),
+            Statement::Update(update) => self.update_to_plan(ctx, update),
+            Statement::Delete { table, selection } => self.delete_to_plan(ctx, table, selection),
+            Statement::Select { query } => self.query_to_plan(ctx, *query),
             Statement::Explain { physical, verbose, statement } => {
-                let plan = self.sql_statement_to_plan(*statement)?;
+                let plan = self.sql_statement_to_plan(ctx, *statement)?;
                 Ok(Plan::Explain(Explain::new(plan, verbose, physical)))
             }
         }
     }
 
     /// Generate a logical plan from an SQL query/subquery
-    fn query_to_plan(&self, context: &mut Context, query: Query) -> Result<Plan> {
+    fn query_to_plan(&self, ctx: &mut BindContext, query: Query) -> Result<Plan> {
         // plan table with joins
-        let mut base_plan = self.plan_table_with_joins(context, query.from)?;
+        let mut plan = self.plan_table_with_joins(ctx, query.from)?;
 
         // plan the selection
         if let Some(sqlexpr) = query.selection {
-            let schema = base_plan.schema();
-            let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
-            base_plan = Plan::Filter(Filter::try_new(expr, base_plan)?)
+            let schema = plan.schema();
+            let expr = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
+            plan = Plan::Filter(Filter::try_new(expr, plan)?)
         }
 
-        // Process group by
-        let group_by_schema = base_plan.schema().clone();
-        let group_by_exprs = query
+        // Process group by, does NOT support reference aliases defined in select projection.
+        let groupby_schema = plan.schema().clone();
+        let groupby_exprs = query
             .group_by
             .into_iter()
-            .map(|it| self.sqlexpr_to_expr(context, it, &group_by_schema))
+            .map(|it| {
+                let expr = self.sqlexpr_to_expr(ctx, it, &groupby_schema)?;
+                if !expr.is_group_by_allowed_expr() {
+                    self.semantic_err(format!("Expr {} is not allowed in GROUP BY clause", expr))
+                } else {
+                    Ok(expr)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
+        debug!("groupby_exprs: {}", format_expr_vec!(groupby_exprs));
 
-        // TODO: Process aggregation and Support scalar function and aggregation function.
-        let aggr_exprs: Vec<Expr> = vec![];
+        // Build the select exprs from projection
+        let select_exprs = query
+            .projection
+            .into_iter()
+            .map(|it| self.parse_select_item(ctx, &plan, it))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        debug!("select_exprs: {}", format_expr_vec!(select_exprs));
 
-        if !group_by_exprs.is_empty() || !aggr_exprs.is_empty() {
-            base_plan =
-                Plan::Aggregate(Aggregate::try_new(base_plan.clone(), group_by_exprs, aggr_exprs)?)
+        // Find all the aggregated exprs recursively in the select exprs
+        let aggr_exprs = find_aggregate_exprs(&select_exprs)?;
+        debug!("aggr_expr: {}", format_expr_vec!(aggr_exprs));
+
+        // Build projection node directly if no aggregate needed, otherwise
+        // aggregate then projection.
+        plan = if groupby_exprs.is_empty() && aggr_exprs.is_empty() {
+            Plan::Projection(Projection::try_new(select_exprs, plan)?)
+        } else {
+            // Build aggregation node
+            let agg_plan =
+                Plan::Aggregate(Aggregate::try_new(plan, groupby_exprs, aggr_exprs.to_vec())?);
+            // Rewrite the projection recursively, in which the AggregateFunction get replaced
+            // with the field reference that can be found from the `agg_plan.schema()`, e.g.,
+            // the rewritten name is basically same as the field name in the agg_plan output
+            // schema.
+            let select_exprs = select_exprs
+                .into_iter()
+                .map(|expr| {
+                    expr.transform_down(|it| {
+                        if aggr_exprs.contains(&it) {
+                            // transform
+                            let fr = FieldReference::from_name(it.schema_name().to_string());
+                            let transformed_expr = Expr::FieldReference(fr);
+                            // Stop recursing down this expr once we find a match
+                            return Ok(Transformed::new(
+                                transformed_expr,
+                                true,
+                                VisitRecursion::Stop,
+                            ));
+                        }
+                        return Ok(Transformed::no(it));
+                    })
+                })
+                .map(|res| res.map(|it| it.data))
+                .collect::<Result<Vec<_>>>()?;
+            // Build the projection node with agg_plan as input, which would enforce the
+            // selected item MUST either be in the group by clause or an udaf implicitly.
+            Plan::Projection(Projection::try_new(select_exprs, agg_plan)?)
         };
-
-        // plan projection
-        let mut plan = self.parse_projection_to_plan(context, base_plan, query.projection)?;
 
         // Process order by
         let order_by_schema = plan.schema().clone();
@@ -216,7 +284,7 @@ impl Planner {
             .order_by
             .into_iter()
             .map(|it| {
-                let expr = self.sqlexpr_to_expr(context, it.expr, &order_by_schema)?;
+                let expr = self.sqlexpr_to_expr(ctx, it.expr, &order_by_schema)?;
                 let asc = if let Some(desc) = it.desc { !desc } else { true };
                 Ok(SortExpr { expr, asc })
             })
@@ -233,36 +301,20 @@ impl Planner {
         Ok(plan)
     }
 
-    fn parse_projection_to_plan(
-        &self,
-        context: &mut Context,
-        input: Plan,
-        projection: Vec<SelectItem>,
-    ) -> Result<Plan> {
-        let exprs = projection
-            .into_iter()
-            .map(|it| self.parse_select_item(context, &input, it))
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        Ok(Plan::Projection(Projection::try_new(exprs, input)?))
-    }
-
     fn parse_select_item(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         input: &Plan,
         item: SelectItem,
     ) -> Result<Vec<Expr>> {
         let schema = input.schema();
         match item {
             SelectItem::UnnamedExpr(expr) => {
-                let expr = self.sqlexpr_to_expr(context, expr, schema)?;
+                let expr = self.sqlexpr_to_expr(ctx, expr, schema)?;
                 Ok(vec![expr])
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                let expr = self.sqlexpr_to_expr(context, expr, schema)?;
+                let expr = self.sqlexpr_to_expr(ctx, expr, schema)?;
                 let alias = self.normalize_ident(&alias);
                 Ok(vec![Expr::Alias(Alias::new(expr, None::<&str>, alias))])
             }
@@ -299,38 +351,38 @@ impl Planner {
         }
     }
 
-    fn plan_table_with_joins(&self, context: &mut Context, t: TableWithJoins) -> Result<Plan> {
-        let mut left = self.plan_table_factor(context, t.relation)?;
-        let prev_outer_from_schema = context.outer_from_schema();
+    fn plan_table_with_joins(&self, ctx: &mut BindContext, t: TableWithJoins) -> Result<Plan> {
+        let mut left = self.plan_table_factor(ctx, t.relation)?;
+        let prev_outer_from_schema = ctx.outer_from_schema();
         for join in t.joins {
-            context.extend_outer_from_schema(left.schema())?;
-            left = self.plan_relation_join(context, left, join)?;
+            ctx.extend_outer_from_schema(left.schema())?;
+            left = self.plan_relation_join(ctx, left, join)?;
         }
-        context.set_outer_from_schema(prev_outer_from_schema);
+        ctx.set_outer_from_schema(prev_outer_from_schema);
         Ok(left)
     }
 
-    fn plan_relation_join(&self, context: &mut Context, left: Plan, join: SQLJoin) -> Result<Plan> {
-        let right = self.plan_table_factor(context, join.relation)?;
+    fn plan_relation_join(&self, ctx: &mut BindContext, left: Plan, join: SQLJoin) -> Result<Plan> {
+        let right = self.plan_table_factor(ctx, join.relation)?;
         match join.join_operator {
             JoinOperator::Join(jc) | JoinOperator::Inner(jc) => {
-                self.parse_join_to_plan(context, left, right, jc, JoinType::Inner)
+                self.parse_join_to_plan(ctx, left, right, jc, JoinType::Inner)
             }
             JoinOperator::Left(jc) | JoinOperator::LeftOuter(jc) => {
-                self.parse_join_to_plan(context, left, right, jc, JoinType::Left)
+                self.parse_join_to_plan(ctx, left, right, jc, JoinType::Left)
             }
             JoinOperator::Right(jc) | JoinOperator::RightOuter(jc) => {
-                self.parse_join_to_plan(context, left, right, jc, JoinType::Right)
+                self.parse_join_to_plan(ctx, left, right, jc, JoinType::Right)
             }
             JoinOperator::Full(jc) | JoinOperator::FullOuter(jc) => {
-                self.parse_join_to_plan(context, left, right, jc, JoinType::Full)
+                self.parse_join_to_plan(ctx, left, right, jc, JoinType::Full)
             }
         }
     }
 
     fn parse_join_to_plan(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         left: Plan,
         right: Plan,
         constraint: JoinConstraint,
@@ -339,17 +391,17 @@ impl Planner {
         match constraint {
             JoinConstraint::On(expr) => {
                 let schema = left.schema().join(right.schema())?;
-                let join_constraint = self.sqlexpr_to_expr(context, expr, &schema)?;
+                let join_constraint = self.sqlexpr_to_expr(ctx, expr, &schema)?;
                 Ok(Plan::Join(Join::try_new(left, right, typ, join_constraint, schema)?))
             }
         }
     }
 
-    fn plan_table_factor(&self, context: &mut Context, relation: TableFactor) -> Result<Plan> {
+    fn plan_table_factor(&self, ctx: &mut BindContext, relation: TableFactor) -> Result<Plan> {
         let (plan, alias) = match relation {
             TableFactor::Table { name, alias } => {
                 let table = self.normalize_ident(&name);
-                let table_schema: LogicalSchema = self
+                let table_schema: LogicalSchema = ctx
                     .catalog
                     .read_table(&table)?
                     .map(LogicalSchema::from)
@@ -358,7 +410,7 @@ impl Planner {
                 (Plan::TableScan(scan), alias)
             }
             TableFactor::Derived { subquery, alias } => {
-                let subplan = self.query_to_plan(context, *subquery)?;
+                let subplan = self.query_to_plan(ctx, *subquery)?;
                 (subplan, alias)
             }
         };
@@ -374,12 +426,12 @@ impl Planner {
 
     fn delete_to_plan(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         table: Ident,
         selection: Option<SQLExpr>,
     ) -> Result<Plan> {
         let table = self.normalize_ident(&table);
-        let table_schema: LogicalSchema = self
+        let table_schema: LogicalSchema = ctx
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
@@ -388,16 +440,16 @@ impl Planner {
         // build a full table scan node
         let mut scan_builder = TableScanBuilder::new(table.as_str(), &table_schema);
         if let Some(expr) = selection {
-            let expr = self.sqlexpr_to_expr(context, expr, &table_schema)?;
+            let expr = self.sqlexpr_to_expr(ctx, expr, &table_schema)?;
             scan_builder = scan_builder.filter(expr);
         }
         let scan = Plan::TableScan(scan_builder.build());
         Ok(Plan::Delete(Delete::new(table, scan)))
     }
 
-    fn update_to_plan(&self, context: &mut Context, update: SQLUpdate) -> Result<Plan> {
+    fn update_to_plan(&self, ctx: &mut BindContext, update: SQLUpdate) -> Result<Plan> {
         let table = self.normalize_ident(&update.table);
-        let table_schema: LogicalSchema = self
+        let table_schema: LogicalSchema = ctx
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
@@ -409,7 +461,7 @@ impl Planner {
         // build a full table scan node
         let mut scan_builder = TableScanBuilder::new(table.as_str(), &table_schema);
         if let Some(expr) = update.selection {
-            let expr = self.sqlexpr_to_expr(context, expr, &table_schema)?;
+            let expr = self.sqlexpr_to_expr(ctx, expr, &table_schema)?;
             scan_builder = scan_builder.filter(expr);
         }
         let scan = Plan::TableScan(scan_builder.build());
@@ -434,7 +486,7 @@ impl Planner {
                         Ok(Expr::FieldReference(FieldReference::new(&f.name, q.map(|a| a.clone()))))
                     }
                     Some(sqlexpr) => {
-                        let expr = self.sqlexpr_to_expr(context, sqlexpr, scan.schema())?;
+                        let expr = self.sqlexpr_to_expr(ctx, sqlexpr, scan.schema())?;
                         expr.can_cast_to(&f.datatype, scan.schema())
                     }
                 }?;
@@ -449,9 +501,9 @@ impl Planner {
         Ok(Plan::Update(Update::new(table, projection)))
     }
 
-    fn insert_to_plan(&self, context: &mut Context, insert: SQLInsert) -> Result<Plan> {
+    fn insert_to_plan(&self, ctx: &mut BindContext, insert: SQLInsert) -> Result<Plan> {
         let table = self.normalize_ident(&insert.table);
-        let table_schema: LogicalSchema = self
+        let table_schema: LogicalSchema = ctx
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
@@ -496,7 +548,7 @@ impl Planner {
         // parse the origin source plan with the input insertion schema.
         let source = match insert.source {
             InsertSource::Select(query) => {
-                let plan = self.query_to_plan(context, *query)?;
+                let plan = self.query_to_plan(ctx, *query)?;
                 if plan.schema().len() != insertion_schema.len() {
                     return Err(Error::parse(
                         "Query output columns doesn't match the insert query",
@@ -511,7 +563,7 @@ impl Planner {
                     .into_iter()
                     .map(|row| {
                         row.into_iter()
-                            .map(|it| self.sqlexpr_to_expr(context, it, &empty_schema))
+                            .map(|it| self.sqlexpr_to_expr(ctx, it, &empty_schema))
                             .collect::<Result<Vec<_>>>()
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -547,10 +599,10 @@ impl Planner {
         Ok(Plan::Insert(Insert::new(table, projection)))
     }
 
-    fn create_index_to_plan(&self, a: SQLCreateIndex) -> Result<Plan> {
+    fn create_index_to_plan(&self, ctx: &mut BindContext, a: SQLCreateIndex) -> Result<Plan> {
         let name = self.normalize_ident(&a.name);
         let table = self.normalize_ident(&a.table_name);
-        let table_schema: LogicalSchema = self
+        let table_schema: LogicalSchema = ctx
             .catalog
             .read_table(&table)?
             .ok_or(Error::parse(format!("Table {} not exists", &table)))?
@@ -571,7 +623,7 @@ impl Planner {
         Ok(Plan::CreateIndex(CreateIndex::new(name, table, columns, a.unique, a.if_not_exists)))
     }
 
-    fn create_table_to_plan(&self, context: &mut Context, a: SQLCreateTable) -> Result<Plan> {
+    fn create_table_to_plan(&self, ctx: &mut BindContext, a: SQLCreateTable) -> Result<Plan> {
         let relation = self.normalize_ident(&a.name);
         let fields: Fields = a
             .columns
@@ -580,7 +632,7 @@ impl Planner {
                 let empty_schema = Arc::new(LogicalSchema::empty());
                 let default = it
                     .default
-                    .map(|sqlexpr| self.sqlexpr_to_expr(context, sqlexpr, &empty_schema))
+                    .map(|sqlexpr| self.sqlexpr_to_expr(ctx, sqlexpr, &empty_schema))
                     .transpose()?;
                 let datatype = self.sql_convert_data_type(&it.datatype)?;
                 let field = FieldBuilder::new(self.normalize_ident(&it.name), datatype)
@@ -600,7 +652,7 @@ impl Planner {
     /// Generate a relational/logical expression from a SQL expression.
     fn sqlexpr_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         sqlexpr: SQLExpr,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
@@ -642,7 +694,7 @@ impl Planner {
                         stack.push(StackEntry::SQLExpr(right));
                         stack.push(StackEntry::SQLExpr(left));
                     }
-                    _ => eval_stack.push(self.sqlexpr_to_expr_internal(context, *sqlexpr, schema)?),
+                    _ => eval_stack.push(self.sqlexpr_to_expr_internal(ctx, *sqlexpr, schema)?),
                 },
                 StackEntry::BinaryOperator(op) => {
                     let right = eval_stack.pop().unwrap();
@@ -673,56 +725,56 @@ impl Planner {
 
     fn sqlexpr_to_expr_internal(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         sqlexpr: SQLExpr,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
         match sqlexpr {
             SQLExpr::Value(value) => Ok(Expr::Value(self.parse_value(value)?)),
-            SQLExpr::Identifier(ident) => self.parse_identifier_to_expr(context, ident, schema),
+            SQLExpr::Identifier(ident) => self.parse_identifier_to_expr(ctx, ident, schema),
             SQLExpr::CompoundIdentifier(idents) => {
-                self.parse_compound_ident_to_expr(context, idents, schema)
+                self.parse_compound_ident_to_expr(ctx, idents, schema)
             }
-            SQLExpr::UnaryOp { op, expr } => self.parse_unaryop_to_expr(context, op, *expr, schema),
-            SQLExpr::Nested(expr) => self.sqlexpr_to_expr(context, *expr, schema),
+            SQLExpr::UnaryOp { op, expr } => self.parse_unaryop_to_expr(ctx, op, *expr, schema),
+            SQLExpr::Nested(expr) => self.sqlexpr_to_expr(ctx, *expr, schema),
             SQLExpr::IsNull(expr) => {
-                Ok(Expr::IsNull(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsNull(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::IsNotNull(expr) => {
-                Ok(Expr::IsNotNull(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsNotNull(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::IsTrue(expr) => {
-                Ok(Expr::IsTrue(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsTrue(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::IsNotTrue(expr) => {
-                Ok(Expr::IsNotTrue(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsNotTrue(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::IsFalse(expr) => {
-                Ok(Expr::IsFalse(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsFalse(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::IsNotFalse(expr) => {
-                Ok(Expr::IsNotFalse(Box::new(self.sqlexpr_to_expr(context, *expr, schema)?)))
+                Ok(Expr::IsNotFalse(Box::new(self.sqlexpr_to_expr(ctx, *expr, schema)?)))
             }
             SQLExpr::Like { negated, expr, pattern } => {
-                self.parse_like_to_expr(context, *expr, *pattern, negated, schema, false)
+                self.parse_like_to_expr(ctx, *expr, *pattern, negated, schema, false)
             }
             SQLExpr::ILike { negated, expr, pattern } => {
-                self.parse_like_to_expr(context, *expr, *pattern, negated, schema, true)
+                self.parse_like_to_expr(ctx, *expr, *pattern, negated, schema, true)
             }
             SQLExpr::InList { expr, list, negated } => {
-                self.parse_inlist_to_expr(context, *expr, list, negated, schema)
+                self.parse_inlist_to_expr(ctx, *expr, list, negated, schema)
             }
             SQLExpr::Tuple(_) => self.unimplemented_err("Expr tuple not supported yet"),
             SQLExpr::Exists { subquery, negated } => {
-                self.parse_exists_subquery_to_expr(context, *subquery, negated, schema)
+                self.parse_exists_subquery_to_expr(ctx, *subquery, negated, schema)
             }
             SQLExpr::ScalarSubquery(query) => {
-                self.parse_scalar_subquery_to_expr(context, *query, schema)
+                self.parse_scalar_subquery_to_expr(ctx, *query, schema)
             }
             SQLExpr::InSubquery { expr, subquery, negated } => {
-                self.parse_in_subquery_to_expr(context, *expr, *subquery, negated, schema)
+                self.parse_in_subquery_to_expr(ctx, *expr, *subquery, negated, schema)
             }
-            SQLExpr::Function(_) => {
+            SQLExpr::Function(f) => {
                 // There different types of functions in SQL, i.e.,
                 //  1. scalar function: operate on single input value, return single
                 //   output value, e.g., UPPER(str), ABS(x), etc.
@@ -731,25 +783,66 @@ impl Planner {
                 //  3. window function: like aggregate function, but use `over` clause
                 //   to define a window frame, and return one value per row, e.g.,
                 //   ROW_NUMBER(), RANK(), SUM() OVER(...), COUNT() OVER(...)
-                //  4. UDFs(User Defined Functions)...
-                // TODO: Support scalar function and aggregation function.
-                self.unimplemented_err("Function not supported yet")
+                // TODO: Support window function
+                self.parse_function_to_expr(ctx, f, schema)
             }
             _ => self.semantic_err(format!("Unknown sqlexpr {}", sqlexpr)),
         }
     }
 
+    fn parse_function_to_expr(
+        &self,
+        ctx: &mut BindContext,
+        func: Function,
+        schema: &LogicalSchema,
+    ) -> Result<Expr> {
+        let func_name = self.normalize_ident(&func.name);
+        // Check scalar function first
+        if let Some(udf) = self.func_registry.udf(&func_name) {
+            let args = func
+                .args
+                .into_iter()
+                .map(|it| match it {
+                    FunctionArg::Expr(expr) => self.sqlexpr_to_expr(ctx, expr, schema),
+                    FunctionArg::Asterisk => self.semantic_err(format!(
+                        "scalar function {} does not support * as arg",
+                        func_name
+                    )),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(Expr::ScalarFunction(ScalarFunction::new(udf, args)));
+        }
+
+        // Then the aggregate function
+        if let Some(udaf) = self.func_registry.udaf(&func_name) {
+            let args = func
+                .args
+                .into_iter()
+                .map(|it| match it {
+                    FunctionArg::Expr(expr) => Ok(vec![self.sqlexpr_to_expr(ctx, expr, schema)?]),
+                    FunctionArg::Asterisk => Ok(udaf.expand_asterisk(schema)?),
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            return Ok(Expr::AggregateFunction(AggregateFunction::new(udaf, args)));
+        }
+
+        self.semantic_err(format!("Unknown func {}", func_name))
+    }
+
     fn parse_in_subquery_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         sqlexpr: SQLExpr,
         subquery: Query,
         negated: bool,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
-        let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(prev_outer_query_schema);
+        let prev_outer_query_schema = ctx.set_outer_query_schema(Some(schema.clone().into()));
+        let subplan = self.query_to_plan(ctx, subquery)?;
+        ctx.set_outer_query_schema(prev_outer_query_schema);
 
         // validate the subplan produce a single column.
         let fields = subplan.schema().fields();
@@ -760,19 +853,19 @@ impl Planner {
             ));
         }
 
-        let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
+        let expr = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
         Ok(Expr::InSubquery(InSubquery::try_new(subplan, expr, negated)?))
     }
 
     fn parse_scalar_subquery_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         subquery: Query,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
-        let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(prev_outer_query_schema);
+        let prev_outer_query_schema = ctx.set_outer_query_schema(Some(schema.clone().into()));
+        let subplan = self.query_to_plan(ctx, subquery)?;
+        ctx.set_outer_query_schema(prev_outer_query_schema);
 
         // validate the subplan produce a single column.
         let fields = subplan.schema().fields();
@@ -787,58 +880,58 @@ impl Planner {
 
     fn parse_exists_subquery_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         subquery: Query,
         negated: bool,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let prev_outer_query_schema = context.set_outer_query_schema(Some(schema.clone().into()));
-        let subplan = self.query_to_plan(context, subquery)?;
-        context.set_outer_query_schema(prev_outer_query_schema);
+        let prev_outer_query_schema = ctx.set_outer_query_schema(Some(schema.clone().into()));
+        let subplan = self.query_to_plan(ctx, subquery)?;
+        ctx.set_outer_query_schema(prev_outer_query_schema);
 
         Ok(Expr::Exists(Exists::try_new(subplan, negated)?))
     }
 
     fn parse_inlist_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         sqlexpr: SQLExpr,
         list: Vec<SQLExpr>,
         negated: bool,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
-        let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
+        let expr = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
         let list_exprs = list
             .into_iter()
-            .map(|it| self.sqlexpr_to_expr(context, it, schema))
+            .map(|it| self.sqlexpr_to_expr(ctx, it, schema))
             .collect::<Result<Vec<_>>>()?;
         Ok(Expr::InList(InList::new(expr, list_exprs, negated)))
     }
 
     fn parse_like_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         sqlexpr: SQLExpr,
         pattern: SQLExpr,
         negated: bool,
         schema: &LogicalSchema,
         case_insensitive: bool,
     ) -> Result<Expr> {
-        let pattern = self.sqlexpr_to_expr(context, pattern, schema)?;
-        let expr = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
+        let pattern = self.sqlexpr_to_expr(ctx, pattern, schema)?;
+        let expr = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
         Ok(Expr::Like(Like::new(expr, pattern, negated, case_insensitive)))
     }
 
     fn parse_unaryop_to_expr(
         &self,
-        context: &mut Context,
+        ctx: &mut BindContext,
         op: UnaryOperator,
         sqlexpr: SQLExpr,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
         match op {
             UnaryOperator::Plus => {
-                let operand = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
+                let operand = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
                 let (datatype, _) = operand.datatype_and_nullable(schema)?;
                 match datatype {
                     DataType::Integer | DataType::Float => Ok(operand),
@@ -852,7 +945,7 @@ impl Planner {
                 }
                 _ => {
                     // otherwise wrap it with negative operator
-                    let operand = self.sqlexpr_to_expr(context, sqlexpr, schema)?;
+                    let operand = self.sqlexpr_to_expr(ctx, sqlexpr, schema)?;
                     let (datatype, _) = operand.datatype_and_nullable(schema)?;
                     if !datatype.is_numeric() {
                         return self.semantic_err(format!("- cannot be used with {datatype}"));
@@ -861,14 +954,14 @@ impl Planner {
                 }
             },
             UnaryOperator::Not => {
-                Ok(Expr::Not(Box::new(self.sqlexpr_to_expr(context, sqlexpr, schema)?)))
+                Ok(Expr::Not(Box::new(self.sqlexpr_to_expr(ctx, sqlexpr, schema)?)))
             }
         }
     }
 
     fn parse_compound_ident_to_expr(
         &self,
-        context: &Context,
+        ctx: &BindContext,
         mut idents: Vec<Ident>,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
@@ -890,7 +983,7 @@ impl Planner {
         }
 
         // check the outer query schema
-        if let Some(outer) = &context.outer_query_schema {
+        if let Some(outer) = &ctx.outer_query_schema {
             if let Some((field, Some(f))) =
                 outer.field_reference_by_qname(&Some(TableReference::new(&table)), &ident)
             {
@@ -903,7 +996,7 @@ impl Planner {
 
     fn parse_identifier_to_expr(
         &self,
-        context: &Context,
+        ctx: &BindContext,
         ident: Ident,
         schema: &LogicalSchema,
     ) -> Result<Expr> {
@@ -912,7 +1005,7 @@ impl Planner {
             return Ok(Expr::FieldReference(field));
         }
         // check the outer query schema
-        if let Some(outer) = &context.outer_query_schema {
+        if let Some(outer) = &ctx.outer_query_schema {
             if let Some((field, Some(col))) = outer.field_reference_by_name(&ident) {
                 return Ok(Expr::OuterFieldReference(col.datatype.clone(), field));
             }
@@ -1011,9 +1104,10 @@ pub mod tests {
                     let mut parser = Parser::new($stmt)?;
                     let stmt = parser.parse_statement()?;
 
+                    let planner = Planner::new();
                     let catalog: Arc<dyn Catalog> = Arc::new(TestCatalog {});
-                    let planner = Planner::new(catalog);
-                    let plan = planner.sql_statement_to_plan(stmt)?;
+                    let mut ctx = BindContext::new(catalog);
+                    let plan = planner.sql_statement_to_plan(&mut ctx, stmt)?;
 
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
@@ -1057,6 +1151,15 @@ pub mod tests {
                 JOIN products ON orders.product_id = products.id
             WHERE
                a.name IN (SELECT name from users WHERE email = 'admin@example.com');        
+        "#,
+        query_with_agg: r#"
+            SELECT
+                UPPER(name),
+                COUNT(*)
+            FROM
+                users
+            WHERE name = 'a'
+            GROUP by name;
         "#,
         query_with_groupby_limit_offset: "SELECT name FROM users GROUP BY name ORDER BY name DESC limit 1 offset 1;",
         insert_with_select: r#"

@@ -5,14 +5,16 @@ use std::fmt::Formatter;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::access::value::Values;
+use crate::access::value::Tuple;
 use crate::catalog::column::Columns;
 use crate::catalog::r#type::Value;
 use crate::catalog::schema::Schema;
 use crate::error::Error;
 use crate::error::Result;
+use crate::sql::execution::aggregate::AggregateExec;
+use crate::sql::execution::aggregate::AggregateFuncExpr;
+use crate::sql::execution::context::ConstEvalCtx;
 use crate::sql::execution::context::Context;
-use crate::sql::execution::context::PlanContext;
 use crate::sql::execution::ddl::CreateIndexExec;
 use crate::sql::execution::ddl::CreateTableExec;
 use crate::sql::execution::ddl::DropIndexExec;
@@ -31,6 +33,7 @@ use crate::sql::execution::expr::LikeExec;
 use crate::sql::execution::expr::NegativeExec;
 use crate::sql::execution::expr::OuterFieldReferenceExec;
 use crate::sql::execution::expr::PhysicalExpr;
+use crate::sql::execution::expr::ScalarFunctionExec;
 use crate::sql::execution::expr::ScalarSubqueryExec;
 use crate::sql::execution::expr::ValueExec;
 use crate::sql::execution::query::ExplainExec;
@@ -52,7 +55,9 @@ use crate::sql::plan::expr::InList;
 use crate::sql::plan::expr::InSubquery;
 use crate::sql::plan::expr::Like;
 use crate::sql::plan::expr::Operator;
+use crate::sql::plan::expr::ScalarFunction;
 use crate::sql::plan::expr::Subquery;
+use crate::sql::plan::plan::Aggregate;
 use crate::sql::plan::plan::CreateTable;
 use crate::sql::plan::plan::Delete;
 use crate::sql::plan::plan::Explain;
@@ -73,8 +78,8 @@ use crate::sql::plan::visitor::DynTreeNode;
 
 /// A physical executable node in the query plan.
 ///
-/// Unlike the Volcano model, which uses a tuple-at-a-time iterator (`next()`),
-/// this follows a **vectorized iterator model**, yielding a batch of tuples
+/// Unlike the Volcano model, which uses a row-at-a-time iterator (`next()`),
+/// this follows a **vectorized iterator model**, yielding a batch of rows
 /// (e.g., a `RecordBatch`) at a time.
 pub trait ExecutionPlan: Debug + Display {
     /// Returns the physical expression as [`Any`] so that it can be
@@ -86,7 +91,7 @@ pub trait ExecutionPlan: Debug + Display {
     /// Initialize the executor.
     fn init(&self, ctx: &mut dyn Context) -> Result<()>;
 
-    /// Yields the next batch of tuples from this executor.
+    /// Yields the next batch of rows from this executor.
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>>;
 
     /// Get a list of children `ExecutionPlan`s that act as inputs to this plan.
@@ -196,7 +201,30 @@ impl Compiler {
                 let input = self.build_execution_plan(*input)?;
                 Ok(Arc::new(FilterExec::new(input, pred)))
             }
-            Plan::Aggregate(_) => todo!(),
+            Plan::Aggregate(Aggregate { input, group_exprs, aggr_exprs, output_schema }) => {
+                let mut aggr_funcs = vec![];
+                for expr in aggr_exprs.into_iter() {
+                    let aggr_func = match expr {
+                        Expr::AggregateFunction(a) => {
+                            let display = a.to_string();
+                            let args_expr = a
+                                .args
+                                .into_iter()
+                                .map(|it| self.build_physical_expr(it, input.schema()))
+                                .collect::<Result<Vec<_>>>()?;
+                            Ok(AggregateFuncExpr::new(a.func, args_expr, display))
+                        }
+                        _ => Err(Error::internal("Expect only AggregateFunction as aggr exprs")),
+                    }?;
+                    aggr_funcs.push(aggr_func);
+                }
+                let group_exprs = group_exprs
+                    .into_iter()
+                    .map(|it| self.build_physical_expr(it, input.schema()))
+                    .collect::<Result<Vec<_>>>()?;
+                let input = self.build_execution_plan(*input)?;
+                Ok(Arc::new(AggregateExec::try_new(input, group_exprs, aggr_funcs, output_schema)?))
+            }
             Plan::Sort(Sort { input, expr }) => {
                 let order = expr
                     .into_iter()
@@ -319,11 +347,21 @@ impl Compiler {
                 let right = self.build_physical_expr(*right, input_schema)?;
                 Ok(Arc::new(BinaryExprExec::new(left, op, right)))
             }
+            Expr::ScalarFunction(ScalarFunction { func, args }) => {
+                let args = args
+                    .into_iter()
+                    .map(|expr| self.build_physical_expr(expr, input_schema))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Arc::new(ScalarFunctionExec::try_new(func, args, input_schema)?))
+            }
+            Expr::AggregateFunction(_) => {
+                unreachable!("AggregateFunction expr should be rewrite into the Aggregate node")
+            }
         }
     }
 
     fn columns_from_fields(&self, fields: &Fields) -> Result<Columns> {
-        let ctx = &mut PlanContext {};
+        let ctx = &mut ConstEvalCtx::new();
         fields.to_columns(|col_name, default| {
             default
                 .map(|expr| {
@@ -341,7 +379,7 @@ impl Compiler {
 #[derive(Clone)]
 pub struct RecordBatchInner {
     pub schema: LogicalSchema,
-    pub tuples: Vec<Values>,
+    pub rows: Vec<Tuple>,
     // If we know there is no more batch in the pipe,
     // set it explicitly to allow the scheduler do
     // short-circuit.
@@ -353,8 +391,8 @@ pub struct RecordBatchInner {
 pub struct RecordBatch(Arc<RecordBatchInner>);
 
 impl RecordBatch {
-    pub fn new(schema: &LogicalSchema, tuples: Vec<Values>) -> Self {
-        Self(Arc::new(RecordBatchInner { schema: schema.clone(), tuples, has_next: true }))
+    pub fn new(schema: &LogicalSchema, rows: Vec<Tuple>) -> Self {
+        Self(Arc::new(RecordBatchInner { schema: schema.clone(), rows, has_next: true }))
     }
 
     pub fn into_inner(self) -> Result<RecordBatchInner> {
@@ -362,8 +400,8 @@ impl RecordBatch {
             .ok_or(Error::internal("Cannot convert RecordBatchRef into RecordBatch"))
     }
 
-    pub fn num_tuples(&self) -> usize {
-        self.tuples.len()
+    pub fn num_rows(&self) -> usize {
+        self.rows.len()
     }
 }
 
@@ -377,27 +415,27 @@ impl Deref for RecordBatch {
 
 impl Display for RecordBatch {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        TabularDisplay::new(&self.schema, &self.tuples).fmt(f)
+        TabularDisplay::new(&self.schema, &self.rows).fmt(f)
     }
 }
 
 pub struct RecordBatchBuilder {
     schema: LogicalSchema,
-    tuples: Vec<Values>,
+    rows: Vec<Tuple>,
     has_next: bool,
 }
 
 impl RecordBatchBuilder {
     pub fn new(schema: &LogicalSchema) -> Self {
-        Self { schema: schema.clone(), tuples: Vec::new(), has_next: true }
+        Self { schema: schema.clone(), rows: Vec::new(), has_next: true }
     }
 
     pub fn empty_schema() -> Self {
-        Self { schema: EMPTY_SCHEMA.clone(), tuples: Vec::new(), has_next: true }
+        Self { schema: EMPTY_SCHEMA.clone(), rows: Vec::new(), has_next: true }
     }
 
-    pub fn extend(mut self, tuples: Vec<Values>) -> Self {
-        self.tuples.extend(tuples);
+    pub fn extend(mut self, rows: Vec<Tuple>) -> Self {
+        self.rows.extend(rows);
         self
     }
 
@@ -406,30 +444,29 @@ impl RecordBatchBuilder {
         self
     }
 
-    pub fn tuples_ref(self, tuples: Vec<&Values>) -> Self {
-        // TODO: tuples' clone is expensive here!!!
-        let tuples =
-            tuples.into_iter().map(|row| Values::from(row.to_vec())).collect::<Vec<Values>>();
-        self.extend(tuples)
+    pub fn rows_ref(self, rows: Vec<&Tuple>) -> Self {
+        // TODO: rows' clone is expensive here!!!
+        let rows = rows.into_iter().map(|row| Tuple::from(row.to_vec())).collect::<Vec<Tuple>>();
+        self.extend(rows)
     }
 
     pub fn build(self) -> RecordBatch {
         let inner =
-            RecordBatchInner { schema: self.schema, tuples: self.tuples, has_next: self.has_next };
+            RecordBatchInner { schema: self.schema, rows: self.rows, has_next: self.has_next };
         RecordBatch(Arc::new(inner))
     }
 }
 
-/// Record batches provide a unified view by virtually merge the tuples
-/// index-wise without clone the tuple values and merge them physically.
+/// Record batches provide a unified view by virtually merge the rows
+/// index-wise without clone the row values and merge them physically.
 ///
 /// The virtual view layout is a combined table like the following:
 ///
 /// Batch1.schema[0],    Batch1.schema[1],    Batch2.schema[0], ...
-/// Batch1.tuples[0][0], Batch1.tuples[0][1], Batch2.tuples[0][0], ...
-///                      Batch1.tuples[1][1], Batch2.tuples[1][0], ...
+/// Batch1.rows[0][0],   Batch1.rows[0][1],   Batch2.rows[0][0], ...
+///                      Batch1.rows[1][1],   Batch2.rows[1][0], ...
 ///
-/// Different batches can have different num of tuples.
+/// Different batches can have different num of rows.
 #[derive(Clone)]
 pub struct RecordBatchesRef(Vec<RecordBatch>);
 
@@ -446,7 +483,7 @@ impl RecordBatchesRef {
         Ok(())
     }
 
-    pub fn columnar_values_at(&self, f: &FieldReference) -> Result<Values> {
+    pub fn columnar_values_at(&self, f: &FieldReference) -> Result<Tuple> {
         for rb in self.iter() {
             let idx = rb.schema.field_index_by_name(&f.relation, &f.name);
             if idx.is_none() {
@@ -454,7 +491,7 @@ impl RecordBatchesRef {
             }
             let idx = idx.unwrap();
             let values = rb
-                .tuples
+                .rows
                 .iter()
                 .map(|row| {
                     row.get(idx)
@@ -462,7 +499,7 @@ impl RecordBatchesRef {
                         .ok_or(Error::internal(format!("value at column {} is out of bound", idx)))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            return Ok(Values::from(values));
+            return Ok(Tuple::from(values));
         }
         Err(Error::internal(format!("No reference value found for field {}", f)))
     }

@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::sql::plan::expr::Expr;
 
 /// A logical named reference to a qualified field in a schema.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct FieldReference {
     /// field/column name.
     pub name: String,
@@ -33,6 +33,10 @@ pub struct FieldReference {
 impl FieldReference {
     pub fn new(name: impl Into<String>, relation: Option<TableReference>) -> Self {
         Self { name: name.into(), relation }
+    }
+
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into(), relation: None }
     }
 }
 
@@ -47,11 +51,11 @@ impl std::fmt::Display for FieldReference {
 
 /// A name or alias used as a reference to a table.
 #[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
-pub struct TableReference(Arc<str>);
+pub struct TableReference(Arc<String>);
 
 impl TableReference {
     pub fn new(table: &str) -> TableReference {
-        TableReference(Arc::from(table))
+        TableReference(Arc::from(table.to_string()))
     }
 }
 
@@ -77,11 +81,11 @@ impl Deref for TableReference {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_str()
+        &self.0
     }
 }
 
-impl std::fmt::Display for TableReference {
+impl Display for TableReference {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0.as_str())
     }
@@ -178,7 +182,7 @@ impl From<&ColumnRef> for Field {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Fields(Arc<[FieldRef]>);
 
 impl Fields {
@@ -350,7 +354,7 @@ impl FieldBuilder {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 struct LogicalSchemaInner {
     /// A sequence of fields that describe the schema.
     fields: Fields,
@@ -367,7 +371,7 @@ pub static EMPTY_SCHEMA: LazyLock<LogicalSchema> = LazyLock::new(|| LogicalSchem
 /// aggregated/unified single qualifier, typically the table name, for all the columns.
 ///
 /// It is designed to be cheap to clone
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct LogicalSchema {
     inner: Arc<LogicalSchemaInner>,
 }
@@ -448,7 +452,8 @@ impl LogicalSchema {
         if let Some(idx) = self.field_index_by_name(relation, &field.name) {
             return Ok(self.inner.fields[idx].clone());
         }
-        Err(Error::parse(format!("Column {} not found", field.name)))
+        let relname = if let Some(name) = relation { format!("{}.", name) } else { "".to_string() };
+        Err(Error::parse(format!("Column {}{} not found, schema: {}", relname, field.name, self)))
     }
 
     pub fn field_reference(&self, index: usize) -> FieldReference {

@@ -5,22 +5,26 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-use crate::access::value::Values;
+use crate::access::value::Tuple;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
-use crate::sql::execution::context::PlanContext;
+use crate::sql::execution::context::ConstEvalCtx;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionPlan;
 use crate::sql::execution::Scheduler;
 use crate::sql::plan::expr::BinaryTypeCoercer;
 use crate::sql::plan::expr::Operator;
+use crate::sql::plan::schema::FieldBuilder;
+use crate::sql::plan::schema::FieldRef;
 use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::visitor::DynTreeNode;
+use crate::sql::udf::scalar::ScalarUDF;
+use crate::sql::udf::signature::ScalarFunctionArgs;
 
 /// Physical expr executor
 pub trait PhysicalExpr: Debug + Display {
@@ -31,8 +35,8 @@ pub trait PhysicalExpr: Debug + Display {
     /// Get the data type of the expr, given the schema of the input.
     fn data_type(&self, schema: &LogicalSchema) -> Result<DataType>;
     /// Evaluate an expression against a RecordBatch, returns
-    /// paired values with the input records.
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values>;
+    /// paired columnar-values with the input records.
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple>;
 
     /// Get a list of child PhysicalExpr that provide the input for this expr.
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -71,8 +75,8 @@ impl PhysicalExpr for ValueExec {
         Ok(self.value.datatype())
     }
 
-    fn evaluate(&self, _ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
-        let n = batch.num_tuples();
+    fn evaluate(&self, _ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        let n = batch.num_rows();
         if n == 0 {
             // In case of it is a dumpy RecordBatch, we need to
             // return a single scalar value.
@@ -122,8 +126,8 @@ impl PhysicalExpr for FieldReferenceExec {
         Ok(schema.field(self.index).datatype.clone())
     }
 
-    fn evaluate(&self, _ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
-        Ok(batch.tuples.iter().map(|tuple| tuple[self.index].clone()).collect::<Vec<_>>().into())
+    fn evaluate(&self, _ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        Ok(batch.rows.iter().map(|row| row[self.index].clone()).collect::<Vec<_>>().into())
     }
 }
 
@@ -154,10 +158,10 @@ impl PhysicalExpr for OuterFieldReferenceExec {
         Ok(self.datatype.clone())
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, _batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, _batch: &RecordBatch) -> Result<Tuple> {
         let outer_query_batches = ctx.outer_query_batches();
         match outer_query_batches {
-            None => Ok(Values::from(vec![])),
+            None => Ok(Tuple::from(vec![])),
             Some(it) => it.columnar_values_at(&self.fr),
         }
     }
@@ -231,7 +235,7 @@ impl PhysicalExpr for BinaryExprExec {
         type_coercer.get_result_type()
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         // Evaluate left-hand side expression.
         let lhs = self.left.evaluate(ctx, batch)?;
         // Evaluate right-hand side expression.
@@ -279,7 +283,7 @@ impl PhysicalExpr for BinaryExprExec {
                 })
                 .collect(),
         };
-        values.map(Values::from)
+        values.map(Tuple::from)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -333,13 +337,13 @@ impl PhysicalExpr for CastExec {
         Ok(self.datatype.clone())
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
-        let values = self.expr.evaluate(ctx, batch)?;
-        values
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        let tuple = self.expr.evaluate(ctx, batch)?;
+        tuple
             .into_iter()
             .map(|it| it.cast_to(&self.datatype))
             .collect::<Result<Vec<_>>>()
-            .and_then(|it| Ok(Values::from(it)))
+            .and_then(|it| Ok(Tuple::from(it)))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -377,9 +381,9 @@ impl PhysicalExpr for NegativeExec {
         self.expr.data_type(schema)
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
-        let values = self.expr.evaluate(ctx, batch)?;
-        let values = values
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        let tuple = self.expr.evaluate(ctx, batch)?;
+        let values = tuple
             .into_iter()
             .map(|it| match it {
                 Value::Null => Value::Null,
@@ -388,7 +392,7 @@ impl PhysicalExpr for NegativeExec {
                 _ => unreachable!(),
             })
             .collect::<Vec<_>>();
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -470,7 +474,7 @@ impl PhysicalExpr for LikeExec {
         Ok(DataType::Boolean)
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let lhs = self.expr.evaluate(ctx, batch)?;
         let rhs = self.pattern.evaluate(ctx, batch)?;
         if lhs.len() != rhs.len() {
@@ -493,7 +497,7 @@ impl PhysicalExpr for LikeExec {
                 }
             })
             .collect::<Result<Vec<Value>>>()?;
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -540,16 +544,16 @@ impl InListExec {
                 )));
             }
 
-            // we support only static list expr for now.
-            let ctx = &mut PlanContext {};
+            // we support only const list expr for now.
+            let ctx = &mut ConstEvalCtx::new();
             match it.evaluate(ctx, &batch) {
-                Ok(values) if values.len() == 1 => {
-                    static_list.insert(values.into_iter().next().unwrap());
+                Ok(tuple) if tuple.len() == 1 => {
+                    static_list.insert(tuple.into_iter().next().unwrap());
                 }
-                Ok(values) => {
+                Ok(tuple) => {
                     return Err(Error::unimplemented(format!(
                         "Support only single static value as element of list expr, got {} values",
-                        values.len()
+                        tuple.len()
                     )))
                 }
                 Err(err) => {
@@ -572,9 +576,9 @@ impl PhysicalExpr for InListExec {
         Ok(DataType::Boolean)
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
-        let values = self.expr.evaluate(ctx, batch)?;
-        let values = values
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        let tuple = self.expr.evaluate(ctx, batch)?;
+        let values = tuple
             .into_iter()
             .map(|value| {
                 let contained = self.static_list.contains(&value);
@@ -585,7 +589,7 @@ impl PhysicalExpr for InListExec {
                 }
             })
             .collect::<Vec<Value>>();
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -621,25 +625,21 @@ impl ExistsExec {
 
 impl ExistsExec {
     /// evaluate non-correlated subquery once and broadcast to all.
-    fn evaluate_non_correlated(
-        &self,
-        ctx: &mut dyn Context,
-        batch: &RecordBatch,
-    ) -> Result<Values> {
+    fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         let exists = !rs.is_empty();
         let value = if !self.negated { Value::Boolean(exists) } else { Value::Boolean(!exists) };
-        let values = vec![value; batch.num_tuples()];
-        Ok(Values::from(values))
+        let values = vec![value; batch.num_rows()];
+        Ok(Tuple::from(values))
     }
 
-    fn evaluate_one_tuple(
+    fn evaluate_one_row(
         &self,
         ctx: &mut dyn Context,
         schema: &LogicalSchema,
-        tuple: &Values,
+        row: &Tuple,
     ) -> Result<bool> {
-        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
+        let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
@@ -658,18 +658,18 @@ impl PhysicalExpr for ExistsExec {
         Ok(DataType::Boolean)
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         if !self.correlated {
             return self.evaluate_non_correlated(ctx, batch);
         }
-        // evaluate correlated subquery tuple by tuple.
+        // evaluate correlated subquery row by row.
         let values = batch
-            .tuples
+            .rows
             .iter()
-            .map(|tuple| self.evaluate_one_tuple(ctx, &batch.schema, tuple))
+            .map(|row| self.evaluate_one_row(ctx, &batch.schema, row))
             .map(|b| b.and_then(|b| Ok(Value::Boolean(b))))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn subqueries(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -705,36 +705,32 @@ impl ScalarSubqueryExec {
     }
 
     /// evaluate non-correlated subquery once and broadcast to all.
-    fn evaluate_non_correlated(
-        &self,
-        ctx: &mut dyn Context,
-        batch: &RecordBatch,
-    ) -> Result<Values> {
+    fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
-        if rs.tuples.len() != 1 && rs.tuples[0].len() != 1 {
+        if rs.rows.len() != 1 && rs.rows[0].len() != 1 {
             return Err(Error::internal("Expect single value from the scalar subquery"));
         }
-        let value = rs.tuples.remove(0).scalar()?;
-        Ok(Values::from(vec![value; batch.num_tuples()]))
+        let value = rs.rows.remove(0).scalar()?;
+        Ok(Tuple::from(vec![value; batch.num_rows()]))
     }
 
-    fn evaluate_one_tuple(
+    fn evaluate_one_row(
         &self,
         ctx: &mut dyn Context,
         schema: &LogicalSchema,
-        tuple: &Values,
+        row: &Tuple,
     ) -> Result<Value> {
-        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
+        let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
         let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
 
-        if rs.tuples.len() != 1 && rs.tuples[0].len() != 1 {
+        if rs.rows.len() != 1 && rs.rows[0].len() != 1 {
             return Err(Error::internal("Expect single value from the scalar subquery"));
         }
-        let value = rs.tuples.remove(0).scalar()?;
+        let value = rs.rows.remove(0).scalar()?;
         Ok(value)
     }
 }
@@ -747,17 +743,17 @@ impl PhysicalExpr for ScalarSubqueryExec {
         Ok(schema.field(0).datatype.clone())
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         if !self.correlated {
             return self.evaluate_non_correlated(ctx, batch);
         }
-        // evaluate correlated subquery tuple by tuple.
+        // evaluate correlated subquery row by row.
         let values = batch
-            .tuples
+            .rows
             .iter()
-            .map(|tuple| self.evaluate_one_tuple(ctx, &batch.schema, tuple))
+            .map(|row| self.evaluate_one_row(ctx, &batch.schema, row))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn subqueries(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -800,11 +796,7 @@ impl InSubqueryExec {
     }
 
     /// evaluate non-correlated subquery once and broadcast to all.
-    fn evaluate_non_correlated(
-        &self,
-        ctx: &mut dyn Context,
-        batch: &RecordBatch,
-    ) -> Result<Values> {
+    fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.num_cols() != 1 {
             return Err(Error::internal(format!(
@@ -825,16 +817,16 @@ impl InSubqueryExec {
                 }
             })
             .collect::<Vec<_>>();
-        Ok(Values::from(out))
+        Ok(Tuple::from(out))
     }
 
-    fn evaluate_one_tuple(
+    fn evaluate_one_row(
         &self,
         ctx: &mut dyn Context,
         schema: &LogicalSchema,
-        tuple: &Values,
+        row: &Tuple,
     ) -> Result<bool> {
-        let batch = RecordBatchBuilder::new(schema).tuples_ref(vec![tuple]).build();
+        let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch.clone())?;
         let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
@@ -864,18 +856,18 @@ impl PhysicalExpr for InSubqueryExec {
         Ok(DataType::Boolean)
     }
 
-    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Values> {
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         if !self.correlated {
             return self.evaluate_non_correlated(ctx, batch);
         }
-        // evaluate correlated subquery tuple by tuple.
+        // evaluate correlated subquery row by row.
         let values = batch
-            .tuples
+            .rows
             .iter()
-            .map(|tuple| self.evaluate_one_tuple(ctx, &batch.schema, tuple))
+            .map(|row| self.evaluate_one_row(ctx, &batch.schema, row))
             .map(|b| b.and_then(|b| Ok(Value::Boolean(b))))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Values::from(values))
+        Ok(Tuple::from(values))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -896,5 +888,69 @@ impl Display for InSubqueryExec {
             format!("{:#?}", self.executor)
         };
         write!(f, "{} ({})", op, sub)
+    }
+}
+
+/// Scalar function physical expr
+#[derive(Debug)]
+pub struct ScalarFunctionExec {
+    func: Arc<dyn ScalarUDF>,
+    args: Vec<Arc<dyn PhysicalExpr>>,
+
+    arg_fields: Vec<FieldRef>,
+}
+
+impl ScalarFunctionExec {
+    pub fn try_new(
+        func: Arc<dyn ScalarUDF>,
+        args: Vec<Arc<dyn PhysicalExpr>>,
+        schema: &LogicalSchema,
+    ) -> Result<Self> {
+        let arg_fields = args
+            .iter()
+            .map(|expr| {
+                // TODO: field nullability
+                let field = FieldBuilder::new(format!("{}", expr), expr.data_type(schema)?).build();
+                Ok(FieldRef::new(field))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { func, args, arg_fields })
+    }
+}
+
+impl PhysicalExpr for ScalarFunctionExec {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn data_type(&self, _schema: &LogicalSchema) -> Result<DataType> {
+        let f = self.func.return_field(&self.arg_fields)?;
+        Ok(f.datatype.clone())
+    }
+
+    fn evaluate(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
+        let mut columnar_arg_values = vec![];
+        for arg_expr in self.args.iter() {
+            let tuple = arg_expr.evaluate(ctx, batch)?;
+            columnar_arg_values.push(tuple.into_vec());
+        }
+        let num_rows = batch.num_rows();
+        let mut rows = Vec::with_capacity(num_rows);
+        for i in 0..num_rows {
+            let mut args = Vec::with_capacity(columnar_arg_values.len());
+            for arg_values in &mut columnar_arg_values {
+                args.push(std::mem::take(&mut arg_values[i]));
+            }
+            rows.push(Tuple::from(args))
+        }
+        let args = ScalarFunctionArgs::new(rows, num_rows);
+        self.func.invoke_with_args(args)
+    }
+}
+
+impl Display for ScalarFunctionExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let args = self.args.iter().map(|it| format!("{}", it)).collect::<Vec<_>>();
+        write!(f, "{}({})", self.func.name(), args.join(","))
     }
 }

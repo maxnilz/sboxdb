@@ -1,0 +1,32 @@
+Stmt: 
+-----
+SELECT id, count(*) AS a, count(*) AS b FROM users GROUP BY id ORDER BY id
+
+Logical Plan:
+--------------
+
+Sort: users.id ASC
+  Projection: users.id, count(*) AS a, count(*) AS b
+    Aggregate: groupBy=[users.id], aggr=[count()]
+      TableScan: users
+
+Physical Plan:
+---------------
+
+SortExec: id@0 ASC
+  ProjectionExec: id@0, count(*)@1, count(*)@1
+    AggregateExec: groupBy[id@0], aggr=[count()]
+      SeqScanExec: users
+
+Result:
+-------
+
++----+---+---+
+| id | a | b |
++----+---+---+
+| 1  | 1 | 1 |
+| 2  | 1 | 1 |
+| 3  | 1 | 1 |
++----+---+---+
+
+

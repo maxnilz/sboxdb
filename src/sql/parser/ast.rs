@@ -112,7 +112,7 @@ impl std::fmt::Display for Statement {
                 Indent(display_comma_separated(operations)).fmt(f)?;
                 Ok(())
             }
-            Statement::Select { query } => query.fmt(f),
+            Statement::Select { query } => std::fmt::Display::fmt(query, f),
             Statement::Insert(insert) => insert.fmt(f),
             Statement::Update(update) => update.fmt(f),
             Statement::Delete { table, selection } => {
@@ -122,7 +122,7 @@ impl std::fmt::Display for Statement {
                     write!(f, "WHERE")?;
 
                     SpaceOrNewline.fmt(f)?;
-                    expr.fmt(f)?;
+                    std::fmt::Display::fmt(expr, f)?;
                 };
                 Ok(())
             }
@@ -198,7 +198,7 @@ impl std::fmt::Display for Update {
             write!(f, "WHERE")?;
 
             SpaceOrNewline.fmt(f)?;
-            expr.fmt(f)?;
+            std::fmt::Display::fmt(expr, f)?;
         };
 
         Ok(())
@@ -249,7 +249,7 @@ pub enum InsertSource {
 impl std::fmt::Display for InsertSource {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            InsertSource::Select(q) => q.fmt(f)?,
+            InsertSource::Select(q) => std::fmt::Display::fmt(q, f)?,
             InsertSource::Values(values) => {
                 f.write_str("VALUES")?;
                 values.fmt(f)?;
@@ -277,6 +277,7 @@ impl std::fmt::Display for Values {
 }
 
 /// The `SELECT` query expression.
+#[derive(Debug)]
 pub struct Query {
     /// projection expressions
     pub projection: Vec<SelectItem>,
@@ -331,7 +332,7 @@ impl std::fmt::Display for Query {
 
         if let Some(c) = &self.limit_clause {
             SpaceOrNewline.fmt(f)?;
-            c.fmt(f)?;
+            std::fmt::Display::fmt(c, f)?;
         }
 
         Ok(())
@@ -339,6 +340,7 @@ impl std::fmt::Display for Query {
 }
 
 /// An `ORDER BY` expression
+#[derive(Debug)]
 pub struct OrderByExpr {
     pub expr: Expr,
     /// Optional `ASC` or `DESC`
@@ -347,7 +349,7 @@ pub struct OrderByExpr {
 
 impl std::fmt::Display for OrderByExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.expr.fmt(f)?;
+        std::fmt::Display::fmt(&self.expr, f)?;
         write!(
             f,
             " {s}",
@@ -365,6 +367,7 @@ impl std::fmt::Display for OrderByExpr {
 }
 
 /// `LIMIT ... OFFSET ... | LIMIT <offset>, <limit>`
+#[derive(Debug)]
 pub struct LimitClause {
     pub limit: Option<u64>,
     pub offset: Option<u64>,
@@ -382,6 +385,7 @@ impl std::fmt::Display for LimitClause {
     }
 }
 
+#[derive(Debug)]
 pub enum WildcardExpr {
     /// An expression, followed by a wildcard expansion.
     /// e.g. `alias.*``, the idents here represent the
@@ -402,6 +406,7 @@ impl std::fmt::Display for WildcardExpr {
     }
 }
 /// One item of the comma-separated list following `SELECT`
+#[derive(Debug)]
 pub enum SelectItem {
     /// Any expression, not followed by `[ AS ] alias`
     UnnamedExpr(Expr),
@@ -418,11 +423,12 @@ impl std::fmt::Display for SelectItem {
         match self {
             SelectItem::UnnamedExpr(expr) => write!(f, "{expr}"),
             SelectItem::ExprWithAlias { expr, alias } => write!(f, "{expr} AS {alias}"),
-            SelectItem::WildcardExpr(w) => w.fmt(f),
+            SelectItem::WildcardExpr(w) => std::fmt::Display::fmt(w, f),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct TableWithJoins {
     pub relation: TableFactor,
     pub joins: Vec<Join>,
@@ -439,6 +445,7 @@ impl std::fmt::Display for TableWithJoins {
     }
 }
 
+#[derive(Debug)]
 pub struct Join {
     pub join_operator: JoinOperator,
     pub relation: TableFactor,
@@ -460,6 +467,7 @@ impl std::fmt::Display for Join {
     }
 }
 
+#[derive(Debug)]
 pub enum JoinOperator {
     Join(JoinConstraint),
     Inner(JoinConstraint),
@@ -471,6 +479,7 @@ pub enum JoinOperator {
     FullOuter(JoinConstraint),
 }
 
+#[derive(Debug)]
 pub enum JoinConstraint {
     On(Expr),
 }
@@ -483,6 +492,7 @@ impl std::fmt::Display for JoinConstraint {
     }
 }
 
+#[derive(Debug)]
 pub enum TableFactor {
     Table { name: Ident, alias: Option<String> },
     // TODO: does not support lateral derived subquery as table factor yet.
@@ -580,7 +590,7 @@ impl std::fmt::Display for Column {
         }
         if let Some(expr) = &self.default {
             write!(f, " DEFAULT ")?;
-            expr.fmt(f)?;
+            std::fmt::Display::fmt(expr, f)?;
         }
         if !self.nullable {
             write!(f, " NOT NULL")?
@@ -662,6 +672,7 @@ impl std::fmt::Display for AlterTableOperation {
 }
 
 /// An SQL expression.
+#[derive(Debug)]
 pub enum Expr {
     /// A literal value, such as string, number or NULL
     Value(Value),
@@ -728,7 +739,7 @@ pub enum Expr {
         subquery: Box<Query>,
         negated: bool,
     },
-    /// Scalar function call e.g. `LEFT(foo, 5)`
+    /// Scalar/Aggregate function.
     Function(Function),
 }
 
@@ -879,22 +890,17 @@ impl std::fmt::Display for Function {
 
 #[derive(Debug)]
 pub enum FunctionArg {
-    Value(Value),
+    /// The arg expr, Support Expr::Value and Expr::Identifier only for now.
+    Expr(Expr),
     /// An unqualified `*`
     Asterisk,
-    /// Identifier e.g. table name or column name
-    /// TODO: Support multi-part identifier, e.g. `table_alias.column` or `schema.table.col`
-    Identifier(Ident),
-    Function(Function),
 }
 
 impl std::fmt::Display for FunctionArg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            FunctionArg::Value(v) => write!(f, "{v}"),
+            FunctionArg::Expr(expr) => write!(f, "{}", expr),
             FunctionArg::Asterisk => write!(f, "*"),
-            FunctionArg::Identifier(s) => write!(f, "{s}"),
-            FunctionArg::Function(func) => write!(f, "{func}"),
         }
     }
 }

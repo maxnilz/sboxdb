@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::access::value::Tuple;
+use crate::access::value::Row;
 use crate::catalog::r#type::Value;
 use crate::error::Result;
 
@@ -11,7 +11,7 @@ use crate::error::Result;
 pub enum Predicate {}
 
 impl Predicate {
-    pub fn evaluate(&self, _tuple: Option<&Tuple>) -> Result<Value> {
+    pub fn evaluate(&self, _row: Option<&Row>) -> Result<Value> {
         todo!()
     }
 }

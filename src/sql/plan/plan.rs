@@ -6,25 +6,28 @@ use crate::catalog::r#type::DataType;
 use crate::error::Error;
 use crate::error::Result;
 use crate::format_expr_vec;
+use crate::map_each_children;
 use crate::sql::plan::expr::BinaryExpr;
 use crate::sql::plan::expr::Exists;
 use crate::sql::plan::expr::Expr;
 use crate::sql::plan::expr::InSubquery;
 use crate::sql::plan::expr::Operator;
 use crate::sql::plan::expr::Subquery;
+use crate::sql::plan::schema::Field;
 use crate::sql::plan::schema::FieldBuilder;
 use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 use crate::sql::plan::schema::EMPTY_SCHEMA;
+use crate::sql::plan::visitor::Transformed;
 use crate::sql::plan::visitor::TreeNode;
 use crate::sql::plan::visitor::TreeNodeVisitor;
 use crate::sql::plan::visitor::VisitRecursion;
 
 /// A `Plan` is a logical node in a tree of relational operators(such as
 /// Projection or Filter). Also known as `Logical Plan`
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Plan {
     /// Transaction statements
     Transaction(Transaction),
@@ -122,8 +125,8 @@ impl Plan {
             Plan::TableScan(TableScan { filters, .. }) => apply_each!(f; filters),
             Plan::Join(Join { constraint, .. }) => apply_each!(f, constraint),
             Plan::Filter(Filter { predicate, .. }) => apply_each!(f, predicate),
-            Plan::Aggregate(Aggregate { group_expr, aggr_expr, .. }) => {
-                apply_each!(f; group_expr)?.when_sibling(|| apply_each!(f; aggr_expr))
+            Plan::Aggregate(Aggregate { group_exprs, aggr_exprs, .. }) => {
+                apply_each!(f; group_exprs)?.when_sibling(|| apply_each!(f; aggr_exprs))
             }
             Plan::Sort(Sort { expr, .. }) => {
                 let exprs: Vec<&Expr> = expr.iter().map(|it| &it.expr).collect();
@@ -136,6 +139,10 @@ impl Plan {
 }
 
 impl TreeNode for Plan {
+    /// Apply `f` to visit node's children (but **NOT** the node itself).
+    ///
+    /// **NB**: subqueries in expr are considered as children for visiting,
+    /// e.g., subquery in `Expr::Exists`, `Expr::InSubquery` or `Expr::ScalarSubquery`.
     fn visit_children<F>(&self, mut f: F) -> Result<VisitRecursion>
     where
         F: FnMut(&Self) -> Result<VisitRecursion>,
@@ -172,9 +179,9 @@ impl TreeNode for Plan {
             Plan::Filter(Filter { input, predicate, .. }) => {
                 apply_each!(visit_expr, predicate)?.when_sibling(|| apply_each!(f, input))
             }
-            Plan::Aggregate(Aggregate { input, group_expr, aggr_expr, .. }) => {
-                apply_each!(visit_expr; group_expr)?
-                    .when_sibling(|| apply_each!(visit_expr; aggr_expr))?
+            Plan::Aggregate(Aggregate { input, group_exprs, aggr_exprs, .. }) => {
+                apply_each!(visit_expr; group_exprs)?
+                    .when_sibling(|| apply_each!(visit_expr; aggr_exprs))?
                     .when_sibling(|| apply_each!(f, input))
             }
             Plan::Sort(Sort { input, expr, .. }) => {
@@ -186,6 +193,63 @@ impl TreeNode for Plan {
             Plan::Join(Join { left, right, constraint, .. }) => {
                 apply_each!(visit_expr, constraint)?.when_sibling(|| apply_each!(f, left, right))
             }
+        }
+    }
+
+    /// Applies `f` to each child of this plan node, rewriting them *in place.*
+    ///
+    /// **NB**: subqueries in expr are **NOT** considered as children for rewriting,
+    /// e.g., subquery in `Expr::Exists`, `Expr::InSubquery` or `Expr::ScalarSubquery`.
+    fn map_children<F>(self, mut f: F) -> Result<Transformed<Self>>
+    where
+        F: FnMut(Self) -> Result<Transformed<Self>>,
+    {
+        match self {
+            Plan::Transaction(_)
+            | Plan::CreateTable(_)
+            | Plan::CreateIndex(_)
+            | Plan::DropTable(_)
+            | Plan::DropIndex(_)
+            | Plan::Values(_)
+            | Plan::TableScan(_) => Ok(Transformed::no(self)),
+            Plan::Insert(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Insert(Insert { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Update(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Update(Update { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Delete(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Delete(Delete { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Projection(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Projection(Projection { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Subquery(a) => map_each_children!(f, *a.subquery)?.map_data(|mut children| {
+                Ok(Plan::Subquery(Subquery { subquery: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::SubqueryAlias(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::SubqueryAlias(SubqueryAlias { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Join(a) => map_each_children!(f, *a.left, *a.right)?.map_data(|mut children| {
+                let left = Box::new(children.remove(0));
+                let right = Box::new(children.remove(0));
+                Ok(Plan::Join(Join { left, right, ..a }))
+            }),
+            Plan::Filter(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Filter(Filter { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Aggregate(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Aggregate(Aggregate { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Sort(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Sort(Sort { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Limit(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
+                Ok(Plan::Limit(Limit { input: Box::new(children.remove(0)), ..a }))
+            }),
+            Plan::Explain(a) => map_each_children!(f, *a.plan)?.map_data(|mut children| {
+                Ok(Plan::Explain(Explain { plan: Box::new(children.remove(0)), ..a }))
+            }),
         }
     }
 }
@@ -316,12 +380,12 @@ impl<'a, 'b> IndentVisitor<'a, 'b> {
                     Plan::Filter(Filter { predicate, .. }) => {
                         write!(f, "Filter: {predicate}")
                     }
-                    Plan::Aggregate(Aggregate { group_expr, aggr_expr, .. }) => {
+                    Plan::Aggregate(Aggregate { group_exprs, aggr_exprs, .. }) => {
                         write!(
                             f,
                             "Aggregate: groupBy=[{}], aggr=[{}]",
-                            format_expr_vec!(group_expr),
-                            format_expr_vec!(aggr_expr)
+                            format_expr_vec!(group_exprs),
+                            format_expr_vec!(aggr_exprs)
                         )
                     }
                     Plan::Sort(Sort { expr, .. }) => {
@@ -396,7 +460,7 @@ impl<'a, 'b, 'n> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Explain {
     pub physical: bool,
     pub verbose: bool,
@@ -416,7 +480,7 @@ impl Explain {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Limit {
     /// The incoming logical plan
     pub input: Box<Plan>,
@@ -433,7 +497,7 @@ impl Limit {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Sort {
     /// The sort expressions
     pub expr: Vec<SortExpr>,
@@ -447,7 +511,7 @@ impl Sort {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct SortExpr {
     /// The expression to sort on
     pub expr: Expr,
@@ -467,24 +531,32 @@ impl Display for SortExpr {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Aggregate {
     /// The incoming logical plan
     pub input: Box<Plan>,
     /// Grouping expressions
-    pub group_expr: Vec<Expr>,
+    pub group_exprs: Vec<Expr>,
     /// Aggregate expressions
-    pub aggr_expr: Vec<Expr>,
+    pub aggr_exprs: Vec<Expr>,
     /// The output schema.
     pub output_schema: LogicalSchema,
 }
 
 impl Aggregate {
-    pub fn try_new(input: Plan, group_expr: Vec<Expr>, aggr_expr: Vec<Expr>) -> Result<Self> {
+    pub fn try_new(input: Plan, group_exprs: Vec<Expr>, aggr_exprs: Vec<Expr>) -> Result<Self> {
         let schema = input.schema();
-        let fields = group_expr.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
-        let output_schema = LogicalSchema::from_unqualified_fields(fields.into())?;
-        Ok(Self { input: Box::new(input), group_expr, aggr_expr, output_schema })
+        // Build fields from fields that generated from the group_exprs.
+        let mut qualified_fields =
+            group_exprs.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
+        // Append the fields for aggr_exprs to the fields.
+        qualified_fields
+            .extend(aggr_exprs.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?);
+
+        let (qualifiers, fields): (Vec<Option<TableReference>>, Vec<Field>) =
+            qualified_fields.into_iter().unzip();
+        let output_schema = LogicalSchema::try_new(fields, qualifiers)?;
+        Ok(Self { input: Box::new(input), group_exprs, aggr_exprs, output_schema })
     }
 }
 
@@ -499,7 +571,7 @@ impl Aggregate {
 ///
 /// Filter should not be created directly but instead use `try_new()`
 /// and that these fields are only pub to support pattern matching
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Filter {
     /// The predicate expression, which must have Boolean type.
     pub predicate: Expr,
@@ -520,7 +592,7 @@ impl Filter {
 }
 
 /// Join two logical plans on one or more join columns
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Join {
     /// Left input
     pub left: Box<Plan>,
@@ -591,7 +663,7 @@ impl Join {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, PartialEq)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum JoinType {
     /// Inner Join - Returns only rows where there is a matching value in both tables based on the join condition.
     /// For example, if joining table A and B on A.id = B.id, only rows where A.id equals B.id will be included.
@@ -621,7 +693,7 @@ impl Display for JoinType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct SubqueryAlias {
     /// The incoming logical plan
     pub input: Box<Plan>,
@@ -644,7 +716,7 @@ impl SubqueryAlias {
 }
 
 /// Transaction statements
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Transaction {
     Begin { read_only: bool, as_of: Option<u64> },
     Commit,
@@ -652,7 +724,7 @@ pub enum Transaction {
 }
 
 /// Scan rows from a table/relation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct TableScan {
     pub relation: TableReference,
     /// relation schema
@@ -724,7 +796,7 @@ impl TableScanBuilder {
 }
 
 /// Evaluates an arbitrary list of expressions on its input.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Projection {
     /// The list of expressions
     pub exprs: Vec<Expr>,
@@ -741,13 +813,17 @@ impl Projection {
 
     pub fn try_new(exprs: Vec<Expr>, input: Plan) -> Result<Self> {
         let schema = input.schema();
-        let fields = exprs.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
-        let output_schema = LogicalSchema::from_unqualified_fields(fields.into())?;
+        let qualified_fields =
+            exprs.iter().map(|it| it.to_field(schema)).collect::<Result<Vec<_>>>()?;
+
+        let (qualifiers, fields): (Vec<Option<TableReference>>, Vec<Field>) =
+            qualified_fields.into_iter().unzip();
+        let output_schema = LogicalSchema::try_new(fields, qualifiers)?;
         Ok(Self { exprs, input: Box::new(input), output_schema })
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Delete {
     /// The table
     pub table: TableReference,
@@ -767,7 +843,7 @@ impl Delete {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Update {
     /// The table
     pub table: TableReference,
@@ -787,7 +863,7 @@ impl Update {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Insert {
     /// The table
     pub table: TableReference,
@@ -810,7 +886,7 @@ impl Insert {
 /// Values expression. See
 /// [Postgres VALUES](https://www.postgresql.org/docs/current/queries-values.html)
 /// documentation for more details.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Values {
     /// The values schema
     pub schema: LogicalSchema,
@@ -849,7 +925,7 @@ impl Values {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct DropIndex {
     /// The index name
     pub name: String,
@@ -868,7 +944,7 @@ impl DropIndex {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct DropTable {
     /// The table relation
     pub relation: TableReference,
@@ -883,7 +959,7 @@ impl DropTable {
 }
 
 /// Create table logical plan.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct CreateTable {
     /// The table relation
     pub relation: TableReference,
@@ -904,7 +980,7 @@ impl CreateTable {
 }
 
 /// Create index logical plan.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub struct CreateIndex {
     /// The index name
     pub name: String,

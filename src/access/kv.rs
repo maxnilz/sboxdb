@@ -11,8 +11,8 @@ use crate::access::engine::Transaction;
 use crate::access::predicate::Predicate;
 use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
+use crate::access::value::Row;
 use crate::access::value::Tuple;
-use crate::access::value::Values;
 use crate::catalog::catalog::Catalog;
 use crate::catalog::column::Columns;
 use crate::catalog::index::Index;
@@ -139,13 +139,13 @@ impl<T: Storage> KvTxn<T> {
         self.txn.state()
     }
 
-    fn get_tuples_by_pks(&self, table: &str, pks: Vec<PrimaryKey>) -> Result<Vec<Tuple>> {
+    fn get_rows_by_pks(&self, table: &str, pks: Vec<PrimaryKey>) -> Result<Vec<Row>> {
         pks.iter()
             .map(|it| {
                 self.read(table, it)
                     .and_then(|t| t.ok_or(Error::value(format!("Tuple with key {} not found", it))))
             })
-            .collect::<Result<Vec<Tuple>>>()
+            .collect::<Result<Vec<Row>>>()
     }
 }
 
@@ -250,9 +250,9 @@ impl<T: Storage> Catalog for KvTxn<T> {
 }
 
 impl<T: Storage> KvTxn<T> {
-    fn insert_index_entry(&self, index: Index, tuple: &Tuple) -> Result<()> {
-        let pk = tuple.primary_key()?;
-        let index_key = tuple.get_values(&index.columns)?;
+    fn insert_index_entry(&self, index: Index, row: &Row) -> Result<()> {
+        let pk = row.primary_key()?;
+        let index_key = row.get_values(&index.columns)?;
         let tblame = Cow::Borrowed(index.tblname.as_str());
         let name = Cow::Borrowed(index.name.as_str());
         let keyv = bincodec::serialize(&index_key)?;
@@ -325,11 +325,11 @@ impl<T: Storage> Transaction for KvTxn<T> {
         self.txn.rollback()
     }
 
-    fn insert(&self, table: &str, tuple: Tuple) -> Result<PrimaryKey> {
+    fn insert(&self, table: &str, row: Row) -> Result<PrimaryKey> {
         let schema = self.must_read_table(table)?;
-        tuple.check_columns(&schema.columns)?;
+        row.check_columns(&schema.columns)?;
         // Check if the pk exists
-        let pk = tuple.primary_key()?;
+        let pk = row.primary_key()?;
         let key = Key::Row(table.into(), pk.clone()).encode()?;
         if self.txn.get(&key)?.is_some() {
             return Err(Error::value(format!(
@@ -338,12 +338,12 @@ impl<T: Storage> Transaction for KvTxn<T> {
             )));
         }
         // Set the tuple value under primary key
-        self.txn.set(&key, bincodec::serialize(&tuple.values)?)?;
+        self.txn.set(&key, bincodec::serialize(&row.tuple)?)?;
 
         // Update indexes
         let indexes = self.scan_table_indexes(table)?;
         for index in indexes {
-            self.insert_index_entry(index, &tuple)?;
+            self.insert_index_entry(index, &row)?;
         }
         Ok(pk.clone())
     }
@@ -356,29 +356,29 @@ impl<T: Storage> Transaction for KvTxn<T> {
         if row.is_none() {
             return Ok(());
         }
-        let tuple = Tuple::new(bincodec::deserialize(&row.unwrap())?, &schema.columns)?;
+        let row = Row::new(bincodec::deserialize(&row.unwrap())?, &schema.columns)?;
 
-        // Delete tuple from index
+        // Delete row from index
         let indexes = self.scan_table_indexes(table)?;
         for index in indexes {
             let cols = &index.columns;
-            let keyv = tuple.get_values(&cols)?;
+            let keyv = row.get_values(&cols)?;
             self.delete_index_entry(index, keyv, pk)?;
         }
 
-        // Delete the tuple itself
+        // Delete the row itself
         self.txn.delete(&key)?;
 
         Ok(())
     }
 
-    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Tuple>> {
+    fn read(&self, table: &str, pk: &PrimaryKey) -> Result<Option<Row>> {
         let schema = self.must_read_table(table)?;
         let key = Key::Row(table.into(), pk.clone()).encode()?;
         let row = self.txn.get(&key)?;
         if let Some(bytes) = row {
-            let tuple = Tuple::new(bincodec::deserialize(&bytes)?, &schema.columns)?;
-            return Ok(Some(tuple));
+            let row = Row::new(bincodec::deserialize(&bytes)?, &schema.columns)?;
+            return Ok(Some(row));
         }
         Ok(None)
     }
@@ -392,7 +392,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let values = bincodec::deserialize(&v)?;
-                    Tuple::new(values, &schema.columns)
+                    Row::new(values, &schema.columns)
                 })
             })
             .filter_map(|r| match r {
@@ -430,15 +430,15 @@ impl<T: Storage> Transaction for KvTxn<T> {
         table: &str,
         index: &str,
         index_key: IndexKey,
-    ) -> Result<Option<Vec<Tuple>>> {
+    ) -> Result<Option<Vec<Row>>> {
         let keyv = bincodec::serialize(&index_key)?;
         let key = Key::HashIndexEntry(table.into(), index.into(), keyv.into()).encode()?;
         match self.txn.get(&key)? {
             None => Ok(None),
             Some(bytes) => {
                 let values: Vec<Value> = bincodec::deserialize(&bytes)?;
-                let tuples = self.get_tuples_by_pks(table, values)?;
-                Ok(Some(tuples))
+                let rows = self.get_rows_by_pks(table, values)?;
+                Ok(Some(rows))
             }
         }
     }
@@ -451,7 +451,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
             .map(|r| {
                 r.and_then(|(k, vbytes)| match Key::decode(&k)? {
                     Key::HashIndexEntry(_, _, keyv) => {
-                        let index_key: Values = bincodec::deserialize(&keyv)?;
+                        let index_key: Tuple = bincodec::deserialize(&keyv)?;
                         let values: Vec<Value> = bincodec::deserialize(&vbytes)?;
                         Ok((index_key, values))
                     }
@@ -466,8 +466,8 @@ impl<T: Storage> Transaction for KvTxn<T> {
         let iter = primary_keys
             .into_iter()
             .map(|(index_key, pks)| {
-                let tuples = self.get_tuples_by_pks(table, pks)?;
-                Ok((index_key, tuples))
+                let rows = self.get_rows_by_pks(table, pks)?;
+                Ok((index_key, rows))
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter();
@@ -762,9 +762,9 @@ mod tests {
                     for it in &values {
                         entry.push(it[i as usize].clone());
                     }
-                    let values = Values::from(entry);
-                    let tuple = Tuple::new(values, &table.columns)?;
-                    txn.insert(&table.name, tuple)?;
+                    let values = Tuple::from(entry);
+                    let row = Row::new(values, &table.columns)?;
+                    txn.insert(&table.name, row)?;
                     num_generated += 1;
                 }
             }
@@ -792,17 +792,17 @@ mod tests {
 
         // scan tables
         let mut scan = t1.scan(&tblname, None)?;
-        let mut tuples = vec![];
+        let mut rows = vec![];
         while let Some(t) = scan.next().transpose()? {
-            tuples.push(t)
+            rows.push(t)
         }
-        assert_eq!(100, tuples.len());
+        assert_eq!(100, rows.len());
 
         // get by pk
-        let tuple = &tuples[0];
-        let pk = tuple.primary_key()?;
+        let row = &rows[0];
+        let pk = row.primary_key()?;
         let got = t1.read(&tblname, pk)?;
-        assert_eq!(Some(tuple.clone()), got);
+        assert_eq!(Some(row.clone()), got);
 
         // indexes
         let indexes = t1.scan_table_indexes(&tblname)?;
@@ -819,29 +819,29 @@ mod tests {
         assert_eq!(100, index_entries.len());
 
         // get by index_key
-        let index_key = tuple.get_values(&index.columns)?;
+        let index_key = row.get_values(&index.columns)?;
         let gots = t1.read_index_entry(&tblname, &index.name, index_key.clone())?;
         assert_ne!(None, gots);
         let gots = gots.unwrap();
         assert_eq!(1, gots.len());
-        assert_eq!(tuple, &gots[0]);
+        assert_eq!(row, &gots[0]);
 
         // delete by pk
         t1.delete(&tblname, pk)?;
 
         // check deletion
-        let tuple = t1.read(&tblname, pk)?;
-        assert_eq!(None, tuple);
-        let tuple = t1.read_index_entry(&tblname, &index.name, index_key)?;
-        assert_eq!(None, tuple);
+        let row = t1.read(&tblname, pk)?;
+        assert_eq!(None, row);
+        let row = t1.read_index_entry(&tblname, &index.name, index_key)?;
+        assert_eq!(None, row);
 
         // scan tables again
         let mut scan = t1.scan(&tblname, None)?;
-        let mut tuples = vec![];
+        let mut rows = vec![];
         while let Some(t) = scan.next().transpose()? {
-            tuples.push(t)
+            rows.push(t)
         }
-        assert_eq!(99, tuples.len());
+        assert_eq!(99, rows.len());
 
         // scan index entries again
         let mut scan = t1.scan_index_entries(&tblname, &index.name)?;

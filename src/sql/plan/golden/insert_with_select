@@ -8,7 +8,7 @@ Logical Plan:
 --------------
 
 DML: op=[Insert] table=[users]
-  Projection: id AS id, name AS name, email AS email
+  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email
     Projection: old_users.id, old_users.name, old_users.email
       Filter: old_users.active = TRUE
         TableScan: old_users
@@ -17,7 +17,7 @@ Logical Plan with schema:
 -------------------------
 
 DML: op=[Insert] table=[users] [count:Integer;N]
-  Projection: id AS id, name AS name, email AS email [id:Integer;N, name:String;N, email:String;N]
+  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email [id:Integer;N, name:String;N, email:String;N]
     Projection: old_users.id, old_users.name, old_users.email [id:Integer;N, name:String;N, email:String;N]
       Filter: old_users.active = TRUE [id:Integer;N, name:String;N, email:String;N, active:Boolean;N]
         TableScan: old_users [id:Integer;N, name:String;N, email:String;N, active:Boolean;N]
