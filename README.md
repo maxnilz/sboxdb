@@ -36,9 +36,9 @@ A distributed SQL database, written as a learning project about my journey on th
   joins.
     - [x] Logical Planner
     - [ ] Logical Optimizer
-    - [ ] Physical Planner
-    - [ ] Executors
-    - [ ] Function support
+    - [x] Physical Planner
+    - [x] Executors
+    - [x] Function support
 
 ## Reference
 
