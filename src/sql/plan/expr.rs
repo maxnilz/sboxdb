@@ -3,6 +3,7 @@ use std::fmt::Formatter;
 use std::fmt::Write;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::apply_each;
@@ -11,7 +12,9 @@ use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 use crate::map_each_children;
+use crate::sql::parser::Parser;
 use crate::sql::plan::plan::Plan;
+use crate::sql::plan::planner::Planner;
 use crate::sql::plan::schema::Field;
 use crate::sql::plan::schema::FieldBuilder;
 use crate::sql::plan::schema::FieldRef;
@@ -455,6 +458,17 @@ impl TreeNode for Expr {
                 })
             }
         }
+    }
+}
+
+impl FromStr for Expr {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parser = Parser::new(s)?;
+        let expr = parser.parse_expr()?;
+        let planner = Planner::new();
+        planner.parse_scalar_expr(expr)
     }
 }
 

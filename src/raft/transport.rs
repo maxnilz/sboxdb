@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,6 +27,7 @@ use crate::error::Result;
 /// raft peers.
 #[async_trait]
 pub trait Transport: Send {
+    fn me(&self) -> (NodeId, SocketAddr);
     /// Inspect the transport nodes topology info, returns
     /// my node id and peers nodes id.
     fn topology(&self) -> (NodeId, Vec<NodeId>);
@@ -38,8 +39,8 @@ pub trait Transport: Send {
 }
 
 pub struct TcpTransport {
-    me: (NodeId, IpAddr),
-    peers: HashMap<NodeId, IpAddr>,
+    me: (NodeId, SocketAddr),
+    peers: HashMap<NodeId, SocketAddr>,
 
     /// outbound message first get buffered into
     /// channel via the sender, and the underlying
@@ -50,7 +51,7 @@ pub struct TcpTransport {
 }
 
 impl TcpTransport {
-    pub fn new(me: (NodeId, IpAddr), peers: HashMap<NodeId, IpAddr>) -> Result<Self> {
+    pub fn new(me: (NodeId, SocketAddr), peers: HashMap<NodeId, SocketAddr>) -> Result<Self> {
         let mut txs: HashMap<NodeId, mpsc::Sender<Message>> = HashMap::new();
         for (id, addr) in peers.clone().into_iter() {
             let (tx, rx) = mpsc::channel::<Message>(10000);
@@ -63,7 +64,7 @@ impl TcpTransport {
     }
 
     /// Connects to a peer for sending outbound message, continuously reconnecting.
-    async fn connect(addr: IpAddr, rx: mpsc::Receiver<Message>) -> Result<()> {
+    async fn connect(addr: SocketAddr, rx: mpsc::Receiver<Message>) -> Result<()> {
         let mut rx = ReceiverStream::new(rx);
         loop {
             match TcpStream::connect(addr.to_string()).await {
@@ -126,6 +127,10 @@ impl TcpTransport {
 
 #[async_trait]
 impl Transport for TcpTransport {
+    fn me(&self) -> (NodeId, SocketAddr) {
+        self.me
+    }
+
     fn topology(&self) -> (NodeId, Vec<NodeId>) {
         (self.me.0, self.peers.iter().map(|(node_id, _)| *node_id).collect())
     }

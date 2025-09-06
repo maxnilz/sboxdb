@@ -18,7 +18,7 @@ use crate::sql::execution::display::DisplayableExecutionPlan;
 use crate::sql::execution::expr::PhysicalExpr;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionPlan;
-use crate::sql::execution::Scheduler;
+use crate::sql::execution::ExecutionEngine;
 use crate::sql::plan::plan::JoinType;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::TableScan;
@@ -867,7 +867,7 @@ impl HashJoinExec {
     /// Build the left side plan into a hash table for probe later by
     /// poll the whole data from the left executor.
     fn build_left(&self, ctx: &mut dyn Context) -> Result<()> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.left))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.left))?;
         let i = self.il;
         let mut hashtable = self.hashtable.borrow_mut();
         for row in rs.rows {
@@ -901,7 +901,7 @@ impl HashJoinExec {
 
     fn strawman_join(&self, ctx: &mut dyn Context) -> Result<()> {
         let mut results = vec![];
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.right))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.right))?;
         for row in rs.rows {
             let output = self.prob(row);
             results.extend(output)

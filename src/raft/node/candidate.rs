@@ -43,7 +43,7 @@ impl Candidate {
 
         info!(self.rn, "requesting vote as candidate");
 
-        let (last_index, last_term) = self.rn.persister.last();
+        let (last_index, last_term) = self.rn.log.last();
         let req = RequestVote { candidate: voted_for.unwrap(), last_index, last_term };
         self.rn.send_message(Address::Broadcast, Event::RequestVote(req))?;
 

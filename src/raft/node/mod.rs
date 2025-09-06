@@ -10,12 +10,12 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::raft::log::HardState;
+use crate::raft::log::Log;
 use crate::raft::message::Address;
 use crate::raft::message::Event;
 use crate::raft::message::Message;
 use crate::raft::node::follower::Follower;
-use crate::raft::persister::HardState;
-use crate::raft::persister::Persister;
 use crate::raft::Index;
 use crate::raft::State;
 use crate::raft::Term;
@@ -114,7 +114,7 @@ pub struct RawNode {
     peers: Vec<NodeId>,
     // persist facility for log entries and any raft
     // hard state, i.e., current_term, voted_for.
-    persister: Persister,
+    log: Log,
     // a blocking channel for sending message
     // to raft peers.
     node_tx: mpsc::UnboundedSender<Message>,
@@ -164,17 +164,17 @@ impl RawNode {
     pub fn new(
         id: NodeId,
         peers: Vec<NodeId>,
-        persister: Persister,
+        log: Log,
         node_tx: mpsc::UnboundedSender<Message>,
         state: Box<dyn State>,
     ) -> Result<RawNode> {
-        let hs = persister.get_hard_state()?;
+        let hs = log.get_hard_state()?;
         let (term, voted_for) = if let Some(x) = hs { (x.term, x.voted_for) } else { (0, None) };
         let (leader, commit_index, last_applied) = (None, 0, 0);
         let rn = RawNode {
             id,
             peers,
-            persister,
+            log,
             node_tx,
             state,
             term,
@@ -194,7 +194,7 @@ impl RawNode {
 
     pub fn save_hard_state(&mut self, term: Term, voted_for: Option<NodeId>) -> Result<()> {
         let hs = HardState { term, voted_for };
-        self.persister.save_hard_state(hs)?;
+        self.log.save_hard_state(hs)?;
         self.term = term;
         self.voted_for = voted_for;
         Ok(())

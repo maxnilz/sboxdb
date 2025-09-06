@@ -1,0 +1,12 @@
+# The node ID, peer ID/address map (empty for single node), and log level.
+id: 1
+peers: { }
+log_level: INFO
+
+# Raft storage type and listening addr
+raft_storage_type: memory
+raft_listen_addr: 0.0.0.0:8813
+
+# SQL storage type and listening addr
+sql_storage_type: memory
+sql_listen_addr: 0.0.0.0:8814

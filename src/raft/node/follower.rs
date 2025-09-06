@@ -60,18 +60,18 @@ impl Follower {
         if ae.prev_log_index == 0 {
             return Ok((true, None));
         }
-        let (last_index, _) = self.rn.persister.last();
+        let (last_index, _) = self.rn.log.last();
 
         // follower's log is too short
         if ae.prev_log_index > last_index {
             return Ok((false, Some(last_index + 1)));
         }
-        let entry = self.rn.persister.get_entry(ae.prev_log_index)?.unwrap();
+        let entry = self.rn.log.get_entry(ae.prev_log_index)?.unwrap();
         let prev_term = entry.term;
         if prev_term != ae.prev_log_term {
             let mut xindex = ae.prev_log_index;
             for index in (1..ae.prev_log_index).rev() {
-                let entry = self.rn.persister.get_entry(index)?.unwrap();
+                let entry = self.rn.log.get_entry(index)?.unwrap();
                 if entry.term == ae.prev_log_term {
                     // the last entry of the predecessor
                     // term of the conflicting term
@@ -96,7 +96,7 @@ impl Follower {
         }
 
         // check if the candidate is up-to-date.
-        let (last_index, last_term) = self.rn.persister.last();
+        let (last_index, last_term) = self.rn.log.last();
         let is_upto_date = req.last_term > last_term
             || (req.last_term == last_term && req.last_index >= last_index);
         if !is_upto_date {
@@ -111,7 +111,7 @@ impl Follower {
         let from = self.rn.last_applied + 1;
         let to = self.rn.commit_index + 1;
         assert!(from < to, "invalid apply range [{}, {})", from, to);
-        let entries = self.rn.persister.scan_entries(from, to)?;
+        let entries = self.rn.log.scan_entries(from, to)?;
         info!(self.rn, "applying entries [{}, {}), {}", from, to, entries.len());
         for entry in entries {
             let msg = ApplyMsg { index: entry.index, command: entry.command };
@@ -187,7 +187,7 @@ impl Node for Follower {
 
                 // we have a valid append entry request onwards.
 
-                let (last_index0, _) = self.rn.persister.last();
+                let (last_index0, _) = self.rn.log.last();
                 // keep the log entries upto prev_log_index(inclusive),
                 // discard any entries from prev_log_index+1(inclusive).
                 //
@@ -196,15 +196,15 @@ impl Node for Follower {
                 // of network partition, it can't assemble majority), later,
                 // A new leader with a shorter index shows up after the network
                 // recover, we should discard those entries.
-                let discard = self.rn.persister.remove_from(ae.prev_log_index + 1)?;
+                let discard = self.rn.log.remove_from(ae.prev_log_index + 1)?;
 
                 // append entries if any
                 let num = ae.entries.len();
                 for entry in ae.entries {
-                    self.rn.persister.append(entry.term, entry.command)?;
+                    self.rn.log.append(entry.term, entry.command)?;
                 }
 
-                let (last_index, _) = self.rn.persister.last();
+                let (last_index, _) = self.rn.log.last();
 
                 #[rustfmt::skip]
                 info!(self.rn, "accept {} entries from {}, discard: {}, last_index: {}/{}, c: {}/{}",

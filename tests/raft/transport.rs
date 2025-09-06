@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -42,6 +44,11 @@ impl LabTransport {
 
 #[async_trait]
 impl Transport for LabTransport {
+    fn me(&self) -> (NodeId, SocketAddr) {
+        (self.id, SocketAddr::from_str("0.0.0.0:0").unwrap())
+    }
+
+
     fn topology(&self) -> (NodeId, Vec<NodeId>) {
         (self.id, self.peers.iter().map(|(node_id, _)| *node_id).collect())
     }

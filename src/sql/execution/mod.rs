@@ -2,27 +2,35 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::access::engine::Transaction;
 use crate::access::value::Tuple;
+use crate::catalog::r#type::DataType;
+use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 use crate::sql::execution::compiler::ExecutionPlan;
 use crate::sql::execution::context::Context;
 use crate::sql::execution::display::TabularDisplay;
+use crate::sql::plan::schema::FieldBuilder;
 use crate::sql::plan::schema::LogicalSchema;
 
 mod aggregate;
-mod compiler;
-mod context;
 mod ddl;
 mod display;
 mod dml;
 mod expr;
 mod query;
 
-#[derive(Clone)]
-pub struct Scheduler {}
+pub mod compiler;
+pub mod context;
 
-impl Scheduler {
+#[derive(Clone)]
+pub struct ExecutionEngine {}
+
+impl ExecutionEngine {
     /// Execute a physical query plan.
     pub fn execute(ctx: &mut dyn Context, executor: Arc<dyn ExecutionPlan>) -> Result<ResultSet> {
         executor.init(ctx)?;
@@ -46,6 +54,7 @@ impl Scheduler {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResultSet {
     schema: LogicalSchema,
     rows: Vec<Tuple>,
@@ -71,6 +80,18 @@ impl ResultSet {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Tuple::from(values))
+    }
+}
+
+impl From<&dyn Transaction> for ResultSet {
+    fn from(txn: &dyn Transaction) -> Self {
+        let schema = LogicalSchema::from_unqualified_fields([
+            FieldBuilder::new("version", DataType::Integer).build(),
+            FieldBuilder::new("read_only", DataType::Boolean).build(),
+        ])
+        .unwrap();
+        let values = vec![Value::Integer(txn.version() as i64), Value::Boolean(txn.read_only())];
+        ResultSet { schema, rows: vec![Tuple::from(values)] }
     }
 }
 
@@ -101,14 +122,14 @@ mod tests {
     use crate::sql::plan::planner::Planner;
     use crate::storage::memory::Memory;
 
-    struct TxnExecutor {
+    struct Querier {
         planner: Planner,
         compiler: Compiler,
 
         txn: Arc<dyn Transaction>,
     }
 
-    impl TxnExecutor {
+    impl Querier {
         fn try_new(kv: &Kv<Memory>) -> Result<Self> {
             let txn: Arc<dyn Transaction> = Arc::new(kv.begin()?);
             let planner = Planner::new();
@@ -122,7 +143,7 @@ mod tests {
             let plan = self.planner.sql_statement_to_plan(&mut ctx, stmt)?;
             let executor = self.compiler.build_execution_plan(plan)?;
             let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 10);
-            Scheduler::execute(ctx, executor)
+            ExecutionEngine::execute(ctx, executor)
         }
 
         fn logical_plan(&self, query: &str) -> Result<Plan> {
@@ -138,7 +159,7 @@ mod tests {
 
         fn execute(&self, executor: Arc<dyn ExecutionPlan>) -> Result<ResultSet> {
             let ctx: &mut dyn Context = &mut ExecContext::new(Arc::clone(&self.txn), 2);
-            Scheduler::execute(ctx, executor)
+            ExecutionEngine::execute(ctx, executor)
         }
 
         fn commit(&self) -> Result<()> {
@@ -153,7 +174,7 @@ mod tests {
     fn setup(queries: &[&str]) -> Result<Kv<Memory>> {
         let kv = Kv::new(Memory::new());
 
-        let txn = TxnExecutor::try_new(&kv)?;
+        let txn = Querier::try_new(&kv)?;
         for q in queries.iter() {
             txn.execute_query(q)?;
         }
@@ -180,7 +201,7 @@ mod tests {
                           (3, 'Charlie', 'charlie@example.com');",
                     ];
                     let kv = setup(&queries)?;
-                    let txn = TxnExecutor::try_new(&kv)?;
+                    let q = Querier::try_new(&kv)?;
 
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
@@ -189,25 +210,25 @@ mod tests {
                     write!(f, "-----\n")?;
                     write!(f, "{}\n\n", display_utils::dedent($stmt))?;
 
-                    let plan = txn.logical_plan($stmt)?;
+                    let plan = q.logical_plan($stmt)?;
 
                     write!(f, "Logical Plan:\n")?;
                     write!(f, "--------------\n\n")?;
                     write!(f, "{}\n\n", &plan)?;
 
-                    let executor = txn.physical_plan(plan)?;
+                    let executor = q.physical_plan(plan)?;
                     let displayable = DisplayableExecutionPlan::new(&executor);
 
                     write!(f, "Physical Plan:\n")?;
                     write!(f, "---------------\n\n")?;
                     write!(f, "{}\n\n", displayable)?;
 
-                    let rs = txn.execute(executor)?;
+                    let rs = q.execute(executor)?;
                     write!(f, "Result:\n")?;
                     write!(f, "-------\n\n")?;
                     write!(f, "{}\n\n", rs)?;
 
-                    txn.rollback()?;
+                    q.rollback()?;
 
                     Ok(())
                 }

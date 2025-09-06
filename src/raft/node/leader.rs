@@ -62,9 +62,9 @@ pub struct Leader {
 impl Leader {
     pub fn new(mut rn: RawNode) -> Result<Self> {
         // truncate the log to the commit index
-        rn.persister.truncate(rn.commit_index + 1)?;
+        rn.log.truncate(rn.commit_index + 1)?;
         // init index array
-        let (last_index, _) = rn.persister.last();
+        let (last_index, _) = rn.log.last();
         let next_index = vec![last_index + 1; MAX_NODE_ID as usize];
         let match_index = vec![0; MAX_NODE_ID as usize];
         // set leader to myself
@@ -83,7 +83,7 @@ impl Leader {
     fn heartbeat(&self) -> Result<()> {
         let seq = self.rn.seq.get() + 1;
 
-        let (last_index, last_term) = self.rn.persister.last();
+        let (last_index, last_term) = self.rn.log.last();
         let req = AppendEntries {
             leader_id: self.rn.id,
             leader_commit: self.rn.commit_index,
@@ -119,7 +119,7 @@ impl Leader {
 
         // gather entries to be appended to peer
         let from = self.next_index[peer as usize];
-        let entries = self.rn.persister.scan_from(from)?;
+        let entries = self.rn.log.scan_from(from)?;
         let num_entries = entries.len();
         if num_entries == 0 {
             // if there is no entries to be sent to
@@ -129,7 +129,7 @@ impl Leader {
         }
 
         // get the prev index and term
-        let entry = self.rn.persister.get_entry(from - 1)?;
+        let entry = self.rn.log.get_entry(from - 1)?;
         let (prev_log_index, prev_log_term) =
             if let Some(entry) = entry { (entry.index, entry.term) } else { (0, 0) };
 
@@ -157,7 +157,7 @@ impl Leader {
         let (quorum_index, match_index) = if self.rn.peers.is_empty() {
             // we are a single node cluster, set quorum_index
             // to the last index.
-            let (last_index, _) = self.rn.persister.last();
+            let (last_index, _) = self.rn.log.last();
             (last_index, vec![])
         } else {
             let mut match_index = vec![];
@@ -191,7 +191,7 @@ impl Leader {
         // apply committed entries
         let from = self.rn.last_applied + 1;
         let to = self.rn.commit_index + 1;
-        let entries = self.rn.persister.scan_entries(from, to)?;
+        let entries = self.rn.log.scan_entries(from, to)?;
 
         info!(self.rn, "applying entries [{}, {}), {}", from, to, entries.len());
 
@@ -305,7 +305,7 @@ impl Node for Leader {
             Event::VoteRejected => {}
 
             Event::ProposalRequest { id, command, timeout } => {
-                let index = self.rn.persister.append(self.rn.term, command)?;
+                let index = self.rn.log.append(self.rn.term, command)?;
                 if self.rn.peers.is_empty() {
                     // we are a single node cluster, no
                     // need to do any replication.

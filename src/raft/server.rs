@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use log::debug;
@@ -9,6 +10,7 @@ use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt as _;
 
+use super::log::Log;
 use super::message::Address;
 use super::message::Event;
 use super::message::Message;
@@ -19,14 +21,12 @@ use super::node::NodeState;
 use super::node::ProposalId;
 use super::node::RawNode;
 use super::node::TICK_INTERVAL;
-use super::persister::Persister;
 use super::transport::Transport;
 use super::Command;
 use super::CommandResult;
 use super::State;
 use crate::error::Error;
 use crate::error::Result;
-use crate::storage::Storage;
 
 struct Request {
     command: Command,
@@ -58,7 +58,7 @@ struct EventLoopContext {
 
 /// A Raft server
 pub struct Server {
-    id: NodeId,
+    me: (NodeId, SocketAddr),
 
     /// channel for query node state, paired with
     /// the state_rx in the eventloop.
@@ -82,28 +82,32 @@ unsafe impl Sync for Server {}
 
 impl Server {
     /// Create a Raft server,
-    pub fn new(
-        storage: Box<dyn Storage>,
+    pub fn try_new(
+        log: Log,
         transport: Box<dyn Transport>,
         state: Box<dyn State>,
     ) -> Result<Server> {
+        let me = transport.me();
         let (id, peers) = transport.topology();
-        let persister = Persister::new(id, storage)?;
         let (node_tx, node_rx) = mpsc::unbounded_channel();
-        let rn = RawNode::new(id, peers, persister, node_tx, state)?;
+        let rn = RawNode::new(id, peers, log, node_tx, state)?;
         // init server as follower at the very beginning.
         let follower = Follower::new(rn);
         let node: Box<dyn Node> = Box::new(follower);
         let (state_tx, state_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let context = EventLoopContext { id, node, node_rx, state_rx, command_rx, transport };
-        Ok(Server { id, state_tx, command_tx, context: RefCell::new(Some(context)) })
+        Ok(Server { me, state_tx, command_tx, context: RefCell::new(Some(context)) })
     }
 
     pub async fn serve(&self, done: broadcast::Receiver<()>) -> Result<()> {
         let context = self.context.borrow_mut().take().unwrap();
         let eventloop = tokio::spawn(Self::eventloop(context, done));
         eventloop.await?
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.me.1)
     }
 
     /// run the event loop for message processing.
@@ -183,7 +187,7 @@ impl Server {
         if self.state_tx.send(((), tx)).is_err() {
             return Err(Error::internal(format!(
                 "state channel on server {} is closed or dropped",
-                self.id
+                self.me.0
             )));
         }
         let ns = futures::executor::block_on(rx)?;
@@ -200,7 +204,7 @@ impl Server {
         if self.command_tx.send(req).is_err() {
             return Err(Error::internal(format!(
                 "command channel on server {} is closed or dropped",
-                self.id
+                self.me.0
             )));
         }
         Ok(futures::executor::block_on(rx)?)

@@ -34,8 +34,14 @@ pub struct Kv<T: Storage> {
     mvcc: mvcc::MVCC<T>,
 }
 
+// FIXME Implement Clone manually due to https://github.com/rust-lang/rust/issues/26925
+impl<T: Storage> Clone for Kv<T> {
+    fn clone(&self) -> Self {
+        Kv { mvcc: self.mvcc.clone() }
+    }
+}
+
 impl<T: Storage> Kv<T> {
-    #[allow(dead_code)]
     pub fn new(kv: T) -> Kv<T> {
         Kv { mvcc: mvcc::MVCC::new(kv) }
     }

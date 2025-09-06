@@ -1,12 +1,16 @@
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::net::AddrParseError;
 use std::num::ParseIntError;
 use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use std::sync::mpsc;
 
 use config::ConfigError;
+use log::ParseLevelError;
+use log::SetLoggerError;
+use rustyline::error::ReadlineError;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -186,6 +190,29 @@ impl From<ParseIntError> for Error {
 
 impl From<std::fmt::Error> for Error {
     fn from(err: std::fmt::Error) -> Self {
+        Error::internal(err)
+    }
+}
+
+impl From<AddrParseError> for Error {
+    fn from(err: AddrParseError) -> Self {
+        Error::internal(err)
+    }
+}
+
+impl From<ParseLevelError> for Error {
+    fn from(err: ParseLevelError) -> Self {
+        Error::internal(err)
+    }
+}
+impl From<SetLoggerError> for Error {
+    fn from(err: SetLoggerError) -> Self {
+        Error::internal(err)
+    }
+}
+
+impl From<ReadlineError> for Error {
+    fn from(err: ReadlineError) -> Self {
         Error::internal(err)
     }
 }

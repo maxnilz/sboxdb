@@ -9,6 +9,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::catalog::column::Column;
 use crate::catalog::column::ColumnBuilder;
 use crate::catalog::column::ColumnRef;
@@ -50,7 +53,7 @@ impl std::fmt::Display for FieldReference {
 }
 
 /// A name or alias used as a reference to a table.
-#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash)]
+#[derive(Clone, Debug, PartialOrd, PartialEq, Ord, Eq, Hash, Serialize, Deserialize)]
 pub struct TableReference(Arc<String>);
 
 impl TableReference {
@@ -95,14 +98,44 @@ impl Display for TableReference {
 pub type FieldRef = Arc<Field>;
 
 /// Describes a single column in a [`LogicalSchema`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub datatype: DataType,
     pub primary_key: bool,
     pub nullable: bool,
     pub unique: bool,
+    #[serde(
+        serialize_with = "serialize_expr_as_string",
+        deserialize_with = "deserialize_expr_from_string"
+    )]
     pub default: Option<Expr>,
+}
+
+fn serialize_expr_as_string<S>(
+    expr: &Option<Expr>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match expr {
+        Some(e) => serializer.serialize_some(&e.to_string()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_expr_from_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Expr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt {
+        Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
 }
 
 impl PartialEq for Field {
@@ -182,7 +215,7 @@ impl From<&ColumnRef> for Field {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Fields(Arc<[FieldRef]>);
 
 impl Fields {
@@ -243,6 +276,12 @@ impl FromIterator<FieldRef> for Fields {
 
 impl From<Vec<Field>> for Fields {
     fn from(value: Vec<Field>) -> Self {
+        value.into_iter().collect()
+    }
+}
+
+impl<const N: usize> From<[Field; N]> for Fields {
+    fn from(value: [Field; N]) -> Self {
         value.into_iter().collect()
     }
 }
@@ -354,7 +393,7 @@ impl FieldBuilder {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 struct LogicalSchemaInner {
     /// A sequence of fields that describe the schema.
     fields: Fields,
@@ -371,7 +410,7 @@ pub static EMPTY_SCHEMA: LazyLock<LogicalSchema> = LazyLock::new(|| LogicalSchem
 /// aggregated/unified single qualifier, typically the table name, for all the columns.
 ///
 /// It is designed to be cheap to clone
-#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct LogicalSchema {
     inner: Arc<LogicalSchemaInner>,
 }
@@ -398,7 +437,8 @@ impl LogicalSchema {
         Self { inner: Arc::new(LogicalSchemaInner { fields: fields.into(), qualifiers }) }
     }
 
-    pub fn from_unqualified_fields(fields: Fields) -> Result<Self> {
+    pub fn from_unqualified_fields(fields: impl Into<Fields>) -> Result<Self> {
+        let fields = fields.into();
         let sz = fields.len();
         let schema = Self::new(fields, vec![None; sz]);
         schema.check_names()?;

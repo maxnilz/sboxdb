@@ -218,7 +218,6 @@ pub trait TreeNodeVisitor<'n> {
 /// to the traversal controller, e.g., [`TreeNode::visit`], to have it
 /// to decide the next nodes to traverse.
 #[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
-#[allow(dead_code)]
 pub enum VisitRecursion {
     /// Continue recursion with the next node.
     Continue,

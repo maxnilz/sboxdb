@@ -15,7 +15,7 @@ pub mod node;
 pub mod server;
 pub mod transport;
 
-mod persister;
+pub mod log;
 
 pub type Index = u64;
 pub type Term = u64;

@@ -40,22 +40,23 @@ impl Key {
     }
 }
 
-// persister persist the raft state like log entries, term, and
-// vote info, i.e., the persister here is only for raft states
-// not the state of the state machine that live upper above the
-// raft log.
+/// Log persist the raft state like log entries, term, and
+/// vote info, i.e., the persister here is only for raft states
+/// not the state of the state machine that live upper above the
+/// raft log.
 #[derive(Debug)]
-pub struct Persister {
+pub struct Log {
     id: NodeId,
+    /// storage to persist the raft log
     storage: Box<dyn Storage>,
 
     last_index: Index,
     last_term: Term,
 }
 
-impl Persister {
-    pub fn new(id: NodeId, storage: Box<dyn Storage>) -> Result<Persister> {
-        let range = Persister::range_from(id, 0);
+impl Log {
+    pub fn new(id: NodeId, storage: Box<dyn Storage>) -> Result<Log> {
+        let range = Log::range_from(id, 0);
         let last = storage.scan(range).last();
         let (last_index, last_term) = if let Some(x) = last {
             let (_, v) = x?;
@@ -64,7 +65,7 @@ impl Persister {
         } else {
             (0, 0)
         };
-        Ok(Persister { id, storage, last_index, last_term })
+        Ok(Log { id, storage, last_index, last_term })
     }
 
     fn range_from(node_id: NodeId, from: Index) -> (Bound<Vec<u8>>, Bound<Vec<u8>>) {
@@ -122,7 +123,7 @@ impl Persister {
     }
 
     pub fn truncate(&mut self, index: Index) -> Result<()> {
-        let range = Persister::range_from(self.id, index);
+        let range = Log::range_from(self.id, index);
         let res = self.storage.remove_range(range);
         let last = res.last().transpose()?;
         if let Some((_, v)) = last {
@@ -164,7 +165,7 @@ impl Persister {
     }
 
     pub fn scan_from(&self, from: Index) -> Result<Vec<Entry>> {
-        let range = Persister::range_from(self.id, from);
+        let range = Log::range_from(self.id, from);
         let result = self.storage.scan(range);
         result
             .map(|x| {
@@ -179,7 +180,7 @@ impl Persister {
         let prev = from - 1;
 
         // remove entries from the given index.
-        let range = Persister::range_from(self.id, from);
+        let range = Log::range_from(self.id, from);
         let result = self.storage.remove_range(range);
         let values = result.map(|x| x.map(|(_, v)| v)).collect::<Result<Vec<Vec<u8>>>>()?;
         if values.is_empty() {
@@ -205,7 +206,7 @@ mod tests {
     fn test_persister_simple() -> Result<()> {
         let id = 0;
         let s = new_storage(StorageType::Memory)?;
-        let mut p = Persister { id, storage: s, last_index: 0, last_term: 0 };
+        let mut p = Log { id, storage: s, last_index: 0, last_term: 0 };
 
         // state ops
 
@@ -295,7 +296,7 @@ mod tests {
         // test persister init
 
         // test persister init with non-empty storage
-        let mut p = Persister::new(id, p.storage)?;
+        let mut p = Log::new(id, p.storage)?;
         assert_eq!(6, p.last_index);
         assert_eq!(6, p.last_term);
 
@@ -319,7 +320,7 @@ mod tests {
 
         // test persister init with empty storage
         let s = new_storage(StorageType::Memory)?;
-        let p = Persister::new(id, s)?;
+        let p = Log::new(id, s)?;
         assert_eq!(0, p.last_index);
         assert_eq!(0, p.last_term);
 

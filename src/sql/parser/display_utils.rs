@@ -120,6 +120,7 @@ where
     DisplaySeparated { slice, sep: None, inline: false }
 }
 
+#[cfg(test)]
 pub fn dedent(s: &str) -> String {
     let lines: Vec<&str> = s.lines().collect();
     // Find the minimum leading whitespace

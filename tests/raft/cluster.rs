@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use log::debug;
 use log::error;
 use sboxdb::error::Error;
+use sboxdb::raft::log::Log;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::node::NodeState;
 use sboxdb::raft::node::ELECTION_TIMEOUT_RANGE;
@@ -37,9 +38,10 @@ pub fn max_election_timeout() -> Duration {
 
 fn new_server(id: NodeId, mesh: &LabNetMesh, state: Arc<KvState>) -> sboxdb::error::Result<Server> {
     let storage = new_storage(StorageType::Memory)?;
+    let log = Log::new(id, storage)?;
     let transport = Box::new(mesh.get(id)?);
     let state: Box<dyn State> = Box::new(state);
-    let server = Server::new(storage, transport, state)?;
+    let server = Server::try_new(log, transport, state)?;
     Ok(server)
 }
 

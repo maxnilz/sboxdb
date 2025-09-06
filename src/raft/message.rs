@@ -5,9 +5,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::log::Entry;
 use super::node::NodeId;
 use super::node::ProposalId;
-use super::persister::Entry;
 use super::Command;
 use super::CommandResult;
 use super::Index;

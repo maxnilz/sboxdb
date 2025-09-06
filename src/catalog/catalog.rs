@@ -7,7 +7,7 @@ use crate::error::Result;
 
 /// The catalog stores schema information. It handles table
 /// creation, table lookup, index creation, and index lookup.
-pub trait Catalog {
+pub trait Catalog: Sync + Send {
     /// Reads a table, if it exists
     fn read_table(&self, table: &str) -> Result<Option<Schema>>;
 
@@ -39,4 +39,39 @@ pub trait Catalog {
 
     /// Scan all the indexes for the table identified by table_name
     fn scan_table_indexes(&self, table: &str) -> Result<Indexes>;
+}
+
+pub struct TodoCatalog {}
+impl Catalog for TodoCatalog {
+    fn read_table(&self, _table: &str) -> Result<Option<Schema>> {
+        todo!()
+    }
+
+    fn create_table(&self, _schema: Schema) -> Result<()> {
+        todo!()
+    }
+
+    fn delete_table(&self, _table: &str) -> Result<()> {
+        todo!()
+    }
+
+    fn scan_tables(&self) -> Result<Schemas> {
+        todo!()
+    }
+
+    fn read_index(&self, _index: &str, _table: &str) -> Result<Option<Index>> {
+        todo!()
+    }
+
+    fn create_index(&self, _index: Index) -> Result<()> {
+        todo!()
+    }
+
+    fn delete_index(&self, _index: &str, _table: &str) -> Result<()> {
+        todo!()
+    }
+
+    fn scan_table_indexes(&self, _table: &str) -> Result<Indexes> {
+        todo!()
+    }
 }

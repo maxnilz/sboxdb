@@ -15,7 +15,7 @@ use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::context::ConstEvalCtx;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionPlan;
-use crate::sql::execution::Scheduler;
+use crate::sql::execution::ExecutionEngine;
 use crate::sql::plan::expr::BinaryTypeCoercer;
 use crate::sql::plan::expr::Operator;
 use crate::sql::plan::schema::FieldBuilder;
@@ -626,7 +626,7 @@ impl ExistsExec {
 impl ExistsExec {
     /// evaluate non-correlated subquery once and broadcast to all.
     fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         let exists = !rs.is_empty();
         let value = if !self.negated { Value::Boolean(exists) } else { Value::Boolean(!exists) };
         let values = vec![value; batch.num_rows()];
@@ -641,7 +641,7 @@ impl ExistsExec {
     ) -> Result<bool> {
         let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
@@ -706,7 +706,7 @@ impl ScalarSubqueryExec {
 
     /// evaluate non-correlated subquery once and broadcast to all.
     fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
-        let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let mut rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.rows.len() != 1 && rs.rows[0].len() != 1 {
             return Err(Error::internal("Expect single value from the scalar subquery"));
         }
@@ -722,7 +722,7 @@ impl ScalarSubqueryExec {
     ) -> Result<Value> {
         let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch)?;
-        let mut rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let mut rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
@@ -797,7 +797,7 @@ impl InSubqueryExec {
 
     /// evaluate non-correlated subquery once and broadcast to all.
     fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.num_cols() != 1 {
             return Err(Error::internal(format!(
                 "InSubquery is expected to produce one column only, got {}",
@@ -828,7 +828,7 @@ impl InSubqueryExec {
     ) -> Result<bool> {
         let batch = RecordBatchBuilder::new(schema).rows_ref(vec![row]).build();
         let prev_outer_query_batches = ctx.extend_outer_query_batches(batch.clone())?;
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.executor))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         // restore the previous outer query batches so that we won't
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;

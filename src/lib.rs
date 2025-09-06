@@ -8,9 +8,11 @@ extern crate core;
 
 pub mod access;
 pub mod catalog;
+pub mod client;
 pub mod concurrency;
 pub mod config;
 pub mod error;
 pub mod raft;
+pub mod server;
 mod sql;
 pub mod storage;

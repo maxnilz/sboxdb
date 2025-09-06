@@ -5,6 +5,7 @@ use std::sync::Arc;
 use log::debug;
 
 use crate::catalog::catalog::Catalog;
+use crate::catalog::catalog::TodoCatalog;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Error;
@@ -62,7 +63,6 @@ use crate::sql::plan::plan::Sort;
 use crate::sql::plan::plan::SortExpr;
 use crate::sql::plan::plan::SubqueryAlias;
 use crate::sql::plan::plan::TableScanBuilder;
-use crate::sql::plan::plan::Transaction;
 use crate::sql::plan::plan::Update;
 use crate::sql::plan::plan::Values;
 use crate::sql::plan::schema::FieldBuilder;
@@ -70,15 +70,16 @@ use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
+use crate::sql::plan::schema::EMPTY_SCHEMA;
 use crate::sql::plan::visitor::Transformed;
 use crate::sql::plan::visitor::TreeNode;
 use crate::sql::plan::visitor::VisitRecursion;
 use crate::sql::udf::new_func_registry;
 use crate::sql::udf::FuncRegistry;
 
-pub struct BindContext {
+pub struct BindContext<'a> {
     /// The transactional catalog for relation/column lookup.
-    catalog: Arc<dyn Catalog>,
+    catalog: Arc<dyn Catalog + 'a>,
     /// The query schema of the outer query plan, used to resolve
     /// the fields in subquery.
     outer_query_schema: Option<LogicalSchema>,
@@ -88,8 +89,8 @@ pub struct BindContext {
     outer_from_schema: Option<LogicalSchema>,
 }
 
-impl BindContext {
-    pub fn new(catalog: Arc<dyn Catalog>) -> Self {
+impl<'a> BindContext<'a> {
+    pub fn new(catalog: Arc<dyn Catalog + 'a>) -> Self {
         Self { catalog, outer_from_schema: None, outer_query_schema: None }
     }
 
@@ -142,33 +143,30 @@ impl BindContext {
 ///
 /// It does not perform type coercion, or perform optimization, which are done
 /// by subsequent passes.
+#[derive(Clone)]
 pub struct Planner {
     ident_normalizer: IdentNormalizer,
     func_registry: Arc<dyn FuncRegistry>,
 }
 
 impl Planner {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         let ident_normalizer = IdentNormalizer::new(true);
         let func_registry = new_func_registry();
         Self { ident_normalizer, func_registry }
     }
 
-    #[allow(dead_code)]
+    pub fn parse_scalar_expr(&self, sqlexpr: SQLExpr) -> Result<Expr> {
+        let mut ctx = BindContext::new(Arc::new(TodoCatalog {}));
+        self.sqlexpr_to_expr(&mut ctx, sqlexpr, &EMPTY_SCHEMA)
+    }
+
     pub fn sql_statement_to_plan(
         &self,
         ctx: &mut BindContext,
         statement: Statement,
     ) -> Result<Plan> {
         match statement {
-            Statement::Begin { read_only, as_of } => {
-                let as_of =
-                    if let Some(as_of) = as_of { Some(as_of.parse::<u64>()?) } else { None };
-                Ok(Plan::Transaction(Transaction::Begin { read_only, as_of }))
-            }
-            Statement::Commit => Ok(Plan::Transaction(Transaction::Commit)),
-            Statement::Rollback => Ok(Plan::Transaction(Transaction::Abort)),
             Statement::CreateTable(sql_create_table) => {
                 self.create_table_to_plan(ctx, sql_create_table)
             }
@@ -195,6 +193,7 @@ impl Planner {
                 let plan = self.sql_statement_to_plan(ctx, *statement)?;
                 Ok(Plan::Explain(Explain::new(plan, verbose, physical)))
             }
+            _ => Err(Error::internal(format!("Unexpected stmt {}", statement))),
         }
     }
 
@@ -1056,6 +1055,7 @@ impl Planner {
     }
 }
 
+#[derive(Clone)]
 pub struct IdentNormalizer {
     normalize: bool,
 }

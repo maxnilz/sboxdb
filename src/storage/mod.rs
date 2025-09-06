@@ -89,7 +89,7 @@ impl<'a, T: Debug> ScanIterator<'a> for T where
 {
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StorageType {
     Memory,
 }

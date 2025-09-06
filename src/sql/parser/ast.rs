@@ -14,7 +14,7 @@ pub enum Statement {
     /// ```sql
     ///  BEGIN TRANSACTION
     /// ```
-    Begin { read_only: bool, as_of: Option<String> },
+    Begin { read_only: bool, as_of: Option<u64> },
     ///```sql
     ///  COMMIT
     /// ```

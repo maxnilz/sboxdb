@@ -117,9 +117,13 @@ impl DynTreeNode for dyn ExecutionPlan {
 /// the execution tree that can be run against actual data.
 ///
 /// This is also known as physical planning in query processing terminology.
+#[derive(Clone)]
 pub struct Compiler {}
 
 impl Compiler {
+    pub fn new() -> Self {
+        Self {}
+    }
     pub fn build_execution_plan(&self, plan: Plan) -> Result<Arc<dyn ExecutionPlan>> {
         match plan {
             Plan::CreateTable(CreateTable { relation, schema, if_not_exists }) => {
@@ -244,7 +248,6 @@ impl Compiler {
                 let executor = self.build_execution_plan(*plan.clone())?;
                 Ok(Arc::new(ExplainExec::new(*plan, executor, verbose, physical, output_schema)))
             }
-            _ => Err(Error::internal(format!("Unexpected logical plan: {}", plan))),
         }
     }
 

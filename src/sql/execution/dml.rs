@@ -11,7 +11,7 @@ use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionPlan;
-use crate::sql::execution::Scheduler;
+use crate::sql::execution::ExecutionEngine;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 
@@ -47,7 +47,7 @@ impl ExecutionPlan for InsertExec {
         self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
@@ -104,7 +104,7 @@ impl ExecutionPlan for UpdateExec {
         self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;
@@ -164,7 +164,7 @@ impl ExecutionPlan for DeleteExec {
         self.input.init(ctx)
     }
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
-        let rs = Scheduler::poll_executor(ctx, Arc::clone(&self.input))?;
+        let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.input))?;
         let columns = rs.schema.fields().to_columns_with_value_as_default()?;
         let txn = ctx.txn();
         let mut rows_affected = 0;

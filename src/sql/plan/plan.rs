@@ -29,8 +29,6 @@ use crate::sql::plan::visitor::VisitRecursion;
 /// Projection or Filter). Also known as `Logical Plan`
 #[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Plan {
-    /// Transaction statements
-    Transaction(Transaction),
     /// Create table
     CreateTable(CreateTable),
     /// Create index
@@ -89,10 +87,7 @@ pub enum Plan {
 impl Plan {
     pub fn schema(&self) -> &LogicalSchema {
         match self {
-            Plan::Transaction(_)
-            | Plan::CreateIndex(_)
-            | Plan::DropTable(_)
-            | Plan::DropIndex(_) => &EMPTY_SCHEMA,
+            Plan::CreateIndex(_) | Plan::DropTable(_) | Plan::DropIndex(_) => &EMPTY_SCHEMA,
             Plan::CreateTable(CreateTable { schema, .. }) => schema,
             Plan::Insert(Insert { output_schema, .. }) => output_schema,
             Plan::Update(Update { output_schema, .. }) => output_schema,
@@ -161,8 +156,7 @@ impl TreeNode for Plan {
             })
         };
         match self {
-            Plan::Transaction(_)
-            | Plan::CreateTable(_)
+            Plan::CreateTable(_)
             | Plan::CreateIndex(_)
             | Plan::DropTable(_)
             | Plan::DropIndex(_)
@@ -205,8 +199,7 @@ impl TreeNode for Plan {
         F: FnMut(Self) -> Result<Transformed<Self>>,
     {
         match self {
-            Plan::Transaction(_)
-            | Plan::CreateTable(_)
+            Plan::CreateTable(_)
             | Plan::CreateIndex(_)
             | Plan::DropTable(_)
             | Plan::DropIndex(_)
@@ -283,18 +276,6 @@ impl<'a, 'b> IndentVisitor<'a, 'b> {
         impl Display for Wrapper<'_> {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 match self.0 {
-                    Plan::Transaction(txn) => match txn {
-                        Transaction::Begin { read_only, as_of } => {
-                            let as_of = if let Some(as_of) = as_of {
-                                format!(" as_of: {}", as_of)
-                            } else {
-                                "".to_string()
-                            };
-                            write!(f, "Transaction begin: read_only: {read_only}{as_of}")
-                        }
-                        Transaction::Commit => write!(f, "Transaction commit"),
-                        Transaction::Abort => write!(f, "Transaction abort"),
-                    },
                     Plan::CreateTable(CreateTable { relation, if_not_exists, .. }) => {
                         write!(f, "CreateTable {relation}, if not exists: {if_not_exists}")
                     }
@@ -713,14 +694,6 @@ impl SubqueryAlias {
         )?;
         Ok(Self { input: Box::new(plan), alias, schema })
     }
-}
-
-/// Transaction statements
-#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
-pub enum Transaction {
-    Begin { read_only: bool, as_of: Option<u64> },
-    Commit,
-    Abort,
 }
 
 /// Scan rows from a table/relation.

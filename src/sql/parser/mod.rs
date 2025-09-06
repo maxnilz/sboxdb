@@ -48,7 +48,6 @@ pub struct Parser {
 
 impl Parser {
     /// Creates a new parser for the given string input
-    #[allow(dead_code)]
     pub fn new(query: &str) -> Result<Parser> {
         let tokens = Lexer::new(query).into_iter().collect::<Result<Vec<_>>>()?;
         Ok(Parser { tokens, index: 0 })
@@ -175,7 +174,10 @@ impl Parser {
         let as_of = if self.parse_keywords(&[Keyword::As, Keyword::Of]) {
             let next_token = self.next_token();
             match next_token {
-                Token::Number(s) => Ok(Some(s)),
+                Token::Number(s) => {
+                    let version = u64::from_str(&s)?;
+                    Ok(Some(version))
+                }
                 _ => self.expected("as of version", next_token),
             }
         } else {
@@ -350,7 +352,7 @@ impl Parser {
     }
 
     /// Parses an expr using Pratt (top-down precedence) parser
-    fn parse_expr(&mut self) -> Result<Expr> {
+    pub fn parse_expr(&mut self) -> Result<Expr> {
         self.parse_subexpr(self.prec_unknown())
     }
 
