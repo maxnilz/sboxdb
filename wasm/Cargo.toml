@@ -1,0 +1,13 @@
+[package]
+name = "wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# required to emit a .wasm when targeting wasm32-unknown-unknown
+crate-type = ["cdylib"]
+
+[dependencies]
+sboxdb = { path = "../", default-features = false, features = ["std", "wasm"] }
+once_cell = "1.21.3"
+wasm-bindgen = "0.2"

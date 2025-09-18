@@ -2,7 +2,11 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::ops::Bound;
 use std::sync::Arc;
+#[cfg(not(feature = "wasm"))]
 use std::sync::Mutex;
+
+#[cfg(feature = "wasm")]
+use wasm_sync::Mutex;
 
 use super::ScanIterator;
 use super::Storage;

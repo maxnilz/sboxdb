@@ -84,6 +84,7 @@ use crate::sql::plan::visitor::DynTreeNode;
 pub trait ExecutionPlan: Debug + Display {
     /// Returns the physical expression as [`Any`] so that it can be
     /// downcast to a specific implementation.
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 
     fn schema(&self) -> LogicalSchema;

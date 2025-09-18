@@ -17,6 +17,7 @@ pub type GroupId = u64;
 
 /// Trait for implementing user defined aggregate functions.
 pub trait AggregateUDF: Debug + Sync + Send {
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 
     /// Returns this function's name.
@@ -70,12 +71,12 @@ make_udfa_function!(Count, count);
 
 #[derive(Debug)]
 pub struct Count {
-    signature: Signature,
+    _signature: Signature,
 }
 
 impl Count {
     pub fn new() -> Self {
-        Self { signature: Signature::Nullary }
+        Self { _signature: Signature::Nullary }
     }
 }
 

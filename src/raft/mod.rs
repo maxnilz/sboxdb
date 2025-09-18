@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::raft::message::ProposalResult;
 
 pub mod message;
 pub mod node;
@@ -58,6 +59,16 @@ pub enum CommandResult {
     Dropped,
     Ongoing(Index),
     Applied { index: Index, result: Result<Command> },
+}
+
+impl From<ProposalResult> for CommandResult {
+    fn from(value: ProposalResult) -> Self {
+        match value {
+            ProposalResult::Dropped => CommandResult::Dropped,
+            ProposalResult::Ongoing(index) => CommandResult::Ongoing(index),
+            ProposalResult::Applied { index, result } => CommandResult::Applied { index, result },
+        }
+    }
 }
 
 // A message that passed from raft to state machine

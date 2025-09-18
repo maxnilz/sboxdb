@@ -10,8 +10,8 @@ use crate::error::Result;
 use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::Context;
-use crate::sql::execution::ExecutionPlan;
 use crate::sql::execution::ExecutionEngine;
+use crate::sql::execution::ExecutionPlan;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 

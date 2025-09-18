@@ -206,9 +206,15 @@ impl Node for Follower {
 
                 let (last_index, _) = self.rn.log.last();
 
-                #[rustfmt::skip]
-                info!(self.rn, "accept {} entries from {}, discard: {}, last_index: {}/{}, c: {}/{}",
-                    num, msg.from, discard, last_index0, last_index, ae.leader_commit, self.rn.commit_index);
+                if num == 0 {
+                    #[rustfmt::skip]
+                    trace!(self.rn, "accept {} entries from {}, discard: {}, last_index: {}/{}, c: {}/{}",
+                        num, msg.from, discard, last_index0, last_index, ae.leader_commit, self.rn.commit_index);
+                } else {
+                    #[rustfmt::skip]
+                    info!(self.rn, "accept {} entries from {}, discard: {}, last_index: {}/{}, c: {}/{}",
+                        num, msg.from, discard, last_index0, last_index, ae.leader_commit, self.rn.commit_index);
+                }
 
                 // check if we have entries need to apply to state machine.
                 assert!(ae.leader_commit >= self.rn.commit_index);

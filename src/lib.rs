@@ -8,11 +8,17 @@ extern crate core;
 
 pub mod access;
 pub mod catalog;
-pub mod client;
 pub mod concurrency;
-pub mod config;
 pub mod error;
-pub mod raft;
-pub mod server;
-mod sql;
+pub mod session;
+pub mod sql;
 pub mod storage;
+
+#[cfg(feature = "native")]
+pub mod client;
+#[cfg(feature = "native")]
+pub mod config;
+#[cfg(feature = "native")]
+pub mod raft;
+#[cfg(feature = "native")]
+pub mod server;

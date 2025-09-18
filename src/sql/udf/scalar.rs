@@ -14,6 +14,7 @@ use crate::sql::udf::signature::Signature;
 /// Trait for implementing user defined scalar functions.
 pub trait ScalarUDF: Debug + Sync + Send {
     /// Returns this object as an [`Any`] trait object
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 
     /// Returns this function's name.
@@ -51,12 +52,12 @@ make_udf_function!(UpperFunc, upper);
 
 #[derive(Debug)]
 pub struct UpperFunc {
-    signature: Signature,
+    _signature: Signature,
 }
 
 impl UpperFunc {
     pub fn new() -> Self {
-        Self { signature: Signature::Exact(vec![DataType::String]) }
+        Self { _signature: Signature::Exact(vec![DataType::String]) }
     }
 }
 

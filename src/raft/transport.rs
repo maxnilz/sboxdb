@@ -51,7 +51,10 @@ pub struct TcpTransport {
 }
 
 impl TcpTransport {
-    pub fn new(me: (NodeId, SocketAddr), peers: HashMap<NodeId, SocketAddr>) -> Result<Self> {
+    pub fn try_new(me: (NodeId, SocketAddr), peers: HashMap<NodeId, SocketAddr>) -> Result<Self> {
+        if peers.keys().any(|&it| it == me.0) {
+            return Err(Error::value(format!("peers should have no node {} itself", me.0)));
+        }
         let mut txs: HashMap<NodeId, mpsc::Sender<Message>> = HashMap::new();
         for (id, addr) in peers.clone().into_iter() {
             let (tx, rx) = mpsc::channel::<Message>(10000);
@@ -132,12 +135,12 @@ impl Transport for TcpTransport {
     }
 
     fn topology(&self) -> (NodeId, Vec<NodeId>) {
-        (self.me.0, self.peers.iter().map(|(node_id, _)| *node_id).collect())
+        (self.me.0, self.peers.iter().map(|(&node_id, _)| node_id).collect())
     }
 
     async fn receiver(&self) -> Result<Box<dyn Stream<Item = Message> + Unpin + Send>> {
         let (_, addr) = self.me;
-        let listener = TcpListener::bind(addr.to_string()).await?;
+        let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = mpsc::unbounded_channel();
 
         // TODO: close connection gracefully

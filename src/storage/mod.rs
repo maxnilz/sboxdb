@@ -8,6 +8,8 @@ use serde::Serialize;
 use crate::error::Result;
 
 pub mod codec;
+
+#[cfg(feature = "native")]
 pub mod heap;
 
 pub mod memory;

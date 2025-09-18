@@ -9,6 +9,8 @@ use crate::storage::StorageType;
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct Config {
     pub id: NodeId,
+
+    #[serde(default)]
     pub peers: HashMap<NodeId, String>,
     pub log_level: String,
 
@@ -25,9 +27,9 @@ impl Config {
             .set_default("id", 1)?
             .set_default("log_level", "debug")?
             .set_default("raft_storage_type", "memory")?
-            .set_default("raft_listen_addr", "0.0.0.0:8813")?
+            .set_default("raft_listen_addr", "0.0.0.0:8811")?
             .set_default("sql_storage_type", "memory")?
-            .set_default("sql_listen_addr", "0.0.0.0:8814")?;
+            .set_default("sql_listen_addr", "0.0.0.0:8911")?;
         if !file.is_empty() {
             cfg = cfg.add_source(config::File::with_name(file))
         }

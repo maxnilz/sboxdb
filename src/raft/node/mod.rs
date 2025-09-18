@@ -43,6 +43,11 @@ macro_rules! error {
         log!($rn, ::log::Level::Error, $($arg)+)
     };
 }
+macro_rules! trace {
+    ($rn:expr, $($arg:tt)+) => {
+        log!($rn, ::log::Level::Trace, $($arg)+)
+    };
+}
 
 pub mod candidate;
 pub mod follower;

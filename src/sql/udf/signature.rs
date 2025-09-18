@@ -1,6 +1,7 @@
 use crate::access::value::Tuple;
 use crate::catalog::r#type::DataType;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum Signature {
     /// One or more arguments with exactly the specified types in order.
@@ -21,11 +22,11 @@ pub struct ScalarFunctionArgs {
     pub args: Vec<Tuple>,
     /// The number of rows in record batch being evaluated,
     /// paired with the args.
-    pub num_rows: usize,
+    pub _num_rows: usize,
 }
 
 impl ScalarFunctionArgs {
     pub fn new(args: Vec<Tuple>, num_rows: usize) -> Self {
-        Self { args, num_rows }
+        Self { args, _num_rows: num_rows }
     }
 }

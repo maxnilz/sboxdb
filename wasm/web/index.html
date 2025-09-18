@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>sboxdb</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        textarea { width: 100%; height: 100px; }
+        #output { white-space: pre-wrap; background: #f8f8f8; padding: 1em; margin-top: 1em; }
+    </style>
+</head>
+<body>
+    <h1>Wasm sboxdb</h1>
+    <p>
+        Just for fun, sboxdb is running entirely in browser's local memory and data is not persisted.
+    </p>
+    <textarea id="sql" placeholder="Enter SQL..."></textarea><br>
+    <button id="run">Run</button>
+    <div id="output"></div>
+    <script type="module" src="repl.js"></script>
+</body>
+</html>

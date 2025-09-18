@@ -107,7 +107,7 @@ impl Engine for Raft {
     }
 
     fn begin_as_of(&self, version: u64) -> Result<Self::Transaction> {
-        RaftTxn::begin(self.client.clone(), false, Some(version))
+        RaftTxn::begin(self.client.clone(), true, Some(version))
     }
 }
 
@@ -310,8 +310,8 @@ impl<T: Storage> State<T> {
         State { engine: Kv::new(kv) }
     }
 
-    fn query(&self, query: Query) -> Result<Command> {
-        let res = match query {
+    fn query(&self, query: Query) -> Result<Vec<u8>> {
+        match query {
             Query::ScanTables { txn } => {
                 let txn = self.engine.resume(txn)?;
                 bincodec::serialize(&txn.scan_tables()?.collect::<Vec<_>>())
@@ -346,12 +346,11 @@ impl<T: Storage> State<T> {
                 // FIXME These need to stream rows somehow
                 bincodec::serialize(&txn.scan_index_entries(&table, &index)?.collect::<Vec<_>>())
             }
-        };
-        res.and_then(|it| Ok(Command::from(it)))
+        }
     }
 
-    fn mutate(&self, mutation: Mutation) -> Result<Command> {
-        let res = match mutation {
+    fn mutate(&self, mutation: Mutation) -> Result<Vec<u8>> {
+        match mutation {
             Mutation::Begin { read_only, as_of } => {
                 if read_only {
                     let txn = self.engine.begin_read_only()?;
@@ -394,8 +393,7 @@ impl<T: Storage> State<T> {
                 let txn = self.engine.resume(txn)?;
                 bincodec::serialize(&txn.drop(&table)?)
             }
-        };
-        res.and_then(|it| Ok(Command::from(it)))
+        }
     }
 }
 
@@ -406,8 +404,14 @@ impl<T: Storage> raft::State for State<T> {
         match request {
             // FIXME: query is considered as ready-only op, should not
             //  go though raft log replication.
-            Request::Query(query) => self.query(bincodec::deserialize(&query)?),
-            Request::Mutate(mutation) => self.mutate(bincodec::deserialize(&mutation)?),
+            Request::Query(query) => {
+                let result = self.query(bincodec::deserialize(&query)?)?;
+                Ok(bincodec::serialize(&Response::Query(result))?.into())
+            }
+            Request::Mutate(mutation) => {
+                let result = self.mutate(bincodec::deserialize(&mutation)?)?;
+                Ok(bincodec::serialize(&Response::Mutate(result))?.into())
+            }
         }
     }
 }

@@ -146,11 +146,14 @@ use std::fmt::Formatter;
 use std::iter::Peekable;
 use std::ops::Bound;
 use std::sync::Arc;
+#[cfg(not(feature = "wasm"))]
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(feature = "wasm")]
+use wasm_sync::Mutex;
 
 use crate::error::Error;
 use crate::error::Result;

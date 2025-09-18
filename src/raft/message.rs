@@ -9,7 +9,6 @@ use super::log::Entry;
 use super::node::NodeId;
 use super::node::ProposalId;
 use super::Command;
-use super::CommandResult;
 use super::Index;
 use super::Term;
 use crate::error::Result;
@@ -175,16 +174,6 @@ impl Display for ProposalResult {
                     }
                 }
             }
-        }
-    }
-}
-
-impl From<ProposalResult> for CommandResult {
-    fn from(value: ProposalResult) -> Self {
-        match value {
-            ProposalResult::Dropped => CommandResult::Dropped,
-            ProposalResult::Ongoing(index) => CommandResult::Ongoing(index),
-            ProposalResult::Applied { index, result } => CommandResult::Applied { index, result },
         }
     }
 }

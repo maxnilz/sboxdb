@@ -7,12 +7,16 @@ use std::num::TryFromIntError;
 use std::string::FromUtf8Error;
 use std::sync::mpsc;
 
+#[cfg(feature = "native")]
 use config::ConfigError;
 use log::ParseLevelError;
 use log::SetLoggerError;
+#[cfg(feature = "native")]
 use rustyline::error::ReadlineError;
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(feature = "native")]
+use tokio::sync::broadcast;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -116,20 +120,50 @@ impl From<mpsc::RecvError> for Error {
     }
 }
 
-impl From<TryFromIntError> for Error {
-    fn from(err: TryFromIntError) -> Self {
+#[cfg(feature = "native")]
+impl<T> From<broadcast::error::SendError<T>> for Error {
+    fn from(err: broadcast::error::SendError<T>) -> Self {
         Error::internal(err)
     }
 }
 
+#[cfg(feature = "native")]
 impl From<ConfigError> for Error {
     fn from(err: ConfigError) -> Self {
         Error::internal(err)
     }
 }
 
+#[cfg(feature = "native")]
 impl From<tokio::task::JoinError> for Error {
     fn from(err: tokio::task::JoinError) -> Self {
+        Error::internal(err)
+    }
+}
+
+#[cfg(feature = "native")]
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
+    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
+        Error::internal(err)
+    }
+}
+
+#[cfg(feature = "native")]
+impl<T> From<tokio::sync::mpsc::error::TrySendError<T>> for Error {
+    fn from(err: tokio::sync::mpsc::error::TrySendError<T>) -> Self {
+        Error::internal(err)
+    }
+}
+
+#[cfg(feature = "native")]
+impl From<tokio::sync::oneshot::error::RecvError> for Error {
+    fn from(err: tokio::sync::oneshot::error::RecvError) -> Self {
+        Error::internal(err)
+    }
+}
+
+impl From<TryFromIntError> for Error {
+    fn from(err: TryFromIntError) -> Self {
         Error::internal(err)
     }
 }
@@ -140,26 +174,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
-    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
-        Error::internal(err)
-    }
-}
-
-impl<T> From<tokio::sync::mpsc::error::TrySendError<T>> for Error {
-    fn from(err: tokio::sync::mpsc::error::TrySendError<T>) -> Self {
-        Error::internal(err)
-    }
-}
-
 impl<T> From<std::sync::PoisonError<T>> for Error {
     fn from(err: std::sync::PoisonError<T>) -> Self {
-        Error::internal(err)
-    }
-}
-
-impl From<tokio::sync::oneshot::error::RecvError> for Error {
-    fn from(err: tokio::sync::oneshot::error::RecvError) -> Self {
         Error::internal(err)
     }
 }
@@ -211,6 +227,7 @@ impl From<SetLoggerError> for Error {
     }
 }
 
+#[cfg(feature = "native")]
 impl From<ReadlineError> for Error {
     fn from(err: ReadlineError) -> Self {
         Error::internal(err)

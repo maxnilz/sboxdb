@@ -1,0 +1,12 @@
+id: 5
+peers:
+  '1': localhost:8811
+  '2': localhost:8812
+  '3': localhost:8813
+  '4': localhost:8814
+log_level: INFO
+
+raft_storage_type: memory
+raft_listen_addr: 0.0.0.0:8815
+sql_storage_type: memory
+sql_listen_addr: 0.0.0.0:8915

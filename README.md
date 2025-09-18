@@ -39,6 +39,15 @@ A distributed SQL database, written as a learning project about my journey on th
     - [x] Physical Planner
     - [x] Executors
     - [x] Function support
+    - [ ] Correctness-wise TPC-C/TPC-H/TPC-DS
+    - [ ] Performance-wise TPC-C/TPC-H/TPC-DS
+- [x] Wasm for browser for fun
+
+## Tools
+
+1. [Just][just-gh] - Task runner for project commands
+    - Available in most package managers
+    - See installation instructions in the [Just documentation][just-docs]
 
 ## Reference
 
@@ -47,4 +56,7 @@ A distributed SQL database, written as a learning project about my journey on th
 - https://github.com/postgres/postgres
 - https://github.com/apache/datafusion-sqlparser-rs
 - https://github.com/apache/datafusion
- 
+
+
+[just-gh]: https://github.com/casey/just
+[just-docs]: https://github.com/casey/just?tab=readme-ov-file#installation

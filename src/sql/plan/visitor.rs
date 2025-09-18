@@ -296,6 +296,7 @@ impl<T> Transformed<T> {
         Self { data, transformed, recursion }
     }
 
+    #[allow(dead_code)]
     pub fn yes(data: T) -> Self {
         Self { data, transformed: true, recursion: VisitRecursion::Continue }
     }
@@ -327,6 +328,7 @@ impl<T> Transformed<T> {
     /// Assuming we are getting a [`VisitRecursion`] result from a node, based on the
     /// returning state, decided whether to execute the provided closure to its
     /// sibling.
+    #[allow(dead_code)]
     pub fn when_sibling<F>(self, f: F) -> Result<Transformed<T>>
     where
         F: FnOnce(T) -> Result<Transformed<T>>,
@@ -343,6 +345,7 @@ impl<T> Transformed<T> {
     /// Assuming we are getting a [`VisitRecursion`] result from a node, based on the
     /// returning state, decided whether to execute the provided closure to its
     /// parent.
+    #[allow(dead_code)]
     pub fn when_parent<F>(self, f: F) -> Result<Transformed<T>>
     where
         F: FnOnce(T) -> Result<Transformed<T>>,
@@ -358,6 +361,7 @@ impl<T> Transformed<T> {
 
     /// Applies an infallible `f` to the data of this [`Transformed`] object,
     /// without modifying the `transformed` flag.
+    #[allow(dead_code)]
     pub fn update_data<U, F: FnOnce(T) -> U>(self, f: F) -> Transformed<U> {
         Transformed::new(f(self.data), self.transformed, self.recursion)
     }

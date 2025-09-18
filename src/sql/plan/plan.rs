@@ -733,6 +733,7 @@ impl TableScanBuilder {
     }
 
     /// Set the column indices to use as a projection
+    #[allow(dead_code)]
     pub fn project(mut self, indices: Vec<usize>) -> Self {
         self.projection = Some(indices);
         self
@@ -744,13 +745,8 @@ impl TableScanBuilder {
         self
     }
 
-    /// Add multiple filter expressions
-    pub fn filters(mut self, exprs: Vec<Expr>) -> Self {
-        self.filters.extend(exprs);
-        self
-    }
-
     /// Set the output schema
+    #[allow(dead_code)]
     pub fn output_schema(mut self, schema: LogicalSchema) -> Self {
         self.output_schema = schema;
         self

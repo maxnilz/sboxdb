@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::net::SocketAddr;
 use std::ops::Range;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -48,9 +48,8 @@ impl Transport for LabTransport {
         (self.id, SocketAddr::from_str("0.0.0.0:0").unwrap())
     }
 
-
     fn topology(&self) -> (NodeId, Vec<NodeId>) {
-        (self.id, self.peers.iter().map(|(node_id, _)| *node_id).collect())
+        (self.id, self.peers.iter().map(|(&node_id, _)| node_id).collect())
     }
 
     async fn receiver(&self) -> Result<Box<dyn Stream<Item = Message> + Unpin + Send>> {

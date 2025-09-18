@@ -366,11 +366,13 @@ impl FieldBuilder {
     }
 
     /// Mark this column as unique
+    #[allow(dead_code)]
     pub fn unique(self) -> Self {
         self.uniqueness(true)
     }
 
     /// Set the default value for this column
+    #[allow(dead_code)]
     pub fn default_value(self, expr: Expr) -> Self {
         self.default(Some(expr))
     }

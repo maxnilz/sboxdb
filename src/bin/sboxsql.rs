@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
                 .short('a')
                 .long("addr")
                 .help("Address to connect to in format host:port")
-                .default_value("localhost:8814"),
+                .default_value("localhost:8911"),
         )
         .get_matches();
     let mut sboxsql = SboxSQL::try_new(args.get_one::<String>("addr").unwrap()).await?;
@@ -73,7 +73,7 @@ impl SboxSQL {
         if input.is_empty() {
             return Ok(());
         }
-        if input.starts_with('!') {
+        if input.starts_with('\\') {
             return self.execute_command(input).await;
         }
         self.execute_query(input).await

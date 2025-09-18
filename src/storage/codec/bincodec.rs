@@ -31,6 +31,7 @@ pub fn deserialize<'a, T: Deserialize<'a>>(input: &'a [u8]) -> Result<T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "native")]
 mod tests {
     use std::fmt::Debug;
 

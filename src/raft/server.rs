@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use log::debug;
+use log::info;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -28,6 +29,7 @@ use super::State;
 use crate::error::Error;
 use crate::error::Result;
 
+#[derive(Debug)]
 struct Request {
     command: Command,
     timeout: Option<Duration>,
@@ -91,7 +93,7 @@ impl Server {
         let (id, peers) = transport.topology();
         let (node_tx, node_rx) = mpsc::unbounded_channel();
         let rn = RawNode::new(id, peers, log, node_tx, state)?;
-        // init server as follower at the very beginning.
+        // Init server as follower at the very beginning.
         let follower = Follower::new(rn);
         let node: Box<dyn Node> = Box::new(follower);
         let (state_tx, state_rx) = mpsc::unbounded_channel();
@@ -103,9 +105,14 @@ impl Server {
     pub async fn serve(&self, done: broadcast::Receiver<()>) -> Result<()> {
         let context = self.context.borrow_mut().take().unwrap();
         let eventloop = tokio::spawn(Self::eventloop(context, done));
-        eventloop.await?
+        let err = eventloop.await?;
+        info!("eventloop on server {} closed", self.my_id());
+        err
     }
 
+    pub fn my_id(&self) -> NodeId {
+        self.me.0
+    }
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.me.1)
     }
@@ -187,7 +194,7 @@ impl Server {
         if self.state_tx.send(((), tx)).is_err() {
             return Err(Error::internal(format!(
                 "state channel on server {} is closed or dropped",
-                self.me.0
+                self.my_id()
             )));
         }
         let ns = futures::executor::block_on(rx)?;
@@ -201,12 +208,9 @@ impl Server {
     ) -> Result<CommandResult> {
         let (tx, rx) = oneshot::channel();
         let req = Request { command, timeout, tx };
-        if self.command_tx.send(req).is_err() {
-            return Err(Error::internal(format!(
-                "command channel on server {} is closed or dropped",
-                self.me.0
-            )));
+        match self.command_tx.send(req) {
+            Ok(_) => Ok(futures::executor::block_on(rx)?),
+            Err(err) => Err(err.into()),
         }
-        Ok(futures::executor::block_on(rx)?)
     }
 }
