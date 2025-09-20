@@ -1,8 +1,8 @@
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::error::Error;
 use crate::error::Result;
+use crate::parse_err;
 use crate::sql::parser::ast::AlterTableOperation;
 use crate::sql::parser::ast::Assignment;
 use crate::sql::parser::ast::BinaryOperator;
@@ -24,6 +24,7 @@ use crate::sql::parser::ast::Precedence;
 use crate::sql::parser::ast::Query;
 use crate::sql::parser::ast::SelectItem;
 use crate::sql::parser::ast::Statement;
+use crate::sql::parser::ast::TableConstraint;
 use crate::sql::parser::ast::TableFactor;
 use crate::sql::parser::ast::TableWithJoins;
 use crate::sql::parser::ast::UnaryOperator;
@@ -265,18 +266,24 @@ impl Parser {
     fn parse_ddl_create_table(&mut self) -> Result<Statement> {
         let if_not_exists = self.parse_keywords(&[Keyword::If, Keyword::Not, Keyword::Exists]);
         let table_name = self.parse_ident()?;
-        let columns = self.parse_columns()?;
-        let create_table = ast::CreateTable { name: table_name, columns, if_not_exists };
+        let (columns, table_constraints) = self.parse_columns()?;
+        let create_table =
+            ast::CreateTable { name: table_name, columns, table_constraints, if_not_exists };
         Ok(Statement::CreateTable(create_table))
     }
 
-    fn parse_columns(&mut self) -> Result<Vec<Column>> {
+    fn parse_columns(&mut self) -> Result<(Vec<Column>, Vec<TableConstraint>)> {
         let mut columns = vec![];
+        let mut table_constrains = vec![];
         if !self.consume_token(&Token::LParen) || self.consume_token(&Token::RParen) {
-            return Ok(columns);
+            return Ok((columns, table_constrains));
         }
         loop {
-            columns.push(self.parse_ddl_column_spec()?);
+            if let Some(c) = self.parse_optional_table_constraint()? {
+                table_constrains.push(c);
+            } else {
+                columns.push(self.parse_ddl_column_spec()?);
+            }
             let comma = self.consume_token(&Token::Comma);
             let rparen = self.peek_token() == Token::RParen;
             if !comma && !rparen {
@@ -287,7 +294,21 @@ impl Parser {
                 break;
             }
         }
-        Ok(columns)
+        Ok((columns, table_constrains))
+    }
+
+    fn parse_optional_table_constraint(&mut self) -> Result<Option<TableConstraint>> {
+        match self.peek_token() {
+            Token::Keyword(w) if w == Keyword::Primary => {
+                self.expect_keyword(&Keyword::Primary)?;
+                self.expect_keyword(&Keyword::Key)?;
+                self.expect_token(&Token::LParen)?;
+                let idents = self.parse_comma_separated(Parser::parse_ident)?;
+                self.expect_token(&Token::RParen)?;
+                Ok(Some(TableConstraint::PrimaryKey { columns: idents }))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn parse_ddl_column_spec(&mut self) -> Result<Column> {
@@ -654,9 +675,7 @@ impl Parser {
             if self.consume_token(&Token::Comma) {
                 // LIMIT offset, limit
                 if let Some(_) = offset {
-                    return Err(Error::parse(
-                        "Unexpected 'OFFSET number' in 'LIMIT offset, limit'",
-                    ));
+                    return Err(parse_err!("Unexpected 'OFFSET number' in 'LIMIT offset, limit'",));
                 }
                 let limit = self.parse_literal_uint()?;
                 return Ok(Some(LimitClause { offset: Some(number), limit: Some(limit) }));
@@ -929,9 +948,8 @@ impl Parser {
     where
         <T as FromStr>::Err: Display,
     {
-        s.parse::<T>().map_err(|e| {
-            Error::parse(format!("Could not parse '{s}' as {}: {e}", std::any::type_name::<T>()))
-        })
+        s.parse::<T>()
+            .map_err(|e| parse_err!("Could not parse '{s}' as {}: {e}", std::any::type_name::<T>()))
     }
 
     fn parse_ident(&mut self) -> Result<Ident> {
@@ -1083,11 +1101,11 @@ impl Parser {
     }
 
     fn expected<T>(&self, expected: &str, found: Token) -> Result<T> {
-        Err(Error::parse(format!("Expected: {expected}, found: {found}")))
+        Err(parse_err!("Expected: '{expected}', found: '{found}'"))
     }
 
     fn expected_ref<T>(&self, expected: &str, found: &Token) -> Result<T> {
-        Err(Error::parse(format!("Expected: {expected}, found: {found}")))
+        Err(parse_err!("Expected: '{expected}', found: '{found}'"))
     }
 }
 
@@ -1134,13 +1152,14 @@ mod tests {
     test_parse_stmt! {
         create_table: r#"
              CREATE TABLE if not exists foo(
-              col1 integer primary key,
+              col1 integer,
               col2 varchar(20) NOT NULL,
               col3 integer default 1,
               col4 double default 3.14,
               col5 double default -2.1E-4 + 2,
               col6 text default 'a' NOT NULL,
-              "col 7" text NULL
+              "col 7" text NULL,
+              PRIMARY KEY(col1, col2)
             );
         "#,
         create_index: "CREATE UNIQUE INDEX IF NOT EXISTS index1 ON table1 (col1, col2);",

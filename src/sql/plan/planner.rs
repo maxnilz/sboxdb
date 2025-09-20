@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use log::debug;
@@ -8,9 +9,12 @@ use crate::catalog::catalog::Catalog;
 use crate::catalog::catalog::TodoCatalog;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
+use crate::catalog::schema::Constraint;
 use crate::error::Error;
 use crate::error::Result;
 use crate::format_expr_vec;
+use crate::internal_err;
+use crate::parse_err;
 use crate::sql::parser::ast::BinaryOperator;
 use crate::sql::parser::ast::CreateIndex as SQLCreateIndex;
 use crate::sql::parser::ast::CreateTable as SQLCreateTable;
@@ -27,6 +31,7 @@ use crate::sql::parser::ast::JoinOperator;
 use crate::sql::parser::ast::Query;
 use crate::sql::parser::ast::SelectItem;
 use crate::sql::parser::ast::Statement;
+use crate::sql::parser::ast::TableConstraint;
 use crate::sql::parser::ast::TableFactor;
 use crate::sql::parser::ast::TableWithJoins;
 use crate::sql::parser::ast::UnaryOperator;
@@ -76,6 +81,7 @@ use crate::sql::plan::visitor::TreeNode;
 use crate::sql::plan::visitor::VisitRecursion;
 use crate::sql::udf::new_func_registry;
 use crate::sql::udf::FuncRegistry;
+use crate::unimplemented_err;
 
 pub struct BindContext<'a> {
     /// The transactional catalog for relation/column lookup.
@@ -183,7 +189,7 @@ impl Planner {
                 Ok(Plan::DropIndex(DropIndex::new(name, table, if_exists)))
             }
             Statement::AlterTable { .. } => {
-                self.unimplemented_err(Error::parse("ALTER TABLE not supported yet"))
+                self.unimplemented_err(parse_err!("ALTER TABLE not supported yet"))
             }
             Statement::Insert(insert) => self.insert_to_plan(ctx, insert),
             Statement::Update(update) => self.update_to_plan(ctx, update),
@@ -193,7 +199,7 @@ impl Planner {
                 let plan = self.sql_statement_to_plan(ctx, *statement)?;
                 Ok(Plan::Explain(Explain::new(plan, verbose, physical)))
             }
-            _ => Err(Error::internal(format!("Unexpected stmt {}", statement))),
+            _ => Err(internal_err!("Unexpected stmt {}", statement)),
         }
     }
 
@@ -404,7 +410,7 @@ impl Planner {
                     .catalog
                     .read_table(&table)?
                     .map(LogicalSchema::from)
-                    .ok_or(Error::parse(format!("Table {} not exits", table)))?;
+                    .ok_or(parse_err!("Table {} not exits", table))?;
                 let scan = TableScanBuilder::new(table.as_str(), &table_schema).build();
                 (Plan::TableScan(scan), alias)
             }
@@ -434,7 +440,7 @@ impl Planner {
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
-            .ok_or(Error::parse(format!("Table {} not exits", table)))?;
+            .ok_or(parse_err!("Table {} not exits", table))?;
 
         // build a full table scan node
         let mut scan_builder = TableScanBuilder::new(table.as_str(), &table_schema);
@@ -452,9 +458,9 @@ impl Planner {
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
-            .ok_or(Error::parse(format!("Table {} not exits", table)))?;
+            .ok_or(parse_err!("Table {} not exits", table))?;
         if update.assignments.is_empty() {
-            return Err(Error::parse(format!("No assignments found for update table {}", table)));
+            return Err(parse_err!("No assignments found for update table {}", table));
         }
 
         // build a full table scan node
@@ -506,7 +512,7 @@ impl Planner {
             .catalog
             .read_table(&table)?
             .map(LogicalSchema::from)
-            .ok_or(Error::parse(format!("Table {} not exits", table)))?;
+            .ok_or(parse_err!("Table {} not exits", table))?;
 
         // Get the insertion schema from the given columns and the target
         // index in table schema.
@@ -530,9 +536,9 @@ impl Planner {
                     let name = self.normalize_ident(&id);
                     let idx = table_schema
                         .field_index_by_name(&None, &name)
-                        .ok_or(Error::parse(format!("Column {} not exists", name)))?;
+                        .ok_or(parse_err!("Column {} not exists", name))?;
                     if value_indices[idx].is_some() {
-                        return Err(Error::parse(format!("Duplicated column {}", name)));
+                        return Err(parse_err!("Duplicated column {}", name));
                     }
                     value_indices[idx] = Some(i);
                     let field = table_schema.field(idx);
@@ -541,7 +547,7 @@ impl Planner {
                 .collect::<Result<Vec<_>>>()?
                 .into();
             let qualifiers = vec![Some(TableReference::new(&table)); fields.len()];
-            (LogicalSchema::try_new(fields, qualifiers)?, value_indices)
+            (LogicalSchema::from_qualified_fields(fields, qualifiers)?, value_indices)
         };
 
         // parse the origin source plan with the input insertion schema.
@@ -549,9 +555,7 @@ impl Planner {
             InsertSource::Select(query) => {
                 let plan = self.query_to_plan(ctx, *query)?;
                 if plan.schema().len() != insertion_schema.len() {
-                    return Err(Error::parse(
-                        "Query output columns doesn't match the insert query",
-                    ));
+                    return Err(parse_err!("Query output columns doesn't match the insert query",));
                 }
                 Ok::<Plan, Error>(plan)
             }
@@ -604,17 +608,18 @@ impl Planner {
         let table_schema: LogicalSchema = ctx
             .catalog
             .read_table(&table)?
-            .ok_or(Error::parse(format!("Table {} not exists", &table)))?
+            .ok_or(parse_err!("Table {} not exists", &table))?
             .into();
         let columns: Fields = a
             .column_names
             .into_iter()
             .map(|it| {
                 let name = self.normalize_ident(&it);
-                let (_, field_ref) = table_schema.find(&name).ok_or(Error::parse(format!(
+                let (_, field_ref) = table_schema.find(&name).ok_or(parse_err!(
                     "Column {} not exists on table {}",
-                    name, table
-                )))?;
+                    name,
+                    table
+                ))?;
                 Ok(field_ref)
             })
             .collect::<Result<Vec<_>>>()?
@@ -624,27 +629,37 @@ impl Planner {
 
     fn create_table_to_plan(&self, ctx: &mut BindContext, a: SQLCreateTable) -> Result<Plan> {
         let relation = self.normalize_ident(&a.name);
-        let fields: Fields = a
-            .columns
-            .into_iter()
-            .map(|it| {
-                let empty_schema = Arc::new(LogicalSchema::empty());
-                let default = it
-                    .default
-                    .map(|sqlexpr| self.sqlexpr_to_expr(ctx, sqlexpr, &empty_schema))
-                    .transpose()?;
-                let datatype = self.sql_convert_data_type(&it.datatype)?;
-                let field = FieldBuilder::new(self.normalize_ident(&it.name), datatype)
-                    .primary_key(it.primary_key)
-                    .nullable(it.nullable)
-                    .uniqueness(it.unique)
-                    .default(default)
-                    .build();
-                Ok(field)
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into();
-        let schema = LogicalSchema::from_unqualified_fields(fields)?;
+        let mut constraints = vec![];
+        let mut fields = vec![];
+        for (i, it) in a.columns.into_iter().enumerate() {
+            let empty_schema = Arc::new(LogicalSchema::empty());
+            let default = it
+                .default
+                .map(|sqlexpr| self.sqlexpr_to_expr(ctx, sqlexpr, &empty_schema))
+                .transpose()?;
+            let datatype = self.sql_convert_data_type(&it.datatype)?;
+            let field = FieldBuilder::new(self.normalize_ident(&it.name), datatype)
+                .primary_key(it.primary_key)
+                .nullable(it.nullable)
+                .default(default);
+            fields.push(field);
+            if it.unique {
+                constraints.push(Constraint::Unique(vec![i]));
+            }
+        }
+        for tc in a.table_constraints {
+            match tc {
+                TableConstraint::PrimaryKey { columns } => {
+                    let column_names: HashSet<String> =
+                        columns.into_iter().map(|it| self.normalize_ident(&it)).collect();
+                    fields = fields
+                        .into_iter()
+                        .map(|it| if column_names.contains(&it.name) { it.partkey() } else { it })
+                        .collect();
+                }
+            }
+        }
+        let schema = LogicalSchema::from_fields_constraints(fields, constraints)?;
         Ok(Plan::CreateTable(CreateTable::new(relation, schema, a.if_not_exists)))
     }
 
@@ -1047,11 +1062,11 @@ impl Planner {
     }
 
     fn semantic_err<T, E: ToString>(&self, msg: E) -> Result<T> {
-        Err(Error::parse(msg))
+        Err(parse_err!("{}", msg.to_string()))
     }
 
     fn unimplemented_err<T, E: ToString>(&self, msg: E) -> Result<T> {
-        Err(Error::unimplemented(msg))
+        Err(unimplemented_err!("{}", msg.to_string()))
     }
 }
 
@@ -1093,6 +1108,7 @@ pub mod tests {
     use crate::catalog::schema::Schemas;
     use crate::sql::parser::display_utils;
     use crate::sql::parser::Parser;
+    use crate::value_err;
 
     const GOLDEN_DIR: &str = "src/sql/plan/golden";
 
@@ -1195,7 +1211,7 @@ pub mod tests {
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("users", columns)))
+                    Ok(Some(Schema::new("users", columns, vec![])))
                 }
                 "old_users" => {
                     let columns = vec![
@@ -1204,7 +1220,7 @@ pub mod tests {
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
                         ColumnBuilder::new("active", DataType::Boolean).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("old_users", columns)))
+                    Ok(Some(Schema::new("old_users", columns, vec![])))
                 }
                 "orders" => {
                     let columns = vec![
@@ -1213,16 +1229,16 @@ pub mod tests {
                         ColumnBuilder::new("product_id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("amound", DataType::Float).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("orders", columns)))
+                    Ok(Some(Schema::new("orders", columns, vec![])))
                 }
                 "products" => {
                     let columns = vec![
                         ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                     ];
-                    Ok(Some(Schema::new("products", columns)))
+                    Ok(Some(Schema::new("products", columns, vec![])))
                 }
-                _ => Err(Error::value(format!("Table {} not found", table))),
+                _ => Err(value_err!("Table {} not found", table)),
             }
         }
 

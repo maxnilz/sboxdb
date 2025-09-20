@@ -5,6 +5,7 @@ use rustyline::Modifiers;
 use sboxdb::client::Client;
 use sboxdb::error::Error;
 use sboxdb::error::Result;
+use sboxdb::parse_err;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -82,7 +83,7 @@ impl SboxSQL {
     /// Handles a REPL command (prefixed by \, e.g. \help)
     async fn execute_command(&mut self, input: &str) -> Result<()> {
         let mut input = input.split_ascii_whitespace();
-        let command = input.next().ok_or_else(|| Error::parse("Expected command."))?;
+        let command = input.next().ok_or_else(|| parse_err!("Expected command."))?;
         match command {
             "\\help" => println!(
                 r#"
@@ -92,7 +93,7 @@ The following commands are also available:
     \help        This help message
 "#
             ),
-            c => return Err(Error::parse(format!("Unknown command {}", c))),
+            c => return Err(parse_err!("Unknown command {}", c)),
         };
         Ok(())
     }

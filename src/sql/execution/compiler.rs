@@ -9,8 +9,8 @@ use crate::access::value::Tuple;
 use crate::catalog::column::Columns;
 use crate::catalog::r#type::Value;
 use crate::catalog::schema::Schema;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::sql::execution::aggregate::AggregateExec;
 use crate::sql::execution::aggregate::AggregateFuncExpr;
 use crate::sql::execution::context::ConstEvalCtx;
@@ -75,6 +75,7 @@ use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::EMPTY_SCHEMA;
 use crate::sql::plan::visitor::DynTreeNode;
+use crate::value_err;
 
 /// A physical executable node in the query plan.
 ///
@@ -129,7 +130,8 @@ impl Compiler {
         match plan {
             Plan::CreateTable(CreateTable { relation, schema, if_not_exists }) => {
                 let columns = self.columns_from_fields(schema.fields())?;
-                let table_schema = Schema::try_new(relation, columns)?;
+                let constraints = schema.constraints();
+                let table_schema = Schema::try_new(relation, columns, constraints)?;
                 Ok(Arc::new(CreateTableExec::new(table_schema, if_not_exists)))
             }
             Plan::CreateIndex(node) => Ok(Arc::new(CreateIndexExec::try_new(node)?)),
@@ -219,7 +221,7 @@ impl Compiler {
                                 .collect::<Result<Vec<_>>>()?;
                             Ok(AggregateFuncExpr::new(a.func, args_expr, display))
                         }
-                        _ => Err(Error::internal("Expect only AggregateFunction as aggr exprs")),
+                        _ => Err(internal_err!("Expect only AggregateFunction as aggr exprs")),
                     }?;
                     aggr_funcs.push(aggr_func);
                 }
@@ -371,9 +373,10 @@ impl Compiler {
                 .map(|expr| {
                     let expr = self.build_physical_expr(expr, &EMPTY_SCHEMA)?;
                     let values = expr.evaluate(ctx, &RecordBatchBuilder::empty_schema().build())?;
-                    values.into_iter().next().ok_or_else(|| {
-                        Error::value(format!("Invalid default expr on column {}", col_name))
-                    })
+                    values
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| value_err!("Invalid default expr on column {}", col_name))
                 })
                 .transpose()
         })
@@ -401,7 +404,7 @@ impl RecordBatch {
 
     pub fn into_inner(self) -> Result<RecordBatchInner> {
         Arc::into_inner(self.0)
-            .ok_or(Error::internal("Cannot convert RecordBatchRef into RecordBatch"))
+            .ok_or(internal_err!("Cannot convert RecordBatchRef into RecordBatch"))
     }
 
     pub fn num_rows(&self) -> usize {
@@ -500,12 +503,12 @@ impl RecordBatchesRef {
                 .map(|row| {
                     row.get(idx)
                         .cloned()
-                        .ok_or(Error::internal(format!("value at column {} is out of bound", idx)))
+                        .ok_or(internal_err!("value at column {} is out of bound", idx))
                 })
                 .collect::<Result<Vec<_>>>()?;
             return Ok(Tuple::from(values));
         }
-        Err(Error::internal(format!("No reference value found for field {}", f)))
+        Err(internal_err!("No reference value found for field {}", f))
     }
 }
 

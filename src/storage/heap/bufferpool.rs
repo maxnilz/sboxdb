@@ -8,8 +8,8 @@ use super::page::Page;
 use super::page::PageId;
 use super::replacer::Replacer;
 use super::replacer::SyncLRUKReplacer;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::storage::Storage;
 
 /// The buffer pool is responsible for moving physical pages back and forth
@@ -75,7 +75,7 @@ impl BufferPool {
         }
         if frame_id.is_none() {
             // no evictable frame found
-            return Err(Error::BufferPoolNoAvailableFrame);
+            return Err(internal_err!("Buffer pool have no evictable frame"));
         }
 
         // found an evictable frame
@@ -147,7 +147,7 @@ impl BufferPool {
         // if both free list and replacer have no available frame can be
         // replaced, return with Error::BufferPoolNoAvailableFrame error.
         if frame_id.is_none() {
-            return Err(Error::BufferPoolNoAvailableFrame);
+            return Err(internal_err!("Buffer pool have no evictable frame"));
         }
         // evict the page pointed by the replaceable frame_id
         let frame_id = frame_id.unwrap();

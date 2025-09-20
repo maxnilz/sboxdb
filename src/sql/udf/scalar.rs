@@ -4,8 +4,8 @@ use std::fmt::Debug;
 use crate::access::value::Tuple;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::sql::plan::expr::Expr;
 use crate::sql::plan::schema::FieldRef;
 use crate::sql::udf::signature::ScalarFunctionArgs;
@@ -72,16 +72,16 @@ impl ScalarUDF for UpperFunc {
 
     fn return_field(&self, arg_fields: &[FieldRef]) -> Result<FieldRef> {
         if arg_fields.len() != 1 {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "upper function expect exact one argument, got {}",
                 arg_fields.len()
-            )));
+            ));
         }
         if arg_fields[0].datatype != DataType::String {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "upper function expect string argument, got {}",
                 arg_fields[0].datatype
-            )));
+            ));
         }
         Ok(arg_fields[0].clone())
     }
@@ -93,10 +93,7 @@ impl ScalarUDF for UpperFunc {
             .map(|it| match it.scalar() {
                 Ok(value) => match value {
                     Value::String(s) => Ok(s),
-                    _ => Err(Error::internal(format!(
-                        "Expect String value got {}",
-                        value.datatype()
-                    ))),
+                    _ => Err(internal_err!("Expect String value got {}", value.datatype())),
                 },
                 Err(err) => Err(err),
             })

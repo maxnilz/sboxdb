@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use sboxdb::error::Error;
+use sboxdb::internal_err;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::ApplyMsg;
 use sboxdb::raft::Command;
@@ -34,8 +34,7 @@ impl States {
             if let Some(cmd) = log.get(&index) {
                 if command != *cmd {
                     #[rustfmt::skip]
-                    let msg = format!("inconsistent command applied at {}, {}/{} {}/{}", index, id, command, i, *cmd);
-                    return Err(Error::internal(msg));
+                    return Err(internal_err!("inconsistent command applied at {}, {}/{} {}/{}", index, id, command, i, *cmd));
                 }
             }
         }
@@ -45,8 +44,7 @@ impl States {
         if prev > 0 {
             let log = &logs[id as usize];
             if !log.contains_key(&prev) {
-                let msg = format!("server {} apply out of order at {}", id, index);
-                return Err(Error::internal(msg));
+                return Err(internal_err!("server {} apply out of order at {}", id, index));
             }
         }
 
@@ -70,8 +68,7 @@ impl States {
             #[rustfmt::skip]
             if let Some(prev) = &ans && n > 1 {
                 if *prev != *cur {
-                    let msg= format!("applied values do not match: index {}, {}, {}", index, *prev, *cur);
-                    return Err(Error::internal(msg));
+                    return Err(internal_err!("applied values do not match: index {}, {}, {}", index, *prev, *cur));
                 }
             }
             n += 1;

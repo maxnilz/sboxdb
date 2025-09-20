@@ -5,8 +5,8 @@ use tokio::net::ToSocketAddrs;
 use tokio_util::codec::Framed;
 use tokio_util::codec::LengthDelimitedCodec;
 
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::server::Request;
 use crate::server::Response;
 use crate::sql::execution::ResultSet;
@@ -44,7 +44,7 @@ impl Client {
         self.conn.send(request).await?;
         match self.conn.try_next().await? {
             Some(resp) => Ok(resp),
-            None => Err(Error::internal("Server disconnected")),
+            None => Err(internal_err!("Server disconnected")),
         }
     }
 }

@@ -157,10 +157,12 @@ use wasm_sync::Mutex;
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::storage;
 use crate::storage::codec::bincodec;
 use crate::storage::codec::keycodec;
 use crate::storage::Storage;
+use crate::value_err;
 
 #[cfg(test)]
 mod tests;
@@ -357,7 +359,7 @@ impl<T: Storage> Transaction<T> {
             None => active = Self::scan_active(&mut session)?,
             Some(as_of) => {
                 if as_of >= version {
-                    return Err(Error::value(format!("Version {} does not exists", as_of)));
+                    return Err(value_err!("Version {} does not exists", as_of));
                 }
                 // Set the version as the given version.
                 version = as_of;
@@ -382,7 +384,7 @@ impl<T: Storage> Transaction<T> {
             let key = Key::TxnActive(st.version).encode()?;
             if session.get(&key)?.is_none() {
                 #[rustfmt::skip]
-                return Err(Error::internal(format!( "No active transaction at version {}", st.version )));
+                return Err(internal_err!("No active transaction at version {}", st.version));
             }
         }
         Ok(Transaction { kv, st })
@@ -419,7 +421,7 @@ impl<T: Storage> Transaction<T> {
                         return Err(Error::Serialization);
                     }
                 }
-                key => return Err(Error::internal(format!("Expected Key::Version got {:?}", key))),
+                key => return Err(internal_err!("Expected Key::Version got {:?}", key)),
             }
         }
 
@@ -447,7 +449,7 @@ impl<T: Storage> Transaction<T> {
                         return bincodec::deserialize(&value);
                     }
                 }
-                key => return Err(Error::internal(format!("Expected Key::Version got {:?}", key))),
+                key => return Err(internal_err!("Expected Key::Version got {:?}", key)),
             }
         }
         Ok(None)
@@ -519,9 +521,7 @@ impl<T: Storage> Transaction<T> {
                 Key::TxnWrite(version, key) => {
                     rollback.push(Key::Version(key, version).encode()?);
                 }
-                key => {
-                    return Err(Error::internal(format!("Expected Key::TxnWrite got {:?}", key)))
-                }
+                key => return Err(internal_err!("Expected Key::TxnWrite got {:?}", key)),
             }
         }
         // drop scan manually to terminate the immutable borrow lifetime bound from scan to session
@@ -545,7 +545,7 @@ impl<T: Storage> Transaction<T> {
         while let Some((k, _)) = it.next().transpose()? {
             match Key::decode(&k)? {
                 Key::TxnActive(version) => active.insert(version),
-                _ => return Err(Error::internal(format!("Expected TxnActive key, got {:?}", k))),
+                _ => return Err(internal_err!("Expected TxnActive key, got {:?}", k)),
             };
         }
         Ok(active)
@@ -778,7 +778,7 @@ impl<'a> VersionIterator<'a> {
     ) -> Result<Option<(Vec<u8>, Version, Vec<u8>)>> {
         let (key, version) = match Key::decode(&key)? {
             Key::Version(key, version) => (key, version),
-            _ => return Err(Error::internal(format!("Expected Key::Version, got {:?}", key))),
+            _ => return Err(internal_err!("Expected Key::Version, got {:?}", key)),
         };
         if !self.st.is_visible(version) {
             return Ok(None);

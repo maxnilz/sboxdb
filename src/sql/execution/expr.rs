@@ -8,8 +8,9 @@ use std::sync::Arc;
 use crate::access::value::Tuple;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
+use crate::parse_err;
 use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::context::ConstEvalCtx;
@@ -25,6 +26,8 @@ use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::visitor::DynTreeNode;
 use crate::sql::udf::scalar::ScalarUDF;
 use crate::sql::udf::signature::ScalarFunctionArgs;
+use crate::unimplemented_err;
+use crate::value_err;
 
 /// Physical expr executor
 pub trait PhysicalExpr: Debug + Display {
@@ -104,7 +107,7 @@ pub struct FieldReferenceExec {
 impl FieldReferenceExec {
     pub fn try_new(f: FieldReference, schema: &LogicalSchema) -> Result<Self> {
         let index = schema.field_index_by_name(&f.relation, &f.name).ok_or_else(|| {
-            Error::parse(format!(
+            parse_err!(
                 "Unexpected field reference {rel}{name}",
                 rel = if let Some(table) = f.relation {
                     format!("{table}.").to_string()
@@ -112,7 +115,7 @@ impl FieldReferenceExec {
                     "".to_string()
                 },
                 name = f.name
-            ))
+            )
         })?;
         Ok(Self { name: f.name, index })
     }
@@ -201,7 +204,7 @@ macro_rules! arithmetic_op {
             (Value::Null, Value::Integer(_)) => Ok(Value::Null),
             (Value::Null, Value::Null) => Ok(Value::Null),
             (lhs, rhs) => {
-                Err(crate::error::Error::Value(format!("Can't {} {} and {}", stringify!($op), lhs, rhs)))
+                Err(crate::value_err!("Can't {} {} and {}", stringify!($op), lhs, rhs))
             }
         }
     }};
@@ -218,7 +221,7 @@ macro_rules! compare_op {
             (Value::String(lhs), Value::String(rhs)) => Ok(Value::Boolean(lhs $op rhs)),
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (lhs, rhs) => {
-                Err(crate::error::Error::Value(format!("Can't compare {} and {}", lhs, rhs)))
+                Err(crate::value_err!("Can't compare {} and {}", lhs, rhs))
             }
         }
     }};
@@ -241,11 +244,11 @@ impl PhysicalExpr for BinaryExprExec {
         // Evaluate right-hand side expression.
         let rhs = self.right.evaluate(ctx, batch)?;
         if lhs.len() != rhs.len() {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "Cannot evaluate arrays of different length, got {} vs {}",
                 lhs.len(),
                 rhs.len()
-            )));
+            ));
         }
         let zip = lhs.into_iter().zip(rhs.into_iter());
         let values: Result<Vec<Value>> = match self.op {
@@ -268,7 +271,7 @@ impl PhysicalExpr for BinaryExprExec {
                     (Value::Null, Value::Boolean(rhs)) if !rhs => Ok(Value::Boolean(false)),
                     (Value::Null, Value::Boolean(_)) => Ok(Value::Null),
                     (Value::Null, Value::Null) => Ok(Value::Null),
-                    (lhs, rhs) => Err(Error::Value(format!("Can't and {} and {}", lhs, rhs))),
+                    (lhs, rhs) => Err(value_err!("Can't and {} and {}", lhs, rhs)),
                 })
                 .collect(),
             Operator::Or => zip
@@ -279,7 +282,7 @@ impl PhysicalExpr for BinaryExprExec {
                     (Value::Null, Value::Boolean(rhs)) if rhs => Ok(Value::Boolean(true)),
                     (Value::Null, Value::Boolean(_)) => Ok(Value::Null),
                     (Value::Null, Value::Null) => Ok(Value::Null),
-                    (lhs, rhs) => Err(Error::Value(format!("Can't or {} and {}", lhs, rhs))),
+                    (lhs, rhs) => Err(value_err!("Can't or {} and {}", lhs, rhs)),
                 })
                 .collect(),
         };
@@ -367,7 +370,7 @@ impl NegativeExec {
     pub fn try_new(expr: Arc<dyn PhysicalExpr>, schema: &LogicalSchema) -> Result<Self> {
         let datatype = expr.data_type(schema)?;
         if !datatype.is_numeric() {
-            return Err(Error::parse(format!("Unexpected negative op on {} type", datatype)));
+            return Err(parse_err!("Unexpected negative op on {} type", datatype));
         }
         Ok(Self { expr })
     }
@@ -426,15 +429,16 @@ impl LikeExec {
         let expr_type = expr.data_type(schema)?;
         let pattern_type = pattern.data_type(schema)?;
         if expr_type != pattern_type {
-            return Err(Error::parse(format!(
+            return Err(parse_err!(
                 "Like expr expect same type, found {} and {}",
-                expr_type, pattern_type
-            )));
+                expr_type,
+                pattern_type
+            ));
         }
 
         // Support like on string type
         if expr_type != DataType::String {
-            return Err(Error::parse(format!("Like expr does not support on {} type", expr_type)));
+            return Err(parse_err!("Like expr does not support on {} type", expr_type));
         }
 
         Ok(Self { expr, pattern, negated, case_insensitive })
@@ -462,7 +466,7 @@ macro_rules! like_op {
                 let matches = regex.is_match(&text);
                 Ok(Value::Boolean(if $negated { !matches } else { matches }))
             }
-            Err(_) => Err(Error::Value(format!("Invalid LIKE pattern: {}", $pattern))),
+            Err(_) => Err(value_err!("Invalid LIKE pattern: {}", $pattern)),
         }
     }};
 }
@@ -478,11 +482,11 @@ impl PhysicalExpr for LikeExec {
         let lhs = self.expr.evaluate(ctx, batch)?;
         let rhs = self.pattern.evaluate(ctx, batch)?;
         if lhs.len() != rhs.len() {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "Cannot compare arrays of different length, got {} vs {}",
                 lhs.len(),
                 rhs.len()
-            )));
+            ));
         }
         let values = lhs
             .into_iter()
@@ -492,9 +496,7 @@ impl PhysicalExpr for LikeExec {
                     like_op!(t, p, self.negated, self.case_insensitive)
                 }
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-                (t, p) => {
-                    Err(Error::value(format!("Like expects string value, got {} and {}", t, p)))
-                }
+                (t, p) => Err(value_err!("Like expects string value, got {} and {}", t, p)),
             })
             .collect::<Result<Vec<Value>>>()?;
         Ok(Tuple::from(values))
@@ -538,10 +540,11 @@ impl InListExec {
         for it in list.iter() {
             let typ = it.data_type(schema)?;
             if expr_type != typ {
-                return Err(Error::parse(format!(
+                return Err(parse_err!(
                     "The data type inlist should be same, got {} and {}",
-                    expr_type, typ
-                )));
+                    expr_type,
+                    typ
+                ));
             }
 
             // we support only const list expr for now.
@@ -551,16 +554,16 @@ impl InListExec {
                     static_list.insert(tuple.into_iter().next().unwrap());
                 }
                 Ok(tuple) => {
-                    return Err(Error::unimplemented(format!(
+                    return Err(unimplemented_err!(
                         "Support only single static value as element of list expr, got {} values",
                         tuple.len()
-                    )))
+                    ))
                 }
                 Err(err) => {
-                    return Err(Error::unimplemented(format!(
+                    return Err(unimplemented_err!(
                         "Support only static value as element of list expr, got eval err: {}",
                         err
-                    )))
+                    ))
                 }
             }
         }
@@ -708,7 +711,7 @@ impl ScalarSubqueryExec {
     fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let mut rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.rows.len() != 1 && rs.rows[0].len() != 1 {
-            return Err(Error::internal("Expect single value from the scalar subquery"));
+            return Err(internal_err!("Expect single value from the scalar subquery"));
         }
         let value = rs.rows.remove(0).scalar()?;
         Ok(Tuple::from(vec![value; batch.num_rows()]))
@@ -728,7 +731,7 @@ impl ScalarSubqueryExec {
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
 
         if rs.rows.len() != 1 && rs.rows[0].len() != 1 {
-            return Err(Error::internal("Expect single value from the scalar subquery"));
+            return Err(internal_err!("Expect single value from the scalar subquery"));
         }
         let value = rs.rows.remove(0).scalar()?;
         Ok(value)
@@ -799,10 +802,10 @@ impl InSubqueryExec {
     fn evaluate_non_correlated(&self, ctx: &mut dyn Context, batch: &RecordBatch) -> Result<Tuple> {
         let rs = ExecutionEngine::poll_executor(ctx, Arc::clone(&self.executor))?;
         if rs.num_cols() != 1 {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "InSubquery is expected to produce one column only, got {}",
                 rs.num_cols()
-            )));
+            ));
         }
         let hs: HashSet<Value> = rs.columnar_values_at(0)?.into();
         let values = self.expr.evaluate(ctx, batch)?;
@@ -833,15 +836,15 @@ impl InSubqueryExec {
         // pollute the query context by the subquery above.
         ctx.set_outer_query_batches(prev_outer_query_batches)?;
         if rs.num_cols() != 1 {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "InSubquery is expected to produce one column only, got {}",
                 rs.num_cols()
-            )));
+            ));
         }
         let hs: HashSet<Value> = rs.columnar_values_at(0)?.into();
         let values = self.expr.evaluate(ctx, &batch)?;
         let value = values.into_iter().next().ok_or_else(|| {
-            Error::internal("Expect single value output from the InSubquery expr eval")
+            internal_err!("Expect single value output from the InSubquery expr eval")
         })?;
         let contained = hs.contains(&value);
         Ok(if !self.negated { contained } else { !contained })

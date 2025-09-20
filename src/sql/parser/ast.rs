@@ -534,6 +534,7 @@ impl std::fmt::Display for TableFactor {
 pub struct CreateTable {
     pub name: Ident,
     pub columns: Vec<Column>,
+    pub table_constraints: Vec<TableConstraint>,
     pub if_not_exists: bool,
 }
 
@@ -551,6 +552,11 @@ impl std::fmt::Display for CreateTable {
         f.write_str(" (")?;
         NewLine.fmt(f)?;
         Indent(display_comma_separated(&self.columns)).fmt(f)?;
+        if !self.table_constraints.is_empty() {
+            f.write_str(",")?;
+            SpaceOrNewline.fmt(f)?;
+        }
+        Indent(display_comma_separated(&self.table_constraints)).fmt(f)?;
         NewLine.fmt(f)?;
         f.write_str(")")
     }
@@ -596,6 +602,21 @@ impl std::fmt::Display for Column {
             write!(f, " NOT NULL")?
         }
         Ok(())
+    }
+}
+
+pub enum TableConstraint {
+    /// Identifiers of the columns that form the primary key.
+    PrimaryKey { columns: Vec<Ident> },
+}
+
+impl std::fmt::Display for TableConstraint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TableConstraint::PrimaryKey { columns } => {
+                write!(f, "PRIMARY KEY({})", display_comma_separated(columns))
+            }
+        }
     }
 }
 

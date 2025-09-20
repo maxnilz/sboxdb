@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use log::debug;
 use log::error;
 use sboxdb::error::Error;
+use sboxdb::internal_err;
 use sboxdb::raft::log::Log;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::node::NodeState;
@@ -128,10 +129,10 @@ impl Cluster {
                 continue;
             }
             let server = &self.servers[id as usize];
-            let ns = server.get_state().unwrap();
+            let ns = server.get_state()?;
             if !ns.leader.is_none() {
                 #[rustfmt::skip]
-                return Err(Error::internal(format!("expected no leader among connected servers, but {} claims to be leader", ns.leader.unwrap())));
+                return Err(internal_err!("expected no leader among connected servers, but {} claims to be leader", ns.leader.unwrap()));
             }
         }
         Ok(())
@@ -154,7 +155,7 @@ impl Cluster {
                     continue;
                 }
                 let server = &self.servers[id as usize];
-                let ns = server.get_state().unwrap();
+                let ns = server.get_state()?;
                 if let Some(leader) = ns.leader {
                     if let Some(leaders) = terms.get_mut(&ns.term) {
                         leaders.insert(leader);
@@ -170,7 +171,7 @@ impl Cluster {
             for (&term, leaders) in terms.iter() {
                 if leaders.len() > 1 {
                     #[rustfmt::skip]
-                    return Err(Error::internal(format!("term {} have {}(>1) leaders", term, leaders.len())));
+                    return Err(internal_err!("term {} have {}(>1) leaders", term, leaders.len()));
                 }
                 if latest_term < term {
                     latest_term = term;
@@ -182,7 +183,7 @@ impl Cluster {
                 return Ok(leader);
             }
         }
-        Err(Error::internal("expect one leader, got none"))
+        Err(internal_err!("expect one leader, got none"))
     }
 
     // check that everyone agrees on the term.
@@ -193,7 +194,7 @@ impl Cluster {
                 continue;
             }
             let server = &self.servers[id as usize];
-            let ns = server.get_state().unwrap();
+            let ns = server.get_state()?;
             if ns.leader.is_none() {
                 continue; // no leader yet.
             }
@@ -203,7 +204,7 @@ impl Cluster {
             }
             if term != ns.term {
                 #[rustfmt::skip]
-                return Err(Error::internal(format!("servers disagree on term, {}/{}", term, ns.term)));
+                return Err(internal_err!("servers disagree on term, {}/{}", term, ns.term));
             }
         }
         Ok(term)
@@ -252,9 +253,11 @@ impl Cluster {
                     // check if we have retry setup, otherwise consider this
                     // as fail to agreement and return err.
                     if retry == false {
-                        let msg =
-                            format!("failed to reach agreement {} at index {}", command, index);
-                        return Err(Error::internal(msg));
+                        return Err(internal_err!(
+                            "failed to reach agreement {} at index {}",
+                            command,
+                            index
+                        ));
                     }
                 }
                 CommandResult::Applied { index, result } => {
@@ -282,9 +285,8 @@ impl Cluster {
                     }
 
                     #[rustfmt::skip]
-                    let msg = format!("failed to reach agreement {} at index {}, {}/{}, {}",
-                                          command, index, m, n, cmd.unwrap_or(Command(None)));
-                    return Err(Error::internal(msg));
+                    return Err(internal_err!("failed to reach agreement {} at index {}, {}/{}, {}",
+                                          command, index, m, n, cmd.unwrap_or(Command(None))));
                 }
             };
 
@@ -292,7 +294,7 @@ impl Cluster {
                 break;
             }
         }
-        Err(Error::internal(format!("failed to reach agreement {:?}", command)))
+        Err(internal_err!("failed to reach agreement {:?}", command))
     }
 
     pub fn exec_command(

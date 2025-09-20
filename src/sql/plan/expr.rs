@@ -12,6 +12,7 @@ use crate::catalog::r#type::Value;
 use crate::error::Error;
 use crate::error::Result;
 use crate::map_each_children;
+use crate::parse_err;
 use crate::sql::parser::Parser;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::planner::Planner;
@@ -236,9 +237,9 @@ impl Expr {
             return Ok(self);
         }
         if !this_type.can_cast_to(cast_to_type.clone()) {
-            return Err(Error::parse(format!(
+            return Err(parse_err!(
                 "Cannot automatically convert {this_type:?} to {cast_to_type:?}"
-            )));
+            ));
         }
         Ok(Expr::Cast(Cast::new(self, cast_to_type.clone())))
     }
@@ -749,10 +750,12 @@ impl<'a> BinaryTypeCoercer<'a> {
             | Operator::Divide
             | Operator::Modulo => {
                 if !self.lhs.is_numeric() && !self.rhs.is_numeric() {
-                    return Err(Error::parse(format!(
+                    return Err(parse_err!(
                         "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, self.lhs, self.rhs
-                    )));
+                        self.op,
+                        self.lhs,
+                        self.rhs
+                    ));
                 }
                 match (self.lhs, self.rhs) {
                     (_, DataType::Float) | (DataType::Float, _) => DataType::Float,
@@ -774,10 +777,12 @@ impl<'a> BinaryTypeCoercer<'a> {
                 | (DataType::Null, _)
                 | (_, DataType::Null) => DataType::Boolean,
                 _ => {
-                    return Err(Error::parse(format!(
+                    return Err(parse_err!(
                         "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, self.lhs, self.rhs
-                    )))
+                        self.op,
+                        self.lhs,
+                        self.rhs
+                    ))
                 }
             },
 
@@ -786,10 +791,12 @@ impl<'a> BinaryTypeCoercer<'a> {
                 | (DataType::Boolean, DataType::Null)
                 | (DataType::Null, DataType::Boolean) => DataType::Boolean,
                 _ => {
-                    return Err(Error::parse(format!(
+                    return Err(parse_err!(
                         "Cannot perform binary {:?} between type: {}, {}",
-                        self.op, self.lhs, self.rhs
-                    )))
+                        self.op,
+                        self.lhs,
+                        self.rhs
+                    ))
                 }
             },
         };

@@ -26,8 +26,8 @@ use super::transport::Transport;
 use super::Command;
 use super::CommandResult;
 use super::State;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 
 #[derive(Debug)]
 struct Request {
@@ -151,18 +151,18 @@ impl Server {
                         Message{to: Address::Localhost, event: Event::ProposalResponse {id,result}, ..} => {
                             if let Some(tx) = proposals.remove(&id) {
                                 if tx.send(result.into()).is_err() {
-                                    return Err(Error::internal("command oneshot receiver dropped"))
+                                    return Err(internal_err!("command oneshot receiver dropped"))
                                 }
                             }
                         }
-                        _ => return Err(Error::internal(format!("unexpected message to localhost {}", msg)))
+                        _ => return Err(internal_err!("unexpected message to localhost {}", msg))
                     }
                 },
 
                 Some((_, tx)) = state_rx.next() => {
                     let ns = node.get_state();
                     if tx.send(ns).is_err() {
-                        return Err(Error::internal("state response receiver dropped"));
+                        return Err(internal_err!("state response receiver dropped"));
                     }
                 }
 
@@ -192,10 +192,10 @@ impl Server {
     pub fn get_state(&self) -> Result<NodeState> {
         let (tx, rx) = oneshot::channel();
         if self.state_tx.send(((), tx)).is_err() {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "state channel on server {} is closed or dropped",
                 self.my_id()
-            )));
+            ));
         }
         let ns = futures::executor::block_on(rx)?;
         Ok(ns)

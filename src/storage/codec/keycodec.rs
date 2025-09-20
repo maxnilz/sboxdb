@@ -88,9 +88,12 @@
 use serde::de;
 use serde::de::IntoDeserializer;
 use serde::ser;
+use serde::Serialize;
 
 use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
+use crate::value_err;
 
 pub fn serialize<T: serde::Serialize>(key: &T) -> Result<Vec<u8>> {
     let mut serializer = Serializer { data: Vec::new() };
@@ -146,6 +149,28 @@ impl ser::SerializeTuple for Compound<'_> {
     }
 
     fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Implement an order-preserving binary encoding for sequence types (e.g. Vec<T>) by,
+/// prefixing each with a marker byte (e.g. 0x01), and terminate the sequence with a
+/// unique end marker (e.g. 0x00). This ensures lexicographical order is preserved:
+/// shorter sequences sort before longer ones with the same prefix.
+impl ser::SerializeSeq for Compound<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_element<T>(&mut self, item: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.ser.write_byte(0x01); // item marker
+        item.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<()> {
+        self.ser.write_byte(0x00); // end marker
         Ok(())
     }
 }
@@ -217,7 +242,7 @@ impl ser::SerializeStructVariant for Compound<'_> {
 impl<'a> serde::Serializer for &'a mut Serializer {
     type Ok = ();
     type Error = Error;
-    type SerializeSeq = ser::Impossible<(), Error>;
+    type SerializeSeq = Compound<'a>;
     type SerializeTuple = Compound<'a>;
     type SerializeTupleStruct = Compound<'a>;
     type SerializeTupleVariant = Compound<'a>;
@@ -369,7 +394,7 @@ impl<'a> serde::Serializer for &'a mut Serializer {
     }
 
     fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq> {
-        unimplemented!()
+        Ok(Compound { ser: self })
     }
 
     fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple> {
@@ -429,7 +454,7 @@ impl<'de> Deserializer<'de> {
     fn take_byte(&mut self) -> Result<u8> {
         let bytes = self.input;
         if bytes.is_empty() {
-            return Err(Error::value("unexpected end of input"));
+            return Err(value_err!("unexpected end of input"));
         }
         let byte = bytes[0];
         self.input = &bytes[1..];
@@ -439,7 +464,7 @@ impl<'de> Deserializer<'de> {
     fn take_bytes(&mut self, n: usize) -> Result<&[u8]> {
         let bytes = self.input;
         if bytes.len() < n {
-            return Err(Error::value("unexpected end of input"));
+            return Err(value_err!("unexpected end of input"));
         }
         let (head, tail) = bytes.split_at(n);
         self.input = tail;
@@ -454,10 +479,10 @@ impl<'de> Deserializer<'de> {
                 Some((_, 0x00)) => match iter.next() {
                     Some((i, 0x00)) => break i + 1,       // terminator
                     Some((_, 0xff)) => output.push(0x00), // escaped 0x00
-                    _ => return Err(Error::value("invalid escape sequence")),
+                    _ => return Err(value_err!("invalid escape sequence")),
                 },
                 Some((_, &c)) => output.push(c),
-                None => return Err(Error::value("unexpected end of input")),
+                None => return Err(value_err!("unexpected end of input")),
             }
         };
         self.input = &self.input[taken..];
@@ -483,7 +508,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         let bool = match byte {
             0x00 => false,
             0x01 => true,
-            b => return Err(Error::internal(format!("invalid boolean value {:?}", b))),
+            b => return Err(internal_err!("invalid boolean value {:?}", b)),
         };
         visitor.visit_bool(bool)
     }
@@ -647,11 +672,33 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        unimplemented!()
+        struct Access<'de, 'a> {
+            de: &'a mut Deserializer<'de>,
+        }
+
+        impl<'de> de::SeqAccess<'de> for Access<'de, '_> {
+            type Error = Error;
+
+            fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+            where
+                T: de::DeserializeSeed<'de>,
+            {
+                let marker = self.de.take_byte()?;
+                if marker == 0x00 {
+                    return Ok(None);
+                }
+                if marker != 0x01 {
+                    return Err(value_err!("Invalid sequence marker"));
+                }
+                let value = seed.deserialize(&mut *self.de)?;
+                Ok(Some(value))
+            }
+        }
+        visitor.visit_seq(Access { de: &mut *self })
     }
 
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
@@ -912,5 +959,8 @@ mod tests {
             k3: Key::NewType1("foo".to_string()),
             k4: Some(Keyv { key: "bar".to_string(), version: Some(0xeeu8) }),
         } => "0xaa 666f6f0000 666f6f0000 01bb 6261720000 00 dd 02666f6f0000 016261720000 01ee",
+
+        // seq codec
+        seq_codec: vec![0x02u8, 0x03u8] => "0x0102 0103 00",
     }
 }

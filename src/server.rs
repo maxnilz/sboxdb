@@ -35,6 +35,7 @@ use crate::session::Session;
 use crate::sql::execution::ResultSet;
 use crate::storage::memory::Memory;
 use crate::storage::new_storage;
+use crate::value_err;
 
 #[async_trait]
 pub trait Server {
@@ -87,10 +88,8 @@ impl ClusterServer {
             .peers
             .iter()
             .map(|(node_id, addr)| {
-                let addr = addr
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or(Error::value(format!("resolve {} failed", addr)))?;
+                let addr =
+                    addr.to_socket_addrs()?.next().ok_or(value_err!("resolve {} failed", addr))?;
                 Ok((node_id.clone(), addr))
             })
             .collect::<Result<_>>()?;
@@ -98,7 +97,7 @@ impl ClusterServer {
             .raft_listen_addr
             .to_socket_addrs()?
             .next()
-            .ok_or(Error::value(format!("invalid raft listen addr {}", config.raft_listen_addr)))?;
+            .ok_or(value_err!("invalid raft listen addr {}", config.raft_listen_addr))?;
         let raft_peers = raft_peers.into_iter().collect();
         let me = (config.id, my_listen_addr);
         let raft_transport: Box<dyn Transport> = Box::new(TcpTransport::try_new(me, raft_peers)?);

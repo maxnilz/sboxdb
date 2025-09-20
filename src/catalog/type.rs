@@ -6,8 +6,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::error::Error;
 use crate::error::Result;
+use crate::parse_err;
 
 /// A datatype
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -131,7 +131,7 @@ impl Value {
                     Value::Boolean(true)
                 }
             }
-            (_, typ) => return Err(Error::parse(format!("Can't pase {} to type {}", self, typ))),
+            (_, typ) => return Err(parse_err!("Can't pase {} to type {}", self, typ)),
         };
         Ok(value)
     }

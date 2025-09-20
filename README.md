@@ -39,8 +39,7 @@ A distributed SQL database, written as a learning project about my journey on th
     - [x] Physical Planner
     - [x] Executors
     - [x] Function support
-    - [ ] Correctness-wise TPC-C/TPC-H/TPC-DS
-    - [ ] Performance-wise TPC-C/TPC-H/TPC-DS
+    - [ ] TPC-C/TPC-H queries
 - [x] Wasm for browser for fun
 
 ## Tools

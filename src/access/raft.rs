@@ -20,8 +20,8 @@ use crate::catalog::index::Indexes;
 use crate::catalog::schema::Schema;
 use crate::catalog::schema::Schemas;
 use crate::concurrency::mvcc::TransactionState;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::raft;
 use crate::raft::server::Server;
 use crate::raft::ApplyMsg;
@@ -29,6 +29,7 @@ use crate::raft::Command;
 use crate::raft::CommandResult;
 use crate::storage::codec::bincodec;
 use crate::storage::Storage;
+use crate::value_err;
 
 /// Query related access methods
 #[derive(Debug, Serialize, Deserialize)]
@@ -274,10 +275,10 @@ impl Client {
         match res {
             CommandResult::Applied { index: _index, result } => {
                 let cmd: Vec<u8> =
-                    result?.ok_or(Error::value("Unexpected Raft execute result None"))?;
+                    result?.ok_or(value_err!("Unexpected Raft execute result None"))?;
                 Ok(bincodec::deserialize(&cmd)?)
             }
-            _ => Err(Error::value(format!("Unexpected Raft execute command result {:?}", res))),
+            _ => Err(value_err!("Unexpected Raft execute command result {:?}", res)),
         }
     }
 
@@ -285,7 +286,7 @@ impl Client {
     fn query<V: DeserializeOwned>(&self, query: Query) -> Result<V> {
         match self.execute(Request::Query(bincodec::serialize(&query)?))? {
             Response::Query(response) => Ok(bincodec::deserialize(&response)?),
-            resp => Err(Error::internal(format!("Unexpected Raft query response {:?}", resp))),
+            resp => Err(internal_err!("Unexpected Raft query response {:?}", resp)),
         }
     }
 
@@ -293,7 +294,7 @@ impl Client {
     fn mutate<V: DeserializeOwned>(&self, mutation: Mutation) -> Result<V> {
         match self.execute(Request::Mutate(bincodec::serialize(&mutation)?))? {
             Response::Mutate(response) => Ok(bincodec::deserialize(&response)?),
-            resp => Err(Error::internal(format!("Unexpected Raft mutation response {:?}", resp))),
+            resp => Err(internal_err!("Unexpected Raft mutation response {:?}", resp)),
         }
     }
 }
@@ -399,7 +400,7 @@ impl<T: Storage> State<T> {
 
 impl<T: Storage> raft::State for State<T> {
     fn apply(&self, msg: ApplyMsg) -> Result<Command> {
-        let cmd = msg.command.ok_or(Error::internal("Unexpected Raft command"))?;
+        let cmd = msg.command.ok_or(internal_err!("Unexpected Raft command"))?;
         let request: Request = bincodec::deserialize(&cmd)?;
         match request {
             // FIXME: query is considered as ready-only op, should not

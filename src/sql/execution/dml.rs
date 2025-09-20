@@ -111,7 +111,7 @@ impl ExecutionPlan for UpdateExec {
         for tv in rs.rows.into_iter() {
             let row = Row::new(tv, &columns)?;
             let pk = row.primary_key()?;
-            txn.delete(&self.table, pk)?;
+            txn.delete(&self.table, &pk)?;
             txn.insert(&self.table, row)?;
             rows_affected += 1;
         }
@@ -171,7 +171,7 @@ impl ExecutionPlan for DeleteExec {
         for tv in rs.rows.into_iter() {
             let row = Row::new(tv, &columns)?;
             let pk = row.primary_key()?;
-            txn.delete(&self.table, pk)?;
+            txn.delete(&self.table, &pk)?;
             rows_affected += 1;
         }
         let output_row: Tuple = vec![Value::Integer(rows_affected)].into();

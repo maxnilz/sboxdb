@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::catalog::column::Columns;
-use crate::error::Error;
 use crate::error::Result;
+use crate::value_err;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IndexType {
@@ -48,13 +48,13 @@ impl Index {
 
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(Error::value("Index name can't be empty"));
+            return Err(value_err!("Index name can't be empty"));
         }
         if self.tblname.is_empty() {
-            return Err(Error::value(format!("Index {} have no table name", self.name)));
+            return Err(value_err!("Index {} have no table name", self.name));
         }
         if self.columns.is_empty() {
-            return Err(Error::value(format!("Index {} have no key columns", self.name)));
+            return Err(value_err!("Index {} have no key columns", self.name));
         }
         self.columns.validate()?;
         Ok(())

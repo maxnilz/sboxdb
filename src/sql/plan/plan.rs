@@ -3,10 +3,10 @@ use std::fmt::Formatter;
 
 use crate::apply_each;
 use crate::catalog::r#type::DataType;
-use crate::error::Error;
 use crate::error::Result;
 use crate::format_expr_vec;
 use crate::map_each_children;
+use crate::parse_err;
 use crate::sql::plan::expr::BinaryExpr;
 use crate::sql::plan::expr::Exists;
 use crate::sql::plan::expr::Expr;
@@ -456,7 +456,7 @@ impl Explain {
             FieldBuilder::new("plan", DataType::String).build(),
         ]
         .into();
-        let output_schema = LogicalSchema::from_unqualified_fields(fields).unwrap();
+        let output_schema = LogicalSchema::from_fields(fields).unwrap();
         Self { plan: Box::new(plan), physical, verbose, output_schema }
     }
 }
@@ -536,7 +536,7 @@ impl Aggregate {
 
         let (qualifiers, fields): (Vec<Option<TableReference>>, Vec<Field>) =
             qualified_fields.into_iter().unzip();
-        let output_schema = LogicalSchema::try_new(fields, qualifiers)?;
+        let output_schema = LogicalSchema::from_qualified_fields(fields, qualifiers)?;
         Ok(Self { input: Box::new(input), group_exprs, aggr_exprs, output_schema })
     }
 }
@@ -564,9 +564,7 @@ impl Filter {
     pub fn try_new(expr: Expr, input: Plan) -> Result<Self> {
         let (datatype, _) = expr.datatype_and_nullable(input.schema())?;
         if datatype != DataType::Boolean {
-            return Err(Error::parse(format!(
-                "Invalid filter result type, expect boolean, got {datatype}"
-            )));
+            return Err(parse_err!("Invalid filter result type, expect boolean, got {datatype}"));
         }
         Ok(Self { predicate: expr, input: Box::new(input) })
     }
@@ -688,7 +686,7 @@ impl SubqueryAlias {
     pub fn try_new(plan: Plan, alias: impl Into<TableReference>) -> Result<Self> {
         let alias = alias.into();
         let input_fields = plan.schema().fields();
-        let schema = LogicalSchema::try_new(
+        let schema = LogicalSchema::from_qualified_fields(
             input_fields.clone(),
             vec![Some(alias.clone()); input_fields.len()],
         )?;
@@ -787,7 +785,7 @@ impl Projection {
 
         let (qualifiers, fields): (Vec<Option<TableReference>>, Vec<Field>) =
             qualified_fields.into_iter().unzip();
-        let output_schema = LogicalSchema::try_new(fields, qualifiers)?;
+        let output_schema = LogicalSchema::from_qualified_fields(fields, qualifiers)?;
         Ok(Self { exprs, input: Box::new(input), output_schema })
     }
 }
@@ -867,26 +865,27 @@ impl Values {
     pub fn try_new(values: Vec<Vec<Expr>>, schema: LogicalSchema) -> Result<Self> {
         let n = schema.len();
         if n == 0 {
-            return Err(Error::parse("Values list cannot be zero length"));
+            return Err(parse_err!("Values list cannot be zero length"));
         }
         for (i, row) in values.iter().enumerate() {
             if row.len() != n {
-                return Err(Error::parse(format!(
+                return Err(parse_err!(
                     "Invalid values length: got {} values at row {}, expected: {}",
                     row.len(),
                     i,
                     n
-                )));
+                ));
             }
             for j in 0..n {
                 let field = schema.field(j);
                 let cel = &row[j];
                 let (data_type, _) = cel.datatype_and_nullable(&schema)?;
                 if data_type != field.datatype {
-                    return Err(Error::parse(format!(
+                    return Err(parse_err!(
                         "Type mismatch, cast use {} as {}",
-                        data_type, field.datatype
-                    )));
+                        data_type,
+                        field.datatype
+                    ));
                 }
             }
         }

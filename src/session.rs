@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::access::engine::Engine;
 use crate::access::engine::Transaction;
-use crate::error::Error;
 use crate::error::Result;
 use crate::sql::execution::compiler::Compiler;
 use crate::sql::execution::context::Context;
@@ -13,6 +12,7 @@ use crate::sql::parser::ast::Statement;
 use crate::sql::parser::Parser;
 use crate::sql::plan::planner::BindContext;
 use crate::sql::plan::planner::Planner;
+use crate::value_err;
 
 /// A source agnostic session for query
 pub struct Session<E: Engine> {
@@ -41,7 +41,7 @@ impl<E: Engine + 'static> Session<E> {
         let stmt = self.parse_query(query)?;
         match stmt {
             Statement::Begin { .. } if self.txn.is_some() => {
-                Err(Error::value("Already in a transaction"))
+                Err(value_err!("Already in a transaction"))
             }
             Statement::Begin { read_only: true, as_of: None } => {
                 let txn = self.engine.begin_read_only()?;
@@ -54,7 +54,7 @@ impl<E: Engine + 'static> Session<E> {
                 Ok(ResultSet::from(self.must_txn().as_ref()))
             }
             Statement::Begin { read_only: false, as_of: Some(_) } => {
-                Err(Error::value("Can't start read-write transaction in a given version"))
+                Err(value_err!("Can't start read-write transaction in a given version"))
             }
             Statement::Begin { read_only: false, as_of: None } => {
                 let txn = self.engine.begin()?;
@@ -62,7 +62,7 @@ impl<E: Engine + 'static> Session<E> {
                 Ok(ResultSet::from(self.must_txn().as_ref()))
             }
             Statement::Commit | Statement::Rollback if self.txn.is_none() => {
-                Err(Error::value("Not in a transaction"))
+                Err(value_err!("Not in a transaction"))
             }
             Statement::Commit => {
                 let txn = self.must_txn();

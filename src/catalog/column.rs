@@ -8,8 +8,8 @@ use serde::Serialize;
 
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::value_err;
 
 /// A reference counted [`Column`]
 pub type ColumnRef = Arc<Column>;
@@ -21,14 +21,14 @@ pub struct Column {
     pub name: String,
     /// Column data type
     pub datatype: DataType,
-    /// Whether a column is a primary key
+    /// A single column as primary key
     pub primary_key: bool,
+    /// Whether a column is part of composite primary key
+    pub part_of_key: bool,
     /// Whether a column is nullable
     pub nullable: bool,
     /// The default value of the column
     pub default: Option<Value>,
-    /// Whether the column should only take unique values
-    pub unique: bool,
 }
 
 impl Display for Column {
@@ -43,9 +43,6 @@ impl Display for Column {
         if let Some(default) = &self.default {
             write!(f, " DEFAULT {}", default)?;
         }
-        if self.unique {
-            write!(f, " UNIQUE")?;
-        }
         Ok(())
     }
 }
@@ -53,43 +50,37 @@ impl Display for Column {
 impl Column {
     fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(Error::value("Column name can't be empty"));
+            return Err(value_err!("Column name can't be empty"));
         }
-        // Validate primary key
-        if self.primary_key && self.nullable {
-            return Err(Error::value(format!("Primary key {} cannot be nullable", self.name)));
-        }
-        if self.primary_key && !self.unique {
-            return Err(Error::value(format!("Primary key {} must be unique", self.name)));
+        if self.primary_key && self.part_of_key {
+            return Err(value_err!(
+                "Singular primary key and part of key can't be set at the same time",
+            ));
         }
         // Validate default data type
         if let Some(default) = &self.default {
             let datatype = default.datatype();
             if datatype == DataType::Null {
-                return Err(Error::value(format!(
-                    "Default value for column {} can't be NULL",
-                    self.name
-                )));
+                return Err(value_err!("Default value for column {} can't be NULL", self.name));
             }
             if datatype != self.datatype {
-                return Err(Error::value(format!(
+                return Err(value_err!(
                     "Default value for column {} has datatype {}, expect {}",
-                    self.name, datatype, self.datatype
-                )));
+                    self.name,
+                    datatype,
+                    self.datatype
+                ));
             }
             if !self.nullable {
-                return Err(Error::value(format!(
+                return Err(value_err!(
                     "Can't use NULL as default for non-nullable column {}",
                     self.name
-                )));
+                ));
             }
             return Ok(());
         }
         if self.nullable {
-            return Err(Error::value(format!(
-                "Nullable column {} must have a default value",
-                self.name
-            )));
+            return Err(value_err!("Nullable column {} must have a default value", self.name));
         }
         Ok(())
     }
@@ -101,8 +92,8 @@ pub struct ColumnBuilder {
     name: String,
     datatype: DataType,
     primary_key: bool,
+    part_of_key: bool,
     nullable: bool,
-    unique: bool,
     default: Option<Value>,
 }
 
@@ -113,8 +104,8 @@ impl ColumnBuilder {
             name: name.into(),
             datatype,
             primary_key: false,
+            part_of_key: false,
             nullable: true,
-            unique: false,
             default: None,
         }
     }
@@ -123,11 +114,9 @@ impl ColumnBuilder {
     pub fn primary(mut self) -> Self {
         self.primary_key = true;
         self.nullable = false; // Primary keys are automatically not nullable
-        self.unique = true; // Primary keys are automatically unique
         self
     }
 
-    /// Set whether this column is primary key
     pub fn primary_key(self, primary_key: bool) -> Self {
         if !primary_key {
             return self;
@@ -135,9 +124,20 @@ impl ColumnBuilder {
         self.primary()
     }
 
+    /// Set whether this column is primary key
+    pub fn part_of_key(mut self, part_of_key: bool) -> Self {
+        if !part_of_key {
+            return self;
+        }
+
+        self.part_of_key = true;
+        self.nullable = false; // Primary keys are automatically not nullable
+        self
+    }
+
     /// Set whether this column is nullable
     pub fn nullable(mut self, nullable: bool) -> Self {
-        if !self.primary_key {
+        if !self.part_of_key || self.primary_key {
             self.nullable = nullable;
         }
         self
@@ -146,19 +146,6 @@ impl ColumnBuilder {
     /// Mark this column as not nullable
     pub fn not_null(self) -> Self {
         self.nullable(false)
-    }
-
-    /// Set whether this column is unique
-    pub fn uniqueness(mut self, unique: bool) -> Self {
-        if !self.primary_key {
-            self.unique = unique;
-        }
-        self
-    }
-
-    /// Mark this column as unique
-    pub fn unique(self) -> Self {
-        self.uniqueness(true)
     }
 
     /// Set the default value for this column
@@ -177,8 +164,8 @@ impl ColumnBuilder {
             name: self.name,
             datatype: self.datatype,
             primary_key: self.primary_key,
+            part_of_key: self.part_of_key,
             nullable: self.nullable,
-            unique: self.unique,
             default: self.default,
         };
         column.validate()?;
@@ -191,8 +178,8 @@ impl ColumnBuilder {
             name: self.name,
             datatype: self.datatype,
             primary_key: self.primary_key,
+            part_of_key: self.part_of_key,
             nullable: self.nullable,
-            unique: self.unique,
             default: self.default,
         }
     }
@@ -200,11 +187,39 @@ impl ColumnBuilder {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Columns(Arc<[ColumnRef]>);
+pub struct Columns(Arc<Vec<ColumnRef>>);
 
 impl Columns {
     pub fn empty() -> Self {
-        Self(Arc::new([]))
+        Self(Arc::new(vec![]))
+    }
+
+    pub fn primary_key(&self) -> Vec<usize> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if c.part_of_key || c.primary_key { Some(i) } else { None })
+            .collect()
+    }
+
+    /// Searches for a column by name, returning it along with its index if found
+    pub fn find(&self, name: &str) -> Option<(usize, &ColumnRef)> {
+        self.0.iter().enumerate().find(|(_, c)| c.name == name)
+    }
+
+    pub fn get_column_idx(&self, name: &str) -> Result<usize> {
+        self.0
+            .iter()
+            .position(|it| it.name == name)
+            .ok_or_else(|| value_err!("Column {} not found", name))
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for column in self {
+            column.validate()?
+        }
+
+        Ok(())
     }
 }
 
@@ -221,7 +236,7 @@ impl FromIterator<Column> for Columns {
 
 impl FromIterator<ColumnRef> for Columns {
     fn from_iter<T: IntoIterator<Item = ColumnRef>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        Self(Arc::new(iter.into_iter().collect()))
     }
 }
 
@@ -239,13 +254,13 @@ impl From<Vec<ColumnRef>> for Columns {
 
 impl From<&[ColumnRef]> for Columns {
     fn from(value: &[ColumnRef]) -> Self {
-        Self(Arc::from(value))
+        Self(Arc::from(value.to_vec()))
     }
 }
 
 impl<const N: usize> From<[ColumnRef; N]> for Columns {
     fn from(value: [ColumnRef; N]) -> Self {
-        Self(Arc::new(value))
+        Self(Arc::new(value.to_vec()))
     }
 }
 
@@ -263,26 +278,5 @@ impl<'a> IntoIterator for &'a Columns {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
-    }
-}
-
-impl Columns {
-    /// Searches for a column by name, returning it along with its index if found
-    pub fn find(&self, name: &str) -> Option<(usize, &ColumnRef)> {
-        self.0.iter().enumerate().find(|(_, c)| c.name == name)
-    }
-
-    pub fn get_pk_column_idx(&self) -> Result<usize> {
-        self.0
-            .iter()
-            .position(|it| it.primary_key)
-            .ok_or_else(|| Error::value("Primary key column not found"))
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        for column in self {
-            column.validate()?
-        }
-        Ok(())
     }
 }

@@ -84,6 +84,18 @@ macro_rules! assert_scan {
     }
 }
 
+macro_rules! assert_err_contains {
+    ($result:expr, $substr:expr) => {
+        match $result {
+            Err(err) => {
+                let s = format!("{}", err);
+                assert!(s.contains($substr), "Expect err string '{}' contains '{}'", s, $substr);
+            }
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    };
+}
+
 #[test]
 /// Begin as of should provide a read-only view of a historical version.
 fn begin_as_of() -> Result<()> {
@@ -142,8 +154,8 @@ fn begin_as_of() -> Result<()> {
     assert_scan!(t7.scan(..)? => {b"key" => [3], b"other" => [1]});
 
     // Check that future versions are invalid, including the next.
-    assert_eq!(mvcc.begin_as_of(5).err(), Some(Error::Value("Version 5 does not exists".into())));
-    assert_eq!(mvcc.begin_as_of(9).err(), Some(Error::Value("Version 9 does not exists".into())));
+    assert_err_contains!(mvcc.begin_as_of(5), "Version 5 does not exists");
+    assert_err_contains!(mvcc.begin_as_of(9), "Version 9 does not exists");
 
     Ok(())
 }

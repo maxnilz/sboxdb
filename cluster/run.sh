@@ -17,7 +17,7 @@ cargo build --release --bin sboxdb
 
 # Start nodes 1-5 in the background, prefixing their output with the node ID.
 echo "Starting 5 nodes on ports 8811-8815. To connect to node 5, run:"
-echo "cargo run --release --bin sboxsql -- -a localhost:8811"
+echo "cargo run --release --bin sboxsql -- -a localhost:8911"
 echo ""
 
 for ID in 1 2 3 4 5; do

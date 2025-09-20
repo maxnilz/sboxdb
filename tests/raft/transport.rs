@@ -13,6 +13,7 @@ use log::error;
 use rand::Rng;
 use sboxdb::error::Error;
 use sboxdb::error::Result;
+use sboxdb::internal_err;
 use sboxdb::raft::message::Address;
 use sboxdb::raft::message::Message;
 use sboxdb::raft::node::NodeId;
@@ -83,9 +84,7 @@ impl Transport for LabTransport {
                 }
                 Some(tx) => HashMap::from_iter(vec![(id, Arc::clone(tx))]),
             },
-            Address::Localhost => {
-                return Err(Error::internal("outbound message to a local address"))
-            }
+            Address::Localhost => return Err(internal_err!("outbound message to a local address")),
         };
         for (id, tx) in txs {
             let state = self.net.get(from, id)?;
@@ -209,7 +208,7 @@ impl LabNetMesh {
     }
 
     pub fn get(&self, id: NodeId) -> sboxdb::error::Result<LabTransport> {
-        let rx = self.rxs.get(&id).ok_or(Error::internal(format!("node {} not found", id)))?;
+        let rx = self.rxs.get(&id).ok_or(internal_err!("node {} not found", id))?;
         let peers: HashMap<_, _> = self
             .txs
             .iter()

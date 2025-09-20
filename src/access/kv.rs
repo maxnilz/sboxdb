@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::sync::Arc;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -13,20 +12,22 @@ use crate::access::value::IndexKey;
 use crate::access::value::PrimaryKey;
 use crate::access::value::Row;
 use crate::access::value::Tuple;
+use crate::already_exists_err;
 use crate::catalog::catalog::Catalog;
 use crate::catalog::column::Columns;
 use crate::catalog::index::Index;
 use crate::catalog::index::Indexes;
 use crate::catalog::r#type::Value;
+use crate::catalog::schema::Constraint;
 use crate::catalog::schema::Schema;
 use crate::catalog::schema::Schemas;
 use crate::concurrency::mvcc;
 use crate::concurrency::mvcc::TransactionState;
-use crate::error::Error;
 use crate::error::Result;
 use crate::storage::codec::bincodec;
 use crate::storage::codec::keycodec;
 use crate::storage::Storage;
+use crate::value_err;
 
 /// A transactional access engine based on an underlying MVCC key/value store.
 #[derive(Debug)]
@@ -86,7 +87,7 @@ enum Key<'a> {
     /// A table row, by table name and id.
     Row(Cow<'a, str>, PrimaryKey),
     /// A hash index entry by table name, index name
-    /// and values of index keys as the key a primary key
+    /// and values of index keys as the key, a primary key
     /// posting list as the entry content.
     ///
     /// In case of Key-valued based storage, it maybe implemented
@@ -149,7 +150,7 @@ impl<T: Storage> KvTxn<T> {
         pks.iter()
             .map(|it| {
                 self.read(table, it)
-                    .and_then(|t| t.ok_or(Error::value(format!("Tuple with key {} not found", it))))
+                    .and_then(|t| t.ok_or(value_err!("Tuple with key {} not found", it)))
             })
             .collect::<Result<Vec<Row>>>()
     }
@@ -165,20 +166,30 @@ impl<T: Storage> Catalog for KvTxn<T> {
     fn create_table(&self, schema: Schema) -> Result<()> {
         schema.validate()?;
         if self.read_table(&schema.name)?.is_some() {
-            return Err(Error::already_exists(format!("Table {} already exits", &schema.name)));
+            return Err(already_exists_err!("Table {} already exits", &schema.name));
         }
         let table = Cow::Borrowed(schema.name.as_str());
         let key = Key::Table(table).encode()?;
         self.txn.set(&key, bincodec::serialize(&schema)?)?;
 
-        // Create unique index for unique column
-        for column in schema.columns.iter() {
-            if column.primary_key || !column.unique {
-                continue;
+        // Create unique index on unique constraint
+        for c in schema.constraints.iter() {
+            match c {
+                Constraint::Unique(inds) => {
+                    if &schema.columns.primary_key() == inds {
+                        continue; // since the primary key is treated as the row key, skip it.
+                    }
+                    let mut columns = vec![];
+                    let mut constraint_name = String::from('c');
+                    for &i in inds {
+                        constraint_name.push_str(&i.to_string());
+                        columns.push(schema.columns[i].clone())
+                    }
+                    let index =
+                        Index::new(&constraint_name, &schema.name, Columns::from(columns), true);
+                    self.create_index(index)?;
+                }
             }
-            let index =
-                Index::new(&column.name, &schema.name, Columns::from([Arc::clone(column)]), true);
-            self.create_index(index)?;
         }
         Ok(())
     }
@@ -219,10 +230,11 @@ impl<T: Storage> Catalog for KvTxn<T> {
     fn create_index(&self, index: Index) -> Result<()> {
         index.validate()?;
         if self.read_index(&index.name, &index.tblname)?.is_some() {
-            return Err(Error::already_exists(format!(
+            return Err(already_exists_err!(
                 "Index {} on table {} already exists",
-                index.name, index.tblname
-            )));
+                index.name,
+                index.tblname
+            ));
         }
         let tblame = Cow::Borrowed(index.tblname.as_str());
         let name = Cow::Borrowed(index.name.as_str());
@@ -266,16 +278,17 @@ impl<T: Storage> KvTxn<T> {
         match self.txn.get(&key)? {
             None => self.txn.set(&key, bincodec::serialize(&vec![pk])?),
             Some(bytes) => {
-                let mut values: Vec<Value> = bincodec::deserialize(&bytes)?;
+                let mut posting_list: Vec<PrimaryKey> = bincodec::deserialize(&bytes)?;
                 // Check uniqueness
-                if index.uniqueness && values.iter().find(|&it| it == pk).is_some() {
-                    return Err(Error::value(format!(
+                if index.uniqueness && posting_list.iter().find(|&it| it == &pk).is_some() {
+                    return Err(value_err!(
                         "index key {:?} already exists for index {}",
-                        index_key, index.name
-                    )));
+                        index_key,
+                        index.name
+                    ));
                 }
-                values.push(pk.clone());
-                self.txn.set(&key, bincode::serialize(&values)?)
+                posting_list.push(pk.clone());
+                self.txn.set(&key, bincode::serialize(&posting_list)?)
             }
         }
     }
@@ -292,11 +305,11 @@ impl<T: Storage> KvTxn<T> {
         match self.txn.get(&key)? {
             None => Ok(()),
             Some(bytes) => {
-                let mut values: Vec<Value> = bincodec::deserialize(&bytes)?;
-                if let Some(pos) = values.iter().position(|it| it == pk) {
-                    values.remove(pos);
+                let mut posting_list: Vec<PrimaryKey> = bincodec::deserialize(&bytes)?;
+                if let Some(pos) = posting_list.iter().position(|it| it == pk) {
+                    posting_list.remove(pos);
                 }
-                self.txn.set(&key, bincodec::serialize(&values)?)
+                self.txn.set(&key, bincodec::serialize(&posting_list)?)
             }
         }
     }
@@ -338,10 +351,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
         let pk = row.primary_key()?;
         let key = Key::Row(table.into(), pk.clone()).encode()?;
         if self.txn.get(&key)?.is_some() {
-            return Err(Error::value(format!(
-                "Primary key {} already exits for table {}",
-                pk, table
-            )));
+            return Err(value_err!("Primary key {} already exits for table {}", pk, table));
         }
         // Set the tuple value under primary key
         self.txn.set(&key, bincodec::serialize(&row.tuple)?)?;
@@ -407,10 +417,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
                     Some(p) => match p.evaluate(Some(&t)) {
                         Ok(Value::Boolean(b)) if b => Some(Ok(t)),
                         Ok(Value::Boolean(_)) => None,
-                        Ok(v) => Some(Err(Error::value(format!(
-                            "Expected boolean predicate, got {}",
-                            v
-                        )))),
+                        Ok(v) => Some(Err(value_err!("Expected boolean predicate, got {}", v))),
                         Err(err) => Some(Err(err)),
                     },
                 },
@@ -442,8 +449,8 @@ impl<T: Storage> Transaction for KvTxn<T> {
         match self.txn.get(&key)? {
             None => Ok(None),
             Some(bytes) => {
-                let values: Vec<Value> = bincodec::deserialize(&bytes)?;
-                let rows = self.get_rows_by_pks(table, values)?;
+                let posting_list: Vec<PrimaryKey> = bincodec::deserialize(&bytes)?;
+                let rows = self.get_rows_by_pks(table, posting_list)?;
                 Ok(Some(rows))
             }
         }
@@ -458,10 +465,10 @@ impl<T: Storage> Transaction for KvTxn<T> {
                 r.and_then(|(k, vbytes)| match Key::decode(&k)? {
                     Key::HashIndexEntry(_, _, keyv) => {
                         let index_key: Tuple = bincodec::deserialize(&keyv)?;
-                        let values: Vec<Value> = bincodec::deserialize(&vbytes)?;
+                        let values: Vec<PrimaryKey> = bincodec::deserialize(&vbytes)?;
                         Ok((index_key, values))
                     }
-                    key => Err(Error::value(format!("Expect Key::HashIndexEntry got {:?}", key))),
+                    key => Err(value_err!("Expect Key::HashIndexEntry got {:?}", key)),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -505,12 +512,15 @@ mod tests {
         let t1 = kv.begin()?;
 
         let table = String::from("foo");
-        let columns = Columns::from(vec![
+        let columns = vec![
             ColumnBuilder::new("col1", DataType::Integer).primary().build()?,
-            ColumnBuilder::new("col2", DataType::String).default_value(Value::Null).build()?,
-            ColumnBuilder::new("col3", DataType::String).not_null().unique().build()?,
-        ]);
-        let schema = Schema::new(table.clone(), columns);
+            ColumnBuilder::new("col2", DataType::String)
+                .default_value(Value::String("".to_string()))
+                .build()?,
+            ColumnBuilder::new("col3", DataType::String).not_null().build()?,
+        ];
+        let constraints = vec![Constraint::Unique(vec![2])];
+        let schema = Schema::new(table.clone(), columns, constraints);
 
         // create table
         t1.create_table(schema.clone())?;
@@ -519,7 +529,7 @@ mod tests {
         let got = t1.read_table(&table)?;
         assert_eq!(got, Some(schema.clone()));
 
-        // An unique index should be created for unique column col3
+        // A unique index should be created for unique column col3
         let indexes = t1.scan_table_indexes(&table)?;
         assert_eq!(indexes.len(), 1);
 
@@ -719,14 +729,15 @@ mod tests {
         fn generate(&mut self, txn: &mut dyn Txn) -> Result<()> {
             // generate column definition
             let mut columns = vec![];
+            let mut constraints = vec![];
             for (i, it) in &mut self.column_generators.iter_mut().enumerate() {
                 let mut column_builder = ColumnBuilder::new(it.name.clone(), it.datatype.clone());
                 if i == 0 {
                     column_builder = column_builder.primary();
                 }
 
-                column_builder = column_builder.uniqueness(it.unique);
                 if it.unique {
+                    constraints.push(Constraint::Unique(vec![i]));
                     it.dst = Dst::Serial;
                 }
 
@@ -746,7 +757,7 @@ mod tests {
                 columns.push(column)
             }
             // create table
-            let table = Schema::new(self.name.clone(), columns);
+            let table = Schema::new(self.name.clone(), columns, constraints);
             txn.create_table(table.clone())?;
 
             // generate table data
@@ -807,7 +818,7 @@ mod tests {
         // get by pk
         let row = &rows[0];
         let pk = row.primary_key()?;
-        let got = t1.read(&tblname, pk)?;
+        let got = t1.read(&tblname, &pk)?;
         assert_eq!(Some(row.clone()), got);
 
         // indexes
@@ -833,10 +844,10 @@ mod tests {
         assert_eq!(row, &gots[0]);
 
         // delete by pk
-        t1.delete(&tblname, pk)?;
+        t1.delete(&tblname, &pk)?;
 
         // check deletion
-        let row = t1.read(&tblname, pk)?;
+        let row = t1.read(&tblname, &pk)?;
         assert_eq!(None, row);
         let row = t1.read_index_entry(&tblname, &index.name, index_key)?;
         assert_eq!(None, row);

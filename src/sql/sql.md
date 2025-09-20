@@ -25,8 +25,9 @@ ddl_stmt          := create_table_stmt
                    | drop_index_stmt
                    | alter_table_stmt
 
-create_table_stmt := "CREATE" "TABLE" [ "IF" "NOT" "EXISTS" ] identifier "(" column_def ("," column_def)* ")" ;
+create_table_stmt := "CREATE" "TABLE" [ "IF" "NOT" "EXISTS" ] identifier "(" column_def ("," column_def)* ["," table_constraint]* ")" ;
 
+table_constraint  := "PRIMARY KEY" "(" identifier ("," identifier)* ")" ;
 column_def        := identifier data_type (column_constraint)* ;
 
 data_type         := "INT"

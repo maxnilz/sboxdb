@@ -9,8 +9,8 @@ use crate::access::engine::Transaction;
 use crate::access::value::Tuple;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::sql::execution::compiler::ExecutionPlan;
 use crate::sql::execution::context::Context;
 use crate::sql::execution::display::TabularDisplay;
@@ -76,7 +76,7 @@ impl ResultSet {
             .map(|row| {
                 row.get(col_idx)
                     .cloned()
-                    .ok_or(Error::internal(format!("value at column {} is out of bound", col_idx)))
+                    .ok_or(internal_err!("value at column {} is out of bound", col_idx))
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Tuple::from(values))
@@ -85,7 +85,7 @@ impl ResultSet {
 
 impl From<&dyn Transaction> for ResultSet {
     fn from(txn: &dyn Transaction) -> Self {
-        let schema = LogicalSchema::from_unqualified_fields([
+        let schema = LogicalSchema::from_fields([
             FieldBuilder::new("version", DataType::Integer).build(),
             FieldBuilder::new("read_only", DataType::Boolean).build(),
         ])

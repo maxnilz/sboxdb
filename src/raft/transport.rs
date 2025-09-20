@@ -20,8 +20,9 @@ use tokio_util::codec::LengthDelimitedCodec;
 use super::message::Address;
 use super::message::Message;
 use super::node::NodeId;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
+use crate::value_err;
 
 /// Transport act as the message exchange(send, receive) among
 /// raft peers.
@@ -53,7 +54,7 @@ pub struct TcpTransport {
 impl TcpTransport {
     pub fn try_new(me: (NodeId, SocketAddr), peers: HashMap<NodeId, SocketAddr>) -> Result<Self> {
         if peers.keys().any(|&it| it == me.0) {
-            return Err(Error::value(format!("peers should have no node {} itself", me.0)));
+            return Err(value_err!("peers should have no node {} itself", me.0));
         }
         let mut txs: HashMap<NodeId, mpsc::Sender<Message>> = HashMap::new();
         for (id, addr) in peers.clone().into_iter() {
@@ -159,9 +160,7 @@ impl Transport for TcpTransport {
         let to = match message.to {
             Address::Broadcast => self.txs.keys().copied().collect(),
             Address::Node(peer) => vec![peer],
-            Address::Localhost => {
-                return Err(Error::internal("outbound message to a local address"))
-            }
+            Address::Localhost => return Err(internal_err!("outbound message to a local address")),
         };
         for id in to {
             match self.txs.get_mut(&id) {

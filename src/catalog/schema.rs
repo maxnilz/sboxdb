@@ -1,13 +1,15 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::ops::Deref;
 use std::sync::Arc;
+use std::vec::IntoIter;
 
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::catalog::column::Columns;
-use crate::error::Error;
 use crate::error::Result;
+use crate::value_err;
 
 /// A reference-counted reference to a [`Schema`].
 pub type SchemaRef = Arc<Schema>;
@@ -20,6 +22,8 @@ pub struct Schema {
     pub name: String,
     /// A sequence of columns that describe the schema.
     pub columns: Columns,
+    /// A list of schema constraints
+    pub constraints: Constraints,
 }
 
 impl Default for Schema {
@@ -48,33 +52,92 @@ impl Display for Schema {
 pub type Schemas = Box<dyn DoubleEndedIterator<Item = Schema>>;
 
 impl Schema {
-    pub fn new(name: impl Into<String>, columns: impl Into<Columns>) -> Schema {
-        Schema { name: name.into(), columns: columns.into() }
+    pub fn new(
+        name: impl Into<String>,
+        columns: impl Into<Columns>,
+        constraints: impl Into<Constraints>,
+    ) -> Schema {
+        Schema { name: name.into(), columns: columns.into(), constraints: constraints.into() }
     }
 
-    pub fn try_new(name: impl Into<String>, columns: impl Into<Columns>) -> Result<Schema> {
-        let schema = Schema { name: name.into(), columns: columns.into() };
+    pub fn try_new(
+        name: impl Into<String>,
+        columns: impl Into<Columns>,
+        constraints: impl Into<Constraints>,
+    ) -> Result<Schema> {
+        let schema =
+            Schema { name: name.into(), columns: columns.into(), constraints: constraints.into() };
         schema.validate()?;
         Ok(schema)
     }
 
     pub fn empty() -> Schema {
-        Schema::new("", Columns::empty())
+        Schema::new("", Columns::empty(), Constraints::empty())
     }
 
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(Error::value("Table name can't be empty"));
+            return Err(value_err!("Table name can't be empty"));
         }
         if self.columns.is_empty() {
-            return Err(Error::value(format!("Table {} have no columns", self.name)));
+            return Err(value_err!("Table {} have no columns", self.name));
         }
-        match self.columns.iter().filter(|it| it.primary_key).count() {
-            1 => {}
-            0 => return Err(Error::value(format!("No primary key in table {}", self.name))),
-            _ => return Err(Error::value(format!("Multiple primary keys in table {}", self.name))),
-        };
         self.columns.validate()?;
+        // check schema primary key
+        if self.columns.primary_key().is_empty() {
+            return Err(value_err!("Primary key not found"));
+        }
+        // check constraints
+        for c in self.constraints.iter() {
+            match c {
+                Constraint::Unique(cols) => {
+                    for &i in cols {
+                        self.columns
+                            .get(i)
+                            .ok_or_else(|| value_err!("No column at {} as unique key column", i))?;
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum Constraint {
+    Unique(Vec<usize>),
+}
+
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct Constraints {
+    inner: Vec<Constraint>,
+}
+
+impl Constraints {
+    pub fn empty() -> Self {
+        Self { inner: vec![] }
+    }
+}
+
+impl IntoIterator for Constraints {
+    type Item = Constraint;
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl Deref for Constraints {
+    type Target = [Constraint];
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_slice()
+    }
+}
+
+impl From<Vec<Constraint>> for Constraints {
+    fn from(value: Vec<Constraint>) -> Self {
+        Self { inner: value }
     }
 }

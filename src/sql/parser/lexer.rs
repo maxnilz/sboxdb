@@ -1,8 +1,8 @@
 use std::iter::Peekable;
 use std::str::Chars;
 
-use crate::error::Error;
 use crate::error::Result;
+use crate::parse_err;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -422,7 +422,7 @@ impl<'a> Lexer<'a> {
             match self.iter.next() {
                 Some('"') => break,
                 Some(c) => s.push(c),
-                None => return Err(Error::parse("Unexpected end of quoted identifier")),
+                None => return Err(parse_err!("Unexpected end of quoted identifier")),
             }
         }
         Ok(Some(Token::Ident(s, true)))
@@ -438,7 +438,7 @@ impl<'a> Lexer<'a> {
             match self.iter.next() {
                 Some('\'') => break,
                 Some(c) => s.push(c),
-                None => return Err(Error::parse("Unexpected end of string string literal")),
+                None => return Err(parse_err!("Unexpected end of string string literal")),
             }
         }
         Ok(Some(Token::String(s)))
@@ -454,7 +454,7 @@ impl<'a> Iterator for Lexer<'a> {
             Ok(None) => {
                 // if we have any chars left, consider it as syntax error,
                 // otherwise return None.
-                self.iter.peek().map(|c| Err(Error::parse(format!("Unexpected character {}", c))))
+                self.iter.peek().map(|c| Err(parse_err!("Unexpected character {}", c)))
             }
             Err(err) => Some(Err(err)),
         }

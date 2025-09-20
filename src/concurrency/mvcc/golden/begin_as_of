@@ -75,9 +75,9 @@ T7: scan ..
     "key" = 0x03
     "other" = 0x01
 
-T8: begin read-only 5 → Error::Value("Version 5 does not exists")
+T8: begin read-only 5 → Error::Value(ErrMsg { msg: "Version 5 does not exists", file: "src/concurrency/mvcc/mod.rs", line: 362 })
 
-T9: begin read-only 9 → Error::Value("Version 9 does not exists")
+T9: begin read-only 9 → Error::Value(ErrMsg { msg: "Version 9 does not exists", file: "src/concurrency/mvcc/mod.rs", line: 362 })
 
 KV state:
 NextVersion = 5

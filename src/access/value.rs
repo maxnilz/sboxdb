@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -10,8 +12,9 @@ use crate::catalog::column::ColumnRef;
 use crate::catalog::column::Columns;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
+use crate::value_err;
 
 pub type TupleRef = Arc<Tuple>;
 
@@ -30,7 +33,7 @@ impl Tuple {
     pub fn scalar(mut self) -> Result<Value> {
         let sz = self.len();
         if sz != 1 {
-            return Err(Error::internal(format!("Expect single scalar value, got {} values", sz)));
+            return Err(internal_err!("Expect single scalar value, got {} values", sz));
         }
         Ok(self.0.remove(0))
     }
@@ -40,7 +43,7 @@ impl Tuple {
         match scalar {
             Value::Null => Ok(false),
             Value::Boolean(b) => Ok(b),
-            _ => Err(Error::internal(format!("Expect boolean value got {}", scalar.datatype()))),
+            _ => Err(internal_err!("Expect boolean value got {}", scalar.datatype())),
         }
     }
 
@@ -97,7 +100,36 @@ impl<'a> IntoIterator for &'a Tuple {
     }
 }
 
-pub type PrimaryKey = Value;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrimaryKey {
+    inner: Vec<Value>,
+}
+
+impl Display for PrimaryKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let sz = self.inner.len();
+        match sz {
+            0 => write!(f, "!BADKEY"),
+            1 => write!(f, "{}", self.inner[0]),
+            _ => {
+                write!(f, "(")?;
+                for (i, it) in self.inner.iter().enumerate() {
+                    write!(f, "{}", it)?;
+                    if i < sz - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+impl From<Vec<Value>> for PrimaryKey {
+    fn from(value: Vec<Value>) -> Self {
+        PrimaryKey { inner: value }
+    }
+}
 
 /// Index key composed of multiple column values.
 pub type IndexKey = Tuple;
@@ -117,9 +149,13 @@ impl Row {
         Ok(tuple)
     }
 
-    pub fn primary_key(&self) -> Result<&'_ Value> {
-        let idx = self.columns.get_pk_column_idx()?;
-        self.tuple.get(idx).ok_or_else(|| Error::value("Primary key not found"))
+    pub fn primary_key(&self) -> Result<PrimaryKey> {
+        let inds = self.columns.primary_key();
+        let mut out = vec![];
+        for i in inds {
+            out.push(self.tuple[i].clone())
+        }
+        Ok(out.into())
     }
 
     pub fn get_value(&self, i: usize) -> Option<&'_ Value> {
@@ -129,11 +165,11 @@ impl Row {
     pub fn get_values(&self, columns: &Columns) -> Result<Tuple> {
         let mut out = Vec::new();
         for column in columns.iter() {
-            let idx = self.columns.get_pk_column_idx()?;
+            let idx = self.columns.get_column_idx(&column.name)?;
             let val = self
                 .tuple
                 .get(idx)
-                .ok_or_else(|| Error::value(format!("Column {} is not found", column.name)))?;
+                .ok_or_else(|| value_err!("Column {} is not found", column.name))?;
             out.push(val.clone());
         }
         Ok(Tuple::from(out))
@@ -141,26 +177,24 @@ impl Row {
 
     pub fn check_columns(&self, columns: &Columns) -> Result<()> {
         if self.columns != *columns {
-            return Err(Error::value("Invalid columns definitions"));
+            return Err(value_err!("Invalid columns definitions"));
         }
         Ok(())
     }
 
     fn validate(&self) -> Result<()> {
         if self.tuple.len() != self.columns.len() {
-            return Err(Error::value("Invalid values size"));
+            return Err(value_err!("Invalid values size"));
         }
         for (column, value) in self.columns.iter().zip(&self.tuple) {
             match value.datatype() {
                 DataType::Null if column.nullable => Ok(()),
-                DataType::Null => Err(Error::value(format!(
-                    "NULL value is not allowed for column {}",
-                    column.name
-                ))),
-                datatype if datatype != column.datatype => Err(Error::value(format!(
-                    "Invalid datatype {} for column {}",
-                    datatype, column.name
-                ))),
+                DataType::Null => {
+                    Err(value_err!("NULL value is not allowed for column {}", column.name))
+                }
+                datatype if datatype != column.datatype => {
+                    Err(value_err!("Invalid datatype {} for column {}", datatype, column.name))
+                }
                 _ => Ok(()),
             }?;
         }

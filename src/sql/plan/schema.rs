@@ -18,9 +18,11 @@ use crate::catalog::column::ColumnRef;
 use crate::catalog::column::Columns;
 use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
+use crate::catalog::schema::Constraints;
 use crate::catalog::schema::Schema;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
+use crate::parse_err;
 use crate::sql::plan::expr::Expr;
 
 /// A logical named reference to a qualified field in a schema.
@@ -43,7 +45,7 @@ impl FieldReference {
     }
 }
 
-impl std::fmt::Display for FieldReference {
+impl Display for FieldReference {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self.relation {
             None => write!(f, "{}", self.name),
@@ -102,9 +104,11 @@ pub type FieldRef = Arc<Field>;
 pub struct Field {
     pub name: String,
     pub datatype: DataType,
+    /// A single field as primary key
     pub primary_key: bool,
+    /// A key field to a composite primary key.
+    pub part_of_key: bool,
     pub nullable: bool,
-    pub unique: bool,
     #[serde(
         serialize_with = "serialize_expr_as_string",
         deserialize_with = "deserialize_expr_from_string"
@@ -144,7 +148,6 @@ impl PartialEq for Field {
             && self.datatype == other.datatype
             && self.primary_key == other.primary_key
             && self.nullable == other.nullable
-            && self.unique == other.unique
     }
 }
 
@@ -153,9 +156,6 @@ impl Display for Field {
         write!(f, "{} {}", self.name, self.datatype)?;
         if self.primary_key {
             write!(f, " PK")?;
-        }
-        if self.unique {
-            write!(f, " UNIQUE")?;
         }
         if !self.nullable {
             write!(f, " NOT NULL")?;
@@ -182,7 +182,6 @@ impl Ord for Field {
             .then_with(|| self.datatype.cmp(&other.datatype))
             .then_with(|| self.primary_key.cmp(&self.primary_key))
             .then_with(|| self.nullable.cmp(&self.nullable))
-            .then_with(|| self.unique.cmp(&self.unique))
     }
 }
 
@@ -192,7 +191,6 @@ impl Hash for Field {
         self.datatype.hash(state);
         self.primary_key.hash(state);
         self.nullable.hash(state);
-        self.unique.hash(state);
     }
 }
 
@@ -208,8 +206,8 @@ impl From<&ColumnRef> for Field {
             name: column.name.clone(),
             datatype: column.datatype.clone(),
             primary_key: column.primary_key,
+            part_of_key: column.part_of_key,
             nullable: column.nullable,
-            unique: column.unique,
             default: column.default.clone().map(|value| Expr::Value(value)),
         }
     }
@@ -240,8 +238,8 @@ impl Fields {
             .map(|it| {
                 ColumnBuilder::new(&it.name, it.datatype.clone())
                     .primary_key(it.primary_key)
+                    .part_of_key(it.part_of_key)
                     .nullable(it.nullable)
-                    .uniqueness(it.unique)
                     .default(default_evalf(&it.name, it.default.clone())?)
                     .build()
             })
@@ -253,10 +251,7 @@ impl Fields {
             None => Ok(None),
             Some(expr) => match expr {
                 Expr::Value(v) => Ok(Some(v)),
-                _ => Err(Error::internal(format!(
-                    "Expect value expr for column: {}, got: {}",
-                    col, expr
-                ))),
+                _ => Err(internal_err!("Expect value expr for column: {}, got: {}", col, expr)),
             },
         })
     }
@@ -277,6 +272,12 @@ impl FromIterator<FieldRef> for Fields {
 impl From<Vec<Field>> for Fields {
     fn from(value: Vec<Field>) -> Self {
         value.into_iter().collect()
+    }
+}
+
+impl From<Vec<FieldBuilder>> for Fields {
+    fn from(value: Vec<FieldBuilder>) -> Self {
+        value.into_iter().map(|it| it.build()).collect()
     }
 }
 
@@ -307,11 +308,11 @@ impl Deref for Fields {
 }
 /// Builder for creating [`Field`] instances with a fluent interface
 pub struct FieldBuilder {
-    name: String,
+    pub name: String,
     datatype: DataType,
     primary_key: bool,
+    part_of_key: bool,
     nullable: bool,
-    unique: bool,
     default: Option<Expr>,
 }
 
@@ -322,8 +323,8 @@ impl FieldBuilder {
             name: name.into(),
             datatype,
             primary_key: false,
+            part_of_key: false,
             nullable: true,
-            unique: false,
             default: None,
         }
     }
@@ -332,7 +333,6 @@ impl FieldBuilder {
     pub fn primary(mut self) -> Self {
         self.primary_key = true;
         self.nullable = false; // Primary keys are automatically not nullable
-        self.unique = true; // Primary keys are automatically unique
         self
     }
 
@@ -342,6 +342,21 @@ impl FieldBuilder {
             return self;
         }
         self.primary()
+    }
+
+    /// Mark this column as a part of key
+    pub fn partkey(mut self) -> Self {
+        self.part_of_key = true;
+        self.nullable = false; // Primary keys are automatically not nullable
+        self
+    }
+
+    /// Set whether this column is primary key
+    pub fn part_of_key(self, part_of_key: bool) -> Self {
+        if !part_of_key {
+            return self;
+        }
+        self.partkey()
     }
 
     /// Set whether this column is nullable
@@ -355,20 +370,6 @@ impl FieldBuilder {
     /// Mark this column as not nullable
     pub fn not_null(self) -> Self {
         self.nullable(false)
-    }
-
-    /// Set whether this column is unique
-    pub fn uniqueness(mut self, unique: bool) -> Self {
-        if !self.primary_key {
-            self.unique = unique;
-        }
-        self
-    }
-
-    /// Mark this column as unique
-    #[allow(dead_code)]
-    pub fn unique(self) -> Self {
-        self.uniqueness(true)
     }
 
     /// Set the default value for this column
@@ -388,8 +389,8 @@ impl FieldBuilder {
             name: self.name,
             datatype: self.datatype,
             primary_key: self.primary_key,
+            part_of_key: self.part_of_key,
             nullable: self.nullable,
-            unique: self.unique,
             default: self.default,
         }
     }
@@ -402,6 +403,8 @@ struct LogicalSchemaInner {
     /// Optional qualifiers for each column in this schema to specify the source
     /// of each column. In the same order as the `fields`
     qualifiers: Vec<Option<TableReference>>,
+    /// Table constraints
+    constraints: Constraints,
 }
 
 pub static EMPTY_SCHEMA: LazyLock<LogicalSchema> = LazyLock::new(|| LogicalSchema::empty());
@@ -419,64 +422,95 @@ pub struct LogicalSchema {
 
 impl LogicalSchema {
     pub fn empty() -> Self {
-        Self { inner: Arc::new(LogicalSchemaInner { fields: Fields::empty(), qualifiers: vec![] }) }
+        Self {
+            inner: Arc::new(LogicalSchemaInner {
+                fields: Fields::empty(),
+                qualifiers: vec![],
+                constraints: Constraints::empty(),
+            }),
+        }
     }
 
-    pub fn try_new(
+    fn new(
         fields: impl Into<Fields>,
         qualifiers: Vec<Option<TableReference>>,
+        constraints: impl Into<Constraints>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(LogicalSchemaInner {
+                fields: fields.into(),
+                qualifiers,
+                constraints: constraints.into(),
+            }),
+        }
+    }
+
+    fn try_new(
+        fields: impl Into<Fields>,
+        qualifiers: Vec<Option<TableReference>>,
+        constraints: impl Into<Constraints>,
     ) -> Result<Self> {
         let fields = fields.into();
         if fields.len() != qualifiers.len() {
-            return Err(Error::internal("Invalid fields and qualifiers size"));
+            return Err(internal_err!("Invalid fields and qualifiers size"));
         }
-        let schema = Self::new(fields, qualifiers);
+        let schema = Self::new(fields, qualifiers, constraints);
         schema.check_names()?;
         Ok(schema)
     }
 
-    fn new(fields: impl Into<Fields>, qualifiers: Vec<Option<TableReference>>) -> Self {
-        Self { inner: Arc::new(LogicalSchemaInner { fields: fields.into(), qualifiers }) }
+    pub fn from_qualified_fields(
+        fields: impl Into<Fields>,
+        qualifiers: Vec<Option<TableReference>>,
+    ) -> Result<Self> {
+        Self::try_new(fields, qualifiers, vec![])
     }
 
-    pub fn from_unqualified_fields(fields: impl Into<Fields>) -> Result<Self> {
+    pub fn from_fields(fields: impl Into<Fields>) -> Result<Self> {
         let fields = fields.into();
         let sz = fields.len();
-        let schema = Self::new(fields, vec![None; sz]);
+        let schema = Self::new(fields, vec![None; sz], vec![]);
+        schema.check_names()?;
+        Ok(schema)
+    }
+
+    pub fn from_fields_constraints(
+        fields: impl Into<Fields>,
+        constraints: impl Into<Constraints>,
+    ) -> Result<Self> {
+        let fields = fields.into();
+        let sz = fields.len();
+        let schema = Self::new(fields, vec![None; sz], constraints);
         schema.check_names()?;
         Ok(schema)
     }
 
     pub fn schema_affected_rows_count() -> LogicalSchema {
-        LogicalSchema::from_unqualified_fields(Fields::from(vec![FieldBuilder::new(
-            "count",
-            DataType::Integer,
-        )
-        .build()]))
-        .unwrap()
+        let fields = Fields::from(vec![FieldBuilder::new("count", DataType::Integer).build()]);
+        LogicalSchema::from_fields(fields).unwrap()
     }
 
     pub fn is_affected_rows_count_schema(&self) -> Result<()> {
         let sz = self.len();
         if sz != 1 {
-            return Err(Error::internal(format!(
-                "Expect one single field output scheme, got {}",
-                sz
-            )));
+            return Err(internal_err!("Expect one single field output scheme, got {}", sz));
         }
         let field = self.field(0);
         if field.datatype != DataType::Integer {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "Expect one single integer field as output, got {}",
                 field.datatype
-            )));
+            ));
         }
         if field.name != "count" {
-            return Err(Error::internal(format!("Expect count as field name, got {}", field.name)));
+            return Err(internal_err!("Expect count as field name, got {}", field.name));
         }
         Ok(())
     }
 
+    pub fn constraints(&self) -> Constraints {
+        self.inner.constraints.clone()
+    }
     pub fn fields(&self) -> &Fields {
         &self.inner.fields
     }
@@ -495,7 +529,7 @@ impl LogicalSchema {
             return Ok(self.inner.fields[idx].clone());
         }
         let relname = if let Some(name) = relation { format!("{}.", name) } else { "".to_string() };
-        Err(Error::parse(format!("Column {}{} not found, schema: {}", relname, field.name, self)))
+        Err(parse_err!("Column {}{} not found, schema: {}", relname, field.name, self))
     }
 
     pub fn field_reference(&self, index: usize) -> FieldReference {
@@ -599,7 +633,11 @@ impl LogicalSchema {
 
         let mut fields = self.inner.fields.to_vec();
         fields.extend(new_fields);
-        let inner = LogicalSchemaInner { fields: Fields::from(fields), qualifiers: new_qualifiers };
+        let inner = LogicalSchemaInner {
+            fields: Fields::from(fields),
+            qualifiers: new_qualifiers,
+            constraints: Constraints::empty(),
+        };
         self.inner = Arc::new(inner);
     }
 
@@ -615,7 +653,7 @@ impl LogicalSchema {
         fields.extend_from_slice(other.inner.fields.as_ref());
         qualifiers.extend_from_slice(&other.inner.qualifiers);
 
-        let out = Self::new(fields, qualifiers);
+        let out = Self::new(fields, qualifiers, vec![]);
         out.check_names()?;
 
         Ok(out)
@@ -627,26 +665,21 @@ impl LogicalSchema {
         for (q, f) in self.iter() {
             if let Some(q) = q {
                 if !qualified_names.insert((q, &f.name)) {
-                    return Err(Error::parse(format!(
+                    return Err(parse_err!(
                         "Invalid schema, duplicate qualified column {}.{}",
-                        q, &f.name
-                    )));
+                        q,
+                        &f.name
+                    ));
                 }
                 continue;
             }
             if !unqualified_names.insert(&f.name) {
-                return Err(Error::parse(format!(
-                    "Invalid schema, duplicate unqualified column {}",
-                    &f.name
-                )));
+                return Err(parse_err!("Invalid schema, duplicate unqualified column {}", &f.name));
             }
         }
         for (q, name) in qualified_names {
             if unqualified_names.contains(name) {
-                return Err(Error::parse(format!(
-                    "Invalid schema, ambiguous reference {}.{}",
-                    q, name
-                )));
+                return Err(parse_err!("Invalid schema, ambiguous reference {}.{}", q, name));
             }
         }
         Ok(())
@@ -658,7 +691,7 @@ impl From<Schema> for LogicalSchema {
         let sz = schema.columns.len();
         let fields = schema.columns.iter().map(|it| Field::from(it)).collect::<Vec<Field>>();
         let table = TableReference::new(&schema.name);
-        Self::new(fields, vec![Some(table); sz])
+        Self::new(fields, vec![Some(table); sz], schema.constraints)
     }
 }
 

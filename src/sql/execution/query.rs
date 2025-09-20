@@ -10,8 +10,8 @@ use crate::access::engine::Scan;
 use crate::access::predicate::Predicate;
 use crate::access::value::Tuple;
 use crate::catalog::r#type::Value;
-use crate::error::Error;
 use crate::error::Result;
+use crate::internal_err;
 use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::display::DisplayableExecutionPlan;
@@ -25,6 +25,7 @@ use crate::sql::plan::plan::TableScan;
 use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
+use crate::unimplemented_err;
 
 #[derive(Debug)]
 pub struct ValuesExec {
@@ -180,7 +181,7 @@ impl SeqScanExec {
     pub fn try_new(ts: TableScan) -> Result<Self> {
         if let Some(proj) = &ts.projection {
             if !proj.is_empty() {
-                return Err(Error::unimplemented("projection push down is unimplemented yet"));
+                return Err(unimplemented_err!("projection push down is unimplemented yet"));
             }
         }
 
@@ -216,7 +217,7 @@ impl ExecutionPlan for SeqScanExec {
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
         let mut scan_borrow = self.scan.borrow_mut();
         let scan =
-            scan_borrow.as_mut().ok_or_else(|| Error::internal("SeqScanExec not initialized"))?;
+            scan_borrow.as_mut().ok_or_else(|| internal_err!("SeqScanExec not initialized"))?;
         let mut rows = vec![];
         let mut num_rows = 0;
         while let Some(row) = scan.next().transpose()? {
@@ -289,20 +290,22 @@ impl ExecutionPlan for SubqueryAliasExec {
         }
         let rs = rs.unwrap();
         if rs.schema.len() != self.alias_schema.len() {
-            return Err(Error::internal(format!(
+            return Err(internal_err!(
                 "Unexpected alias schema fields size, expect {}, got {}",
                 rs.schema.len(),
                 self.alias_schema.len()
-            )));
+            ));
         }
         for i in 0..rs.schema.len() {
             let a = &rs.schema.field(i).datatype;
             let b = &self.alias_schema.field(i).datatype;
             if a != b {
-                return Err(Error::internal(format!(
+                return Err(internal_err!(
                     "Unexpected alias schema field type at {}, expect: {}, got {}",
-                    i, a, b
-                )));
+                    i,
+                    a,
+                    b
+                ));
             }
         }
         let rows = rs.into_inner()?.rows;
@@ -794,23 +797,22 @@ impl HashJoinExecBuilder {
     }
 
     pub fn build(mut self) -> Result<HashJoinExec> {
-        let left = self.left.ok_or_else(|| Error::internal("left input is required"))?;
-        let right = self.right.ok_or_else(|| Error::internal("right input is required"))?;
-        let join_type = self.join_type.ok_or_else(|| Error::internal("join type is required"))?;
+        let left = self.left.ok_or_else(|| internal_err!("left input is required"))?;
+        let right = self.right.ok_or_else(|| internal_err!("right input is required"))?;
+        let join_type = self.join_type.ok_or_else(|| internal_err!("join type is required"))?;
         if join_type != JoinType::Inner {
-            return Err(Error::internal("Support inner join only"));
+            return Err(internal_err!("Support inner join only"));
         }
-        let constraint =
-            self.constraint.ok_or_else(|| Error::internal("constraint is required"))?;
-        let schema = self.schema.ok_or_else(|| Error::internal("schema is required"))?;
+        let constraint = self.constraint.ok_or_else(|| internal_err!("constraint is required"))?;
+        let schema = self.schema.ok_or_else(|| internal_err!("schema is required"))?;
 
         if self.keys.is_empty() {
-            return Err(Error::unimplemented(
-                "Hash join without equijoin keys is not supported yet",
-            ));
+            return Err(
+                unimplemented_err!("Hash join without equijoin keys is not supported yet",),
+            );
         }
         if self.keys.len() > 1 {
-            return Err(Error::unimplemented(
+            return Err(unimplemented_err!(
                 "Hash join multiple equijoin keys is not supported yet",
             ));
         }
@@ -818,16 +820,16 @@ impl HashJoinExecBuilder {
         let il = left
             .schema()
             .field_index_by_name(&l.relation, &l.name)
-            .ok_or_else(|| Error::internal(format!("unknown left field {}", l)))?;
+            .ok_or_else(|| internal_err!("unknown left field {}", l))?;
         let ir = right
             .schema()
             .field_index_by_name(&r.relation, &r.name)
-            .ok_or_else(|| Error::internal(format!("unknown right field {}", r)))?;
+            .ok_or_else(|| internal_err!("unknown right field {}", r))?;
 
         Ok(HashJoinExec {
             left,
             right,
-            join_type: join_type,
+            join_type,
             il,
             ir,
             constraint,

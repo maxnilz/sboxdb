@@ -2,8 +2,8 @@ use crate::catalog::index::Index;
 use crate::catalog::index::Indexes;
 use crate::catalog::schema::Schema;
 use crate::catalog::schema::Schemas;
-use crate::error::Error;
 use crate::error::Result;
+use crate::value_err;
 
 /// The catalog stores schema information. It handles table
 /// creation, table lookup, index creation, and index lookup.
@@ -13,8 +13,7 @@ pub trait Catalog: Sync + Send {
 
     /// Reads a table, and errors if it does not exist
     fn must_read_table(&self, table: &str) -> Result<Schema> {
-        self.read_table(table)?
-            .ok_or_else(|| Error::value(format!("Table {} does not exist", table)))
+        self.read_table(table)?.ok_or_else(|| value_err!("Table {} does not exist", table))
     }
 
     /// Creates a new table
