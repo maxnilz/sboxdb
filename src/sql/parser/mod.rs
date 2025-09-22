@@ -108,7 +108,7 @@ impl Parser {
     }
 
     fn parse_explain(&mut self) -> Result<Statement> {
-        let physical = self.parse_keyword(Keyword::PHYSICAL);
+        let physical = self.parse_keyword(Keyword::Physical);
         let verbose = self.parse_keyword(Keyword::Verbose);
         let statement = self.parse_statement()?;
         Ok(Statement::Explain { physical, verbose, statement: Box::new(statement) })
@@ -322,7 +322,7 @@ impl Parser {
                     Keyword::Double => Ok(DataType::Float),
                     Keyword::Boolean => Ok(DataType::Boolean),
                     Keyword::Text => Ok(DataType::String),
-                    Keyword::Varchar => {
+                    Keyword::Varchar | Keyword::Char => {
                         // parse optional character length
                         if self.consume_token(&Token::LParen) {
                             let _ = self.parse_literal_uint()?;
@@ -330,6 +330,17 @@ impl Parser {
                         }
                         Ok(DataType::String)
                     }
+                    Keyword::Decimal => {
+                        // parse optional precision params, i.e., decimal(4, 2)
+                        if self.consume_token(&Token::LParen) {
+                            let _ = self.parse_literal_uint()?;
+                            self.expect_token(&Token::Comma)?;
+                            let _ = self.parse_literal_uint()?;
+                            self.expect_token(&Token::RParen)?;
+                        }
+                        Ok(DataType::Float)
+                    }
+                    Keyword::Timestamp => Ok(DataType::Timestamp),
                     _ => self.expected("a data type name", next_token),
                 }
             }
@@ -1159,6 +1170,9 @@ mod tests {
               col5 double default -2.1E-4 + 2,
               col6 text default 'a' NOT NULL,
               "col 7" text NULL,
+              col8 char(2),
+              col9 decimal(4, 2),
+              col10 timestamp default '2025-09-22 07:00:00',
               PRIMARY KEY(col1, col2)
             );
         "#,

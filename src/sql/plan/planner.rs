@@ -565,8 +565,18 @@ impl Planner {
                     .rows
                     .into_iter()
                     .map(|row| {
+                        if row.len() != insertion_schema.len() {
+                            return Err(parse_err!(
+                                "Inserting row columns doesn't match the inserting columns"
+                            ));
+                        }
                         row.into_iter()
-                            .map(|it| self.sqlexpr_to_expr(ctx, it, &empty_schema))
+                            .enumerate()
+                            .map(|(i, it)| {
+                                let expr = self.sqlexpr_to_expr(ctx, it, &empty_schema)?;
+                                let field = insertion_schema.field(i);
+                                expr.can_cast_to(&field.datatype, &empty_schema)
+                            })
                             .collect::<Result<Vec<_>>>()
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -1054,6 +1064,7 @@ impl Planner {
             SQLDataType::Integer => Ok(DataType::Integer),
             SQLDataType::Float => Ok(DataType::Float),
             SQLDataType::String => Ok(DataType::String),
+            SQLDataType::Timestamp => Ok(DataType::Timestamp),
         }
     }
 
@@ -1182,14 +1193,14 @@ pub mod tests {
             INSERT INTO users (id, name, email)
             SELECT id, name, email
             FROM old_users
-            WHERE active = true;            
+            WHERE active = true and created_at > '2025-09-22 07:00:00';
         "#,
         insert_with_values: r#"
-            INSERT INTO users (id, name, email)
+            INSERT INTO users (id, name, email, created_at)
             VALUES
-              (1, 'Alice', 'alice@example.com'),
-              (2, 'Bob', 'bob@example.com'),
-              (3, 'Charlie', 'charlie@example.com');
+              (1, 'Alice', 'alice@example.com', '2025-09-22 07:00:00'),
+              (2, 'Bob', 'bob@example.com', '2025-09-22 07:00:00'),
+              (3, 'Charlie', 'charlie@example.com', '2025-09-22 07:00:00');
         "#,
         update: r#"
             UPDATE users
@@ -1210,6 +1221,7 @@ pub mod tests {
                         ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
+                        ColumnBuilder::new("created_at", DataType::Timestamp).build_unchecked(),
                     ];
                     Ok(Some(Schema::new("users", columns, vec![])))
                 }
@@ -1219,6 +1231,7 @@ pub mod tests {
                         ColumnBuilder::new("name", DataType::String).build_unchecked(),
                         ColumnBuilder::new("email", DataType::String).build_unchecked(),
                         ColumnBuilder::new("active", DataType::Boolean).build_unchecked(),
+                        ColumnBuilder::new("created_at", DataType::Timestamp).build_unchecked(),
                     ];
                     Ok(Some(Schema::new("old_users", columns, vec![])))
                 }
@@ -1227,7 +1240,7 @@ pub mod tests {
                         ColumnBuilder::new("id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("user_id", DataType::Integer).build_unchecked(),
                         ColumnBuilder::new("product_id", DataType::Integer).build_unchecked(),
-                        ColumnBuilder::new("amound", DataType::Float).build_unchecked(),
+                        ColumnBuilder::new("amount", DataType::Float).build_unchecked(),
                     ];
                     Ok(Some(Schema::new("orders", columns, vec![])))
                 }

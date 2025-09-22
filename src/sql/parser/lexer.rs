@@ -128,8 +128,11 @@ pub enum Keyword {
     Delete,
     Explain,
     Analyze,
-    PHYSICAL,
+    Physical,
     Verbose,
+    Timestamp,
+    Decimal,
+    Char,
 }
 
 impl Keyword {
@@ -196,8 +199,11 @@ impl Keyword {
             "DELETE" => Self::Delete,
             "EXPLAIN" => Self::Explain,
             "ANALYZE" => Self::Analyze,
-            "PHYSICAL" => Self::PHYSICAL,
+            "PHYSICAL" => Self::Physical,
             "VERBOSE" => Self::Verbose,
+            "TIMESTAMP" => Self::Timestamp,
+            "DECIMAL" => Self::Decimal,
+            "CHAR" => Self::Char,
             _ => return None,
         };
         Some(ans)
@@ -266,8 +272,11 @@ impl Keyword {
             Keyword::Delete => "DELETE",
             Keyword::Explain => "EXPLAIN",
             Keyword::Analyze => "ANALYZE",
-            Keyword::PHYSICAL => "PHYSICAL",
+            Keyword::Physical => "PHYSICAL",
             Keyword::Verbose => "VERBOSE",
+            Keyword::Timestamp => "TIMESTAMP",
+            Keyword::Decimal => "DECIMAL",
+            Keyword::Char => "CHAR",
         }
     }
 }
@@ -506,6 +515,9 @@ mod tests {
                 col5 double default -2.1E-4 + 2,
                 col6 text default 'a' NOT NULL,
                 "col 7" text NULL
+                col8 char(2),
+                col9 decimal(4, 2),
+                col10 timestamp default '2025-09-22 07:00:00',
             );
         "#,
 

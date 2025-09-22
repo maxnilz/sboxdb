@@ -5,7 +5,7 @@ SELECT a.*, b.id AS b_id, b.name AS b_name, b.email AS b_email FROM users AS a J
 Logical Plan:
 --------------
 
-Projection: a.id, a.name, a.email, b.id AS b_id, b.name AS b_name, b.email AS b_email
+Projection: a.id, a.name, a.email, a.created_at, b.id AS b_id, b.name AS b_name, b.email AS b_email
   Inner Join: a.id = b.id
     SubqueryAlias: a
       TableScan: users
@@ -15,8 +15,8 @@ Projection: a.id, a.name, a.email, b.id AS b_id, b.name AS b_name, b.email AS b_
 Physical Plan:
 ---------------
 
-ProjectionExec: id@0, name@1, email@2, id@3, name@4, email@5
-  Inner HashJoinExec: id@0 = id@0, Constraint: id@0 = id@3
+ProjectionExec: id@0, name@1, email@2, created_at@3, id@4, name@5, email@6
+  Inner HashJoinExec: id@0 = id@0, Constraint: id@0 = id@4
     SubqueryAlias: a
       SeqScanExec: users
     SubqueryAlias: b
@@ -25,12 +25,12 @@ ProjectionExec: id@0, name@1, email@2, id@3, name@4, email@5
 Result:
 -------
 
-+----+---------+---------------------+------+---------+---------------------+
-| id | name    | email               | b_id | b_name  | b_email             |
-+----+---------+---------------------+------+---------+---------------------+
-| 1  | Alice   | alice@example.com   | 1    | Alice   | alice@example.com   |
-| 2  | Bob     | bob@example.com     | 2    | Bob     | bob@example.com     |
-| 3  | Charlie | charlie@example.com | 3    | Charlie | charlie@example.com |
-+----+---------+---------------------+------+---------+---------------------+
++----+---------+---------------------+-----------------------------+------+---------+---------------------+
+| id | name    | email               | created_at                  | b_id | b_name  | b_email             |
++----+---------+---------------------+-----------------------------+------+---------+---------------------+
+| 1  | Alice   | alice@example.com   | '2025-09-22T07:00:00+00:00' | 1    | Alice   | alice@example.com   |
+| 2  | Bob     | bob@example.com     | '2025-09-22T07:00:01+00:00' | 2    | Bob     | bob@example.com     |
+| 3  | Charlie | charlie@example.com | '2025-09-22T07:00:02+00:00' | 3    | Charlie | charlie@example.com |
++----+---------+---------------------+-----------------------------+------+---------+---------------------+
 
 

@@ -5,28 +5,28 @@ SELECT a.* FROM (SELECT * FROM users) AS a
 Logical Plan:
 --------------
 
-Projection: a.id, a.name, a.email
+Projection: a.id, a.name, a.email, a.created_at
   SubqueryAlias: a
-    Projection: users.id, users.name, users.email
+    Projection: users.id, users.name, users.email, users.created_at
       TableScan: users
 
 Physical Plan:
 ---------------
 
-ProjectionExec: id@0, name@1, email@2
+ProjectionExec: id@0, name@1, email@2, created_at@3
   SubqueryAlias: a
-    ProjectionExec: id@0, name@1, email@2
+    ProjectionExec: id@0, name@1, email@2, created_at@3
       SeqScanExec: users
 
 Result:
 -------
 
-+----+---------+---------------------+
-| id | name    | email               |
-+----+---------+---------------------+
-| 1  | Alice   | alice@example.com   |
-| 2  | Bob     | bob@example.com     |
-| 3  | Charlie | charlie@example.com |
-+----+---------+---------------------+
++----+---------+---------------------+-----------------------------+
+| id | name    | email               | created_at                  |
++----+---------+---------------------+-----------------------------+
+| 1  | Alice   | alice@example.com   | '2025-09-22T07:00:00+00:00' |
+| 2  | Bob     | bob@example.com     | '2025-09-22T07:00:01+00:00' |
+| 3  | Charlie | charlie@example.com | '2025-09-22T07:00:02+00:00' |
++----+---------+---------------------+-----------------------------+
 
 

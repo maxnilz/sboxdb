@@ -193,12 +193,13 @@ mod tests {
                         "CREATE TABLE users (
                             id INTEGER PRIMARY KEY,
                             name VARCHAR(100) NOT NULL,
-                            email VARCHAR(100) NOT NULL
+                            email VARCHAR(100) NOT NULL,
+                            created_at TIMESTAMP NOT NULL
                         );",
-                        "INSERT INTO users (id, name, email) VALUES
-                          (1, 'Alice', 'alice@example.com'),
-                          (2, 'Bob', 'bob@example.com'),
-                          (3, 'Charlie', 'charlie@example.com');",
+                        "INSERT INTO users (id, name, email, created_at) VALUES
+                          (1, 'Alice', 'alice@example.com', '2025-09-22 07:00:00'),
+                          (2, 'Bob', 'bob@example.com', '2025-09-22 07:00:01'),
+                          (3, 'Charlie', 'charlie@example.com', '2025-09-22 07:00:02');",
                     ];
                     let kv = setup(&queries)?;
                     let q = Querier::try_new(&kv)?;

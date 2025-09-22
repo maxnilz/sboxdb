@@ -44,6 +44,7 @@ tokio-util = { version = "0.7.11", features = ["codec"], optional = true }
 rustyline = { version = "17.0.1", optional = true }
 
 wasm_sync = { version = "0.1.2", optional = true }
+chrono = "0.4.42"
 
 [dev-dependencies]
 paste = "1.0.14"

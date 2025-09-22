@@ -12,7 +12,7 @@ Logical Plan:
 
 Projection: upper(users.name), count(*)
   Aggregate: groupBy=[users.name], aggr=[count()]
-    Filter: users.name = a
+    Filter: users.name = 'a'
       TableScan: users
 
 Logical Plan with schema:
@@ -20,5 +20,5 @@ Logical Plan with schema:
 
 Projection: upper(users.name), count(*) [upper(users.name):String;N, count(*):Integer]
   Aggregate: groupBy=[users.name], aggr=[count()] [name:String;N, count(*):Integer]
-    Filter: users.name = a [id:Integer;N, name:String;N, email:String;N]
-      TableScan: users [id:Integer;N, name:String;N, email:String;N]
+    Filter: users.name = 'a' [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]
+      TableScan: users [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]

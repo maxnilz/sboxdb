@@ -493,6 +493,7 @@ impl<T: Storage> Transaction for KvTxn<T> {
 mod tests {
     use std::cmp::min;
 
+    use chrono::NaiveDateTime;
     use rand::distributions::Distribution;
     use rand::distributions::Uniform;
     use rand::thread_rng;
@@ -601,7 +602,32 @@ mod tests {
                 DataType::Integer => self.gen_integer_values(count),
                 DataType::Float => self.gen_float_values(count),
                 DataType::String => self.gen_string_values(count),
+                DataType::Timestamp => self.gen_timestamp_values(count),
             }
+        }
+
+        fn gen_timestamp_values(&mut self, count: usize) -> Result<Vec<Value>> {
+            let mut values = Vec::with_capacity(count);
+            let base = NaiveDateTime::parse_from_str("2025-09-22 07:00:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp();
+            match self.dst {
+                Dst::Serial => {
+                    for i in 0..count {
+                        values.push(Value::Timestamp(base + 1));
+                    }
+                }
+                Dst::Uniform => {
+                    let mut rng = thread_rng();
+                    let uniform = Uniform::new(self.min, self.max);
+                    for _ in 0..count {
+                        let n = uniform.sample(&mut rng);
+                        values.push(Value::Timestamp(base + (n as i64)))
+                    }
+                }
+            }
+            Ok(values)
         }
 
         fn gen_boolean_values(&mut self, count: usize) -> Result<Vec<Value>> {
@@ -749,6 +775,7 @@ mod tests {
                         DataType::Integer => Value::Integer(0),
                         DataType::Float => Value::Float(0f64),
                         DataType::String => Value::String(String::from("")),
+                        DataType::Timestamp => Value::Timestamp(0),
                     };
                     column_builder = column_builder.default_value(default);
                 }

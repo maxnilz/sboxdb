@@ -6,26 +6,26 @@ Logical Plan:
 --------------
 
 Explain: analyse: true, verbose: true
-  Projection: users.id, users.name, users.email
+  Projection: users.id, users.name, users.email, users.created_at
     TableScan: users
 
 Physical Plan:
 ---------------
 
 ExplainExec:
-  ProjectionExec: id@0, name@1, email@2
+  ProjectionExec: id@0, name@1, email@2, created_at@3
     SeqScanExec: users
 
 Result:
 -------
 
-+---------------+---------------------------------------------------------------------------------------+
-| type          | plan                                                                                  |
-+---------------+---------------------------------------------------------------------------------------+
-| logical plan  | Projection: users.id, users.name, users.email [id:Integer, name:String, email:String] |
-|               |   TableScan: users [id:Integer, name:String, email:String]                            |
-| physical plan | ProjectionExec: id@0, name@1, email@2                                                 |
-|               |   SeqScanExec: users                                                                  |
-+---------------+---------------------------------------------------------------------------------------+
++---------------+-------------------------------------------------------------------------------------------------------------------------------+
+| type          | plan                                                                                                                          |
++---------------+-------------------------------------------------------------------------------------------------------------------------------+
+| logical plan  | Projection: users.id, users.name, users.email, users.created_at [id:Integer, name:String, email:String, created_at:Timestamp] |
+|               |   TableScan: users [id:Integer, name:String, email:String, created_at:Timestamp]                                              |
+| physical plan | ProjectionExec: id@0, name@1, email@2, created_at@3                                                                           |
+|               |   SeqScanExec: users                                                                                                          |
++---------------+-------------------------------------------------------------------------------------------------------------------------------+
 
 

@@ -7,6 +7,9 @@ CREATE TABLE if not exists foo(
     col5 double default -2.1E-4 + 2,
     col6 text default 'a' NOT NULL,
     "col 7" text NULL
+    col8 char(2),
+    col9 decimal(4, 2),
+    col10 timestamp default '2025-09-22 07:00:00',
 );
 
 Tokens: 
@@ -58,5 +61,24 @@ Tokens:
   Ident("col 7", true)
   Keyword(Text)
   Keyword(Null)
+  Ident("col8", false)
+  Keyword(Char)
+  LParen
+  Number("2")
+  RParen
+  Comma
+  Ident("col9", false)
+  Keyword(Decimal)
+  LParen
+  Number("4")
+  Comma
+  Number("2")
+  RParen
+  Comma
+  Ident("col10", false)
+  Keyword(Timestamp)
+  Keyword(Default)
+  String("2025-09-22 07:00:00")
+  Comma
   RParen
   Semicolon
