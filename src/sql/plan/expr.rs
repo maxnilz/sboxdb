@@ -280,6 +280,7 @@ impl Expr {
                 Value::Integer(_) => (DataType::Integer, false),
                 Value::Float(_) => (DataType::Float, false),
                 Value::String(_) => (DataType::String, false),
+                Value::Timestamp(_) => (DataType::Timestamp, false),
             },
             Expr::FieldReference(field_ref) => {
                 let f = schema.field_by_ref(field_ref)?;
@@ -775,6 +776,7 @@ impl<'a> BinaryTypeCoercer<'a> {
                 | (DataType::String, DataType::String)
                 | (DataType::Boolean, DataType::Boolean)
                 | (DataType::Null, _)
+                | (DataType::Timestamp, DataType::String)
                 | (_, DataType::Null) => DataType::Boolean,
                 _ => {
                     return Err(parse_err!(

@@ -35,6 +35,9 @@ data_type         := "INT"
                    | "DOUBLE"
                    | "BOOLEAN"
                    | "TEXT"
+                   | "TIMESTAMP"
+                   | "DECIMAL" "(" number, "," number ")"
+                   | "CHAR" "(" number ")"
                    | "VARCHAR" "(" number ")" ;
 
 column_constraint  := "PRIMARY KEY"

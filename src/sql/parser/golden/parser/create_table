@@ -7,6 +7,9 @@ Stmt:
   col5 double default -2.1E-4 + 2,
   col6 text default 'a' NOT NULL,
   "col 7" text NULL,
+  col8 char(2),
+  col9 decimal(4, 2),
+  col10 timestamp default '2025-09-22 07:00:00',
   PRIMARY KEY(col1, col2)
 );
 
@@ -21,5 +24,8 @@ CREATE TABLE IF NOT EXISTS foo (
   col5 FLOAT DEFAULT -2.1E-4 + 2,
   col6 TEXT DEFAULT 'a' NOT NULL,
   "col 7" TEXT,
+  col8 TEXT,
+  col9 FLOAT,
+  col10 TIMESTAMP DEFAULT '2025-09-22 07:00:00',
   PRIMARY KEY(col1, col2)
 )

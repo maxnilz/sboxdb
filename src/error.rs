@@ -298,3 +298,9 @@ impl From<ReadlineError> for Error {
         internal_err!("{}", err)
     }
 }
+
+impl From<Error> for std::fmt::Error {
+    fn from(_err: Error) -> Self {
+        std::fmt::Error
+    }
+}

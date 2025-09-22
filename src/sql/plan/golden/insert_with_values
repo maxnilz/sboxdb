@@ -1,20 +1,20 @@
 Stmt: 
-INSERT INTO users (id, name, email)
+INSERT INTO users (id, name, email, created_at)
 VALUES
-  (1, 'Alice', 'alice@example.com'),
-  (2, 'Bob', 'bob@example.com'),
-  (3, 'Charlie', 'charlie@example.com');
+  (1, 'Alice', 'alice@example.com', '2025-09-22 07:00:00'),
+  (2, 'Bob', 'bob@example.com', '2025-09-22 07:00:00'),
+  (3, 'Charlie', 'charlie@example.com', '2025-09-22 07:00:00');
 
 Logical Plan:
 --------------
 
 DML: op=[Insert] table=[users]
-  Projection: users.id AS id, users.name AS name, users.email AS email
-    Values: (1, Alice, alice@example.com), (2, Bob, bob@example.com), (3, Charlie, charlie@example.com)
+  Projection: users.id AS id, users.name AS name, users.email AS email, users.created_at AS created_at
+    Values: (1, 'Alice', 'alice@example.com', CAST('2025-09-22 07:00:00' AS Timestamp)), (2, 'Bob', 'bob@example.com', CAST('2025-09-22 07:00:00' AS Timestamp)), (3, 'Charlie', 'charlie@example.com', CAST('2025-09-22 07:00:00' AS Timestamp))
 
 Logical Plan with schema:
 -------------------------
 
 DML: op=[Insert] table=[users] [count:Integer;N]
-  Projection: users.id AS id, users.name AS name, users.email AS email [id:Integer;N, name:String;N, email:String;N]
-    Values: (1, Alice, alice@example.com), (2, Bob, bob@example.com), (3, Charlie, charlie@example.com) [id:Integer;N, name:String;N, email:String;N]
+  Projection: users.id AS id, users.name AS name, users.email AS email, users.created_at AS created_at [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]
+    Values: (1, 'Alice', 'alice@example.com', CAST('2025-09-22 07:00:00' AS Timestamp)), (2, 'Bob', 'bob@example.com', CAST('2025-09-22 07:00:00' AS Timestamp)), (3, 'Charlie', 'charlie@example.com', CAST('2025-09-22 07:00:00' AS Timestamp)) [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]

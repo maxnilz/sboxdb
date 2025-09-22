@@ -11,4 +11,4 @@ Logical Plan with schema:
 -------------------------
 
 DML: op=[Delete] table=[users] [count:Integer;N]
-  TableScan: users filters=[users.id = 1] [id:Integer;N, name:String;N, email:String;N]
+  TableScan: users filters=[users.id = 1] [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]

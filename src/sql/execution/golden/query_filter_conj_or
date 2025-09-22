@@ -5,26 +5,26 @@ SELECT *, 1+1 FROM users WHERE id = 1 OR id = 2 OR id = 3
 Logical Plan:
 --------------
 
-Projection: users.id, users.name, users.email, 1 + 1
+Projection: users.id, users.name, users.email, users.created_at, 1 + 1
   Filter: users.id = 1 OR users.id = 2 OR users.id = 3
     TableScan: users
 
 Physical Plan:
 ---------------
 
-ProjectionExec: id@0, name@1, email@2, 1 + 1
+ProjectionExec: id@0, name@1, email@2, created_at@3, 1 + 1
   FilterExec: id@0 = 1 OR id@0 = 2 OR id@0 = 3
     SeqScanExec: users
 
 Result:
 -------
 
-+----+---------+---------------------+-------+
-| id | name    | email               | 1 + 1 |
-+----+---------+---------------------+-------+
-| 1  | Alice   | alice@example.com   | 2     |
-| 2  | Bob     | bob@example.com     | 2     |
-| 3  | Charlie | charlie@example.com | 2     |
-+----+---------+---------------------+-------+
++----+---------+---------------------+-----------------------------+-------+
+| id | name    | email               | created_at                  | 1 + 1 |
++----+---------+---------------------+-----------------------------+-------+
+| 1  | Alice   | alice@example.com   | '2025-09-22T07:00:00+00:00' | 2     |
+| 2  | Bob     | bob@example.com     | '2025-09-22T07:00:01+00:00' | 2     |
+| 3  | Charlie | charlie@example.com | '2025-09-22T07:00:02+00:00' | 2     |
++----+---------+---------------------+-----------------------------+-------+
 
 

@@ -3,6 +3,8 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use chrono::DateTime;
+use chrono::NaiveDateTime;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -17,6 +19,7 @@ pub enum DataType {
     Float,
     String,
     Null,
+    Timestamp,
 }
 
 impl DataType {
@@ -37,6 +40,7 @@ impl DataType {
             (DataType::Integer, DataType::Boolean | DataType::Float | DataType::String) => true,
             (DataType::Float, DataType::Boolean | DataType::String) => true,
             (DataType::String, DataType::Boolean) => true,
+            (DataType::String, DataType::Timestamp) => true,
             _ => false,
         }
     }
@@ -56,6 +60,7 @@ impl std::fmt::Display for DataType {
             Self::Float => "FLOAT",
             Self::String => "TEXT",
             Self::Null => "NULL",
+            Self::Timestamp => "TIMESTAMP",
         })
     }
 }
@@ -70,6 +75,7 @@ pub enum Value {
     Integer(i64),
     Float(f64),
     String(String),
+    Timestamp(i64),
 }
 
 impl Value {
@@ -80,6 +86,7 @@ impl Value {
             Value::Integer(_) => DataType::Integer,
             Value::Float(_) => DataType::Float,
             Value::String(_) => DataType::String,
+            Value::Timestamp(_) => DataType::Timestamp,
         }
     }
 
@@ -131,7 +138,12 @@ impl Value {
                     Value::Boolean(true)
                 }
             }
-            (_, typ) => return Err(parse_err!("Can't pase {} to type {}", self, typ)),
+            (Value::String(s), DataType::Timestamp) => {
+                let dt = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                    .map_err(|err| parse_err!("Can't cast '{}' as timestamp: {}", s, err))?;
+                Value::Timestamp(dt.and_utc().timestamp())
+            }
+            (_, typ) => return Err(parse_err!("Can't cast {} to type {}", self, typ)),
         };
         Ok(value)
     }
@@ -219,6 +231,10 @@ impl Hash for Value {
                 4u8.hash(state);
                 s.hash(state);
             }
+            Value::Timestamp(i64) => {
+                5u8.hash(state);
+                i64.hash(state);
+            }
         }
     }
 }
@@ -237,7 +253,12 @@ impl std::fmt::Display for Value {
             Value::Boolean(_) => "FALSE".to_string(),
             Value::Integer(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::String(s) => s.clone(),
+            Value::String(s) => format!("'{}'", s),
+            Value::Timestamp(i64) => {
+                let dt = DateTime::from_timestamp(*i64, 0)
+                    .ok_or_else(|| parse_err!("Invalid timestamp {}", *i64))?;
+                format!("'{}'", dt.to_rfc3339())
+            }
         };
         // Use pad to work with formatting flags.
         f.pad(&ans)

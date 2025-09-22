@@ -2,22 +2,22 @@ Stmt:
 INSERT INTO users (id, name, email)
 SELECT id, name, email
 FROM old_users
-WHERE active = true;            
+WHERE active = true and created_at > '2025-09-22 07:00:00';
 
 Logical Plan:
 --------------
 
 DML: op=[Insert] table=[users]
-  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email
+  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email, CAST(NULL AS Timestamp) AS created_at
     Projection: old_users.id, old_users.name, old_users.email
-      Filter: old_users.active = TRUE
+      Filter: old_users.active = TRUE AND old_users.created_at > '2025-09-22 07:00:00'
         TableScan: old_users
 
 Logical Plan with schema:
 -------------------------
 
 DML: op=[Insert] table=[users] [count:Integer;N]
-  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email [id:Integer;N, name:String;N, email:String;N]
+  Projection: old_users.id AS id, old_users.name AS name, old_users.email AS email, CAST(NULL AS Timestamp) AS created_at [id:Integer;N, name:String;N, email:String;N, created_at:Timestamp;N]
     Projection: old_users.id, old_users.name, old_users.email [id:Integer;N, name:String;N, email:String;N]
-      Filter: old_users.active = TRUE [id:Integer;N, name:String;N, email:String;N, active:Boolean;N]
-        TableScan: old_users [id:Integer;N, name:String;N, email:String;N, active:Boolean;N]
+      Filter: old_users.active = TRUE AND old_users.created_at > '2025-09-22 07:00:00' [id:Integer;N, name:String;N, email:String;N, active:Boolean;N, created_at:Timestamp;N]
+        TableScan: old_users [id:Integer;N, name:String;N, email:String;N, active:Boolean;N, created_at:Timestamp;N]

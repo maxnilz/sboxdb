@@ -625,6 +625,7 @@ pub enum DataType {
     Integer,
     Float,
     String,
+    Timestamp,
 }
 
 impl std::fmt::Display for DataType {
@@ -634,6 +635,7 @@ impl std::fmt::Display for DataType {
             Self::Integer => "INTEGER",
             Self::Float => "FLOAT",
             Self::String => "TEXT",
+            Self::Timestamp => "TIMESTAMP",
         })
     }
 }
