@@ -214,12 +214,12 @@ impl From<&ColumnRef> for Field {
 }
 
 #[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct Fields(Arc<[FieldRef]>);
+pub struct Fields(Arc<Vec<FieldRef>>);
 
 impl Fields {
     /// Returns a new empty [`Fields`]
     pub fn empty() -> Self {
-        Self(Arc::new([]))
+        Self(Arc::new(vec![]))
     }
 
     pub fn find(&self, name: &str) -> Option<(usize, &FieldRef)> {
@@ -265,7 +265,7 @@ impl FromIterator<Field> for Fields {
 
 impl FromIterator<FieldRef> for Fields {
     fn from_iter<T: IntoIterator<Item = FieldRef>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
+        Self(Arc::new(iter.into_iter().collect()))
     }
 }
 
@@ -431,7 +431,7 @@ impl LogicalSchema {
         }
     }
 
-    fn new(
+    pub fn new(
         fields: impl Into<Fields>,
         qualifiers: Vec<Option<TableReference>>,
         constraints: impl Into<Constraints>,

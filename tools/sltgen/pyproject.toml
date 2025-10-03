@@ -1,0 +1,19 @@
+[project]
+name = "sltgen"
+version = "0.1.0"
+description = "Generate sql logical test file synthetically"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "jinja2>=3.1.6",
+    "pydantic-ai==1.0.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.13.2",
+    "twine>=6.2.0",
+]
+

@@ -50,6 +50,14 @@ impl Tuple {
     pub fn extend(&mut self, other: Tuple) {
         self.0.extend(other.0)
     }
+
+    pub fn project(mut self, indices: &[usize]) -> Self {
+        let mut values = vec![];
+        for &i in indices {
+            values.push(std::mem::take(&mut self.0[i]))
+        }
+        Self(values)
+    }
 }
 
 impl From<Vec<Value>> for Tuple {

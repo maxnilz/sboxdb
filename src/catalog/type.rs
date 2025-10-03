@@ -252,12 +252,12 @@ impl std::fmt::Display for Value {
             Value::Boolean(b) if *b => "TRUE".to_string(),
             Value::Boolean(_) => "FALSE".to_string(),
             Value::Integer(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
+            Value::Float(f) => format!("{:.2}", f),
             Value::String(s) => format!("'{}'", s),
             Value::Timestamp(i64) => {
                 let dt = DateTime::from_timestamp(*i64, 0)
                     .ok_or_else(|| parse_err!("Invalid timestamp {}", *i64))?;
-                format!("'{}'", dt.to_rfc3339())
+                format!("'{}'", dt.format("%Y-%m-%d %H:%M:%S").to_string())
             }
         };
         // Use pad to work with formatting flags.

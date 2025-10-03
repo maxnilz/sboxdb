@@ -1,18 +1,30 @@
 .idea
-/target
-/docs
 
-rustfmt0.toml
+# Rust
+/target
+Cargo.lock
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+*.egg
 
 *.log
 *.bkp
 *.swp
 
+
+.env
+
 a.rs
 a.json
 b.json
+a.slt
 gold.tmp
-
-/derive/target/
-
 NOTES.md
+generated.slt
+tools/sltgen/gen/
+
+/docs
+/src/tpcc/testdata/

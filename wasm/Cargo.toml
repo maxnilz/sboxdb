@@ -11,3 +11,5 @@ crate-type = ["cdylib"]
 sboxdb = { path = "../", default-features = false, features = ["std", "wasm"] }
 once_cell = "1.21.3"
 wasm-bindgen = "0.2"
+log = "0.4.28"
+console_log = "1.0.0"

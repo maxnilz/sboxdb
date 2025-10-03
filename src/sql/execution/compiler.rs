@@ -15,6 +15,7 @@ use crate::sql::execution::aggregate::AggregateExec;
 use crate::sql::execution::aggregate::AggregateFuncExpr;
 use crate::sql::execution::context::ConstEvalCtx;
 use crate::sql::execution::context::Context;
+use crate::sql::execution::ddl::CreateDatasetExec;
 use crate::sql::execution::ddl::CreateIndexExec;
 use crate::sql::execution::ddl::CreateTableExec;
 use crate::sql::execution::ddl::DropIndexExec;
@@ -46,6 +47,9 @@ use crate::sql::execution::query::SortExec;
 use crate::sql::execution::query::SortExprExec;
 use crate::sql::execution::query::SubqueryAliasExec;
 use crate::sql::execution::query::ValuesExec;
+use crate::sql::execution::show::EchoExec;
+use crate::sql::execution::show::ShowCreateTableExec;
+use crate::sql::execution::show::ShowTablesExec;
 use crate::sql::plan::expr::Alias;
 use crate::sql::plan::expr::BinaryExpr;
 use crate::sql::plan::expr::Cast;
@@ -58,8 +62,10 @@ use crate::sql::plan::expr::Operator;
 use crate::sql::plan::expr::ScalarFunction;
 use crate::sql::plan::expr::Subquery;
 use crate::sql::plan::plan::Aggregate;
+use crate::sql::plan::plan::CreateDataset;
 use crate::sql::plan::plan::CreateTable;
 use crate::sql::plan::plan::Delete;
+use crate::sql::plan::plan::Echo;
 use crate::sql::plan::plan::Explain;
 use crate::sql::plan::plan::Filter;
 use crate::sql::plan::plan::Insert;
@@ -67,6 +73,8 @@ use crate::sql::plan::plan::Join;
 use crate::sql::plan::plan::Limit;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::Projection;
+use crate::sql::plan::plan::ShowCreateTable;
+use crate::sql::plan::plan::ShowTables;
 use crate::sql::plan::plan::Sort;
 use crate::sql::plan::plan::SubqueryAlias;
 use crate::sql::plan::plan::Update;
@@ -75,6 +83,7 @@ use crate::sql::plan::schema::Fields;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::EMPTY_SCHEMA;
 use crate::sql::plan::visitor::DynTreeNode;
+use crate::unimplemented_err;
 use crate::value_err;
 
 /// A physical executable node in the query plan.
@@ -173,14 +182,14 @@ impl Compiler {
                 // TODO: Have the physical optimizer rewrite it to other types of scan if
                 //  applicable. In case of physical optimizer kicks in, it is expected to
                 //  see new physical plan node like, IndexScan, etc.
-                Ok(Arc::new(SeqScanExec::try_new(t)?))
+                Ok(Arc::new(SeqScanExec::try_new(&self, t)?))
             }
             Plan::Subquery(_) => {
                 // TODO: The Subquery is a node for subquery in Expr here.
                 //  Although subquery is generated in the Explain stmt, During
                 //  the logical planning we are not transforming the subquery
                 //  in expr into this node yet.
-                unreachable!()
+                Err(unimplemented_err!("Subquery in the plan is not supported yet"))
             }
             Plan::SubqueryAlias(SubqueryAlias { input, schema, alias }) => {
                 // Note: Except the subquery in the Expr, we have derived table
@@ -251,10 +260,22 @@ impl Compiler {
                 let executor = self.build_execution_plan(*plan.clone())?;
                 Ok(Arc::new(ExplainExec::new(*plan, executor, verbose, physical, output_schema)))
             }
+            Plan::CreateDataset(CreateDataset { dataset_name, if_not_exists }) => {
+                Ok(Arc::new(CreateDatasetExec::try_new(dataset_name, if_not_exists)?))
+            }
+            Plan::ShowTables(ShowTables { output_schema }) => {
+                Ok(Arc::new(ShowTablesExec::new(output_schema)))
+            }
+            Plan::ShowCreateTable(ShowCreateTable { table, output_schema }) => {
+                Ok(Arc::new(ShowCreateTableExec::new(table, output_schema)))
+            }
+            Plan::Echo(Echo { sql, output_schema }) => {
+                Ok(Arc::new(EchoExec::new(sql, output_schema)))
+            }
         }
     }
 
-    fn build_physical_expr(
+    pub fn build_physical_expr(
         &self,
         expr: Expr,
         input_schema: &LogicalSchema,

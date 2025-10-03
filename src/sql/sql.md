@@ -1,4 +1,4 @@
-# SQL syntax
+## SQL syntax
 
 ```ebnf
 
@@ -6,6 +6,7 @@ sql_stmt          := transaction_stmt
                    | ddl_stmt 
                    | dml_stmt 
                    | "EXPLAIN" ["PHYSICAL"] ["VERBOSE"] sql_stmt ;
+                   | "CHECK" sql_stmt ;
 
 -- TXN =================================================================================
 
@@ -24,13 +25,14 @@ ddl_stmt          := create_table_stmt
                    | drop_table_stmt
                    | drop_index_stmt
                    | alter_table_stmt
+                   | create_dataset_stmt
 
 create_table_stmt := "CREATE" "TABLE" [ "IF" "NOT" "EXISTS" ] identifier "(" column_def ("," column_def)* ["," table_constraint]* ")" ;
 
 table_constraint  := "PRIMARY KEY" "(" identifier ("," identifier)* ")" ;
 column_def        := identifier data_type (column_constraint)* ;
 
-data_type         := "INT"
+data_type         := "INTEGER"
                    | "BIGINT"
                    | "DOUBLE"
                    | "BOOLEAN"
@@ -55,9 +57,11 @@ alter_table_stmt  := "ALTER" "TABLE" [ "IF" "EXISTS" ] identifier alter_operatio
 alter_operation   := "ADD" "COLUMN"  [ "IF" "NOT" "EXISTS" ] column_def
                    | "DROP" "COLUMN" [ "IF" "EXISTS" ] identifier ;
 
+create_dataset_stmt := "CREATE" "DATASET" [ "IF" "NOT" "EXISTS" ] identifier;
+
 -- DML =================================================================================
 
-dml_stmt          := select_stmt | insert_stmt | update_stmt | delete_stmt ;
+dml_stmt          := select_stmt | insert_stmt | update_stmt | delete_stmt | show_stmt ;
 
 select_stmt       := "SELECT" select_list
                       "FROM" from_clause
@@ -92,6 +96,9 @@ update_stmt       := "UPDATE" identifier
                       "SET" assignment ("," assignment)* [ where_clause ] ;
 
 delete_stmt       := "DELETE" "FROM" identifier [ where_clause ] ;
+
+show_stmt         := "SHOW" "TABLES"
+                    | SHOW" "CREATE" "TABLE" identifier;
 
 assignment        := identifier "=" expr;
 column_list       := identifier ("," identifier)* ;

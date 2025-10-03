@@ -9,7 +9,7 @@ Stmt:
   "col 7" text NULL,
   col8 char(2),
   col9 decimal(4, 2),
-  col10 timestamp default '2025-09-22 07:00:00',
+  col10 timestamp default '2025-09-22 07:00:00', -- comment 1
   PRIMARY KEY(col1, col2)
 );
 

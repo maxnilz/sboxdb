@@ -31,6 +31,8 @@ A distributed SQL database, written as a learning project about my journey on th
         * `DELETE FROM [TABLE] WHERE ...`
         * `SELECT ... FROM ... WHERE ... ORDER BY ...`
         * `EXPLAIN SELECT ...`
+        * `SHOW TABLES`
+        * `CREATE DATASET ...`
     - **Full reference** at [here](src/sql/sql.md)
 - [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
   joins.
@@ -39,14 +41,13 @@ A distributed SQL database, written as a learning project about my journey on th
     - [x] Physical Planner
     - [x] Executors
     - [x] Function support
-    - [ ] TPC-C/TPC-H queries
-- [x] Wasm for browser for fun
+    - [x] [sql logical test util](https://www.sqlite.org/sqllogictest/doc/trunk/about.wiki)
+- [x] Wasm for browser for fun, deployed at [here](https://maxnilz.com/app/sboxdb)
 
-## Tools
+## Dev Tools
 
 1. [Just][just-gh] - Task runner for project commands
-    - Available in most package managers
-    - See installation instructions in the [Just documentation][just-docs]
+2. [uv][uv] - Python package manager for the SQL Logical Test script generator([sltgen])
 
 ## Reference
 
@@ -58,4 +59,5 @@ A distributed SQL database, written as a learning project about my journey on th
 
 
 [just-gh]: https://github.com/casey/just
-[just-docs]: https://github.com/casey/just?tab=readme-ov-file#installation
+[uv]: https://docs.astral.sh/uv/getting-started
+[sltgen]: tools/sltgen

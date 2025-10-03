@@ -494,9 +494,9 @@ mod tests {
     use std::cmp::min;
 
     use chrono::NaiveDateTime;
-    use rand::distributions::Distribution;
-    use rand::distributions::Uniform;
-    use rand::thread_rng;
+    use rand::prelude::SmallRng;
+    use rand::Rng;
+    use rand::SeedableRng;
 
     use super::super::engine::Transaction as Txn;
     use super::*;
@@ -582,6 +582,8 @@ mod tests {
         min: u64,
         max: u64,
         serial_counter: u64,
+
+        rng: SmallRng,
     }
 
     impl ColumnGenerator {
@@ -615,14 +617,12 @@ mod tests {
             match self.dst {
                 Dst::Serial => {
                     for i in 0..count {
-                        values.push(Value::Timestamp(base + 1));
+                        values.push(Value::Timestamp(base + i as i64));
                     }
                 }
                 Dst::Uniform => {
-                    let mut rng = thread_rng();
-                    let uniform = Uniform::new(self.min, self.max);
                     for _ in 0..count {
-                        let n = uniform.sample(&mut rng);
+                        let n = self.rng.random_range(self.min..=self.max);
                         values.push(Value::Timestamp(base + (n as i64)))
                     }
                 }
@@ -640,10 +640,8 @@ mod tests {
                     }
                 }
                 Dst::Uniform => {
-                    let mut rng = thread_rng();
-                    let uniform = Uniform::new(self.min, self.max);
                     for _ in 0..count {
-                        let n = uniform.sample(&mut rng);
+                        let n = self.rng.random_range(self.min..=self.max);
                         values.push(Value::Boolean(n % 2 == 0))
                     }
                 }
@@ -661,10 +659,8 @@ mod tests {
                     }
                 }
                 Dst::Uniform => {
-                    let mut rng = thread_rng();
-                    let uniform = Uniform::new(self.min, self.max);
                     for _ in 0..count {
-                        let n = uniform.sample(&mut rng);
+                        let n = self.rng.random_range(self.min..=self.max);
                         values.push(Value::Integer(n as i64))
                     }
                 }
@@ -682,10 +678,8 @@ mod tests {
                     }
                 }
                 Dst::Uniform => {
-                    let mut rng = thread_rng();
-                    let uniform = Uniform::new(self.min, self.max);
                     for _ in 0..count {
-                        let n = uniform.sample(&mut rng);
+                        let n = self.rng.random_range(self.min..=self.max);
                         values.push(Value::Float(n as f64))
                     }
                 }
@@ -697,23 +691,19 @@ mod tests {
             let mut values = Vec::with_capacity(count);
             match self.dst {
                 Dst::Serial => {
-                    let mut rng = thread_rng();
-                    let letters = Uniform::new_inclusive(b'a', b'z');
                     for _ in 0..count {
                         let s = (0..self.serial_counter)
-                            .map(|_| letters.sample(&mut rng) as char)
+                            .map(|_| self.rng.random_range(b'a'..=b'z') as char)
                             .collect();
                         values.push(Value::String(s));
                         self.serial_counter += 1;
                     }
                 }
                 Dst::Uniform => {
-                    let mut rng = thread_rng();
-                    let uniform = Uniform::new(self.min, self.max);
                     for _ in 0..count {
-                        let len = uniform.sample(&mut rng);
-                        let letters = Uniform::new_inclusive(b'a', b'z');
-                        let s = (0..len).map(|_| letters.sample(&mut rng) as char).collect();
+                        let len = self.rng.random_range(self.min..=self.max);
+                        let s =
+                            (0..len).map(|_| self.rng.random_range(b'a'..=b'z') as char).collect();
                         values.push(Value::String(s))
                     }
                 }
@@ -733,6 +723,7 @@ mod tests {
                 min: 0,
                 max: 100,
                 serial_counter: 0,
+                rng: SmallRng::from_os_rng(),
             }
         }
     }

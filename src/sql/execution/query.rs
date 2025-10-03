@@ -9,9 +9,11 @@ use std::sync::Arc;
 use crate::access::engine::Scan;
 use crate::access::predicate::Predicate;
 use crate::access::value::Tuple;
+use crate::catalog::r#type::DataType;
 use crate::catalog::r#type::Value;
 use crate::error::Result;
 use crate::internal_err;
+use crate::sql::execution::compiler::Compiler;
 use crate::sql::execution::compiler::RecordBatch;
 use crate::sql::execution::compiler::RecordBatchBuilder;
 use crate::sql::execution::display::DisplayableExecutionPlan;
@@ -19,6 +21,7 @@ use crate::sql::execution::expr::PhysicalExpr;
 use crate::sql::execution::Context;
 use crate::sql::execution::ExecutionEngine;
 use crate::sql::execution::ExecutionPlan;
+use crate::sql::format;
 use crate::sql::plan::plan::JoinType;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::TableScan;
@@ -26,6 +29,7 @@ use crate::sql::plan::schema::FieldReference;
 use crate::sql::plan::schema::LogicalSchema;
 use crate::sql::plan::schema::TableReference;
 use crate::unimplemented_err;
+use crate::value_err;
 
 #[derive(Debug)]
 pub struct ValuesExec {
@@ -171,31 +175,70 @@ impl Display for ProjectionExec {
 pub struct SeqScanExec {
     table: TableReference,
     schema: LogicalSchema,
-    projection: Option<Vec<usize>>,
+
+    filter: Vec<Arc<dyn PhysicalExpr>>,
     predicate: Option<Predicate>,
+
+    projection: Option<Vec<usize>>,
     output_schema: LogicalSchema,
+
     scan: RefCell<Option<Scan>>,
 }
 
 impl SeqScanExec {
-    pub fn try_new(ts: TableScan) -> Result<Self> {
+    pub fn try_new(compiler: &Compiler, ts: TableScan) -> Result<Self> {
         if let Some(proj) = &ts.projection {
             if !proj.is_empty() {
                 return Err(unimplemented_err!("projection push down is unimplemented yet"));
             }
         }
 
-        // TODO: build predicate from filter.
+        let filters = ts
+            .filters
+            .into_iter()
+            .map(|it| {
+                let expr = compiler.build_physical_expr(it, &ts.schema)?;
+                let data_type = expr.data_type(&ts.schema)?;
+                if data_type != DataType::Boolean {
+                    return Err(value_err!(
+                        "Expect filter to be a boolean expr, got {}",
+                        data_type
+                    ));
+                }
+                Ok(expr)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // TODO: extract pushdown-able predicate from filter.
         let predicate = None;
 
         Ok(SeqScanExec {
             table: ts.relation,
             schema: ts.schema,
             projection: ts.projection,
+            filter: filters,
             predicate,
             output_schema: ts.output_schema,
             scan: RefCell::new(None),
         })
+    }
+
+    fn evaluate_filters(&self, ctx: &mut dyn Context, rb: &RecordBatch) -> Result<Vec<bool>> {
+        let mask = vec![true; rb.num_rows()];
+        if self.filter.is_empty() {
+            return Ok(mask);
+        }
+        // whether the row is a match with given filters,
+        // true -> match, false -> not match.
+        let mut mask = vec![true; rb.num_rows()];
+        for filter in &self.filter {
+            let result = filter.evaluate(ctx, &rb)?;
+            for (i, a) in result.into_iter().enumerate() {
+                let ok = matches!(a, Value::Boolean(true));
+                mask[i] = mask[i] && ok;
+            }
+        }
+        Ok(mask)
     }
 }
 
@@ -207,21 +250,32 @@ impl ExecutionPlan for SeqScanExec {
         self.output_schema.clone()
     }
 
-    fn init(&self, ctx: &mut dyn Context) -> Result<()> {
-        let txn = ctx.txn();
-        let scan = txn.scan(&self.table, self.predicate.clone())?;
-        self.scan.borrow_mut().replace(scan);
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
         Ok(())
     }
 
     fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
+        if self.scan.borrow_mut().is_none() {
+            let txn = ctx.txn();
+            let scan = txn.scan(&self.table, self.predicate.clone())?;
+            self.scan.borrow_mut().replace(scan);
+        }
         let mut scan_borrow = self.scan.borrow_mut();
         let scan =
             scan_borrow.as_mut().ok_or_else(|| internal_err!("SeqScanExec not initialized"))?;
         let mut rows = vec![];
         let mut num_rows = 0;
         while let Some(row) = scan.next().transpose()? {
-            rows.push(row.tuple);
+            let rb = RecordBatch::new(&self.schema, vec![row.tuple]);
+            let match_ok = self.evaluate_filters(ctx, &rb)?.swap_remove(0);
+            if match_ok == false {
+                continue;
+            }
+            let mut tuple = rb.into_inner()?.rows.swap_remove(0);
+            if let Some(proj) = &self.projection {
+                tuple = tuple.project(proj)
+            }
+            rows.push(tuple);
             num_rows += 1;
             if num_rows == ctx.vector_size() {
                 break;
@@ -250,7 +304,11 @@ impl Display for SeqScanExec {
             }
             _ => "".to_string(),
         };
-        write!(f, "SeqScanExec: {}{}{}", self.table, projection, predicate)
+        let filters = match self.filter.len() {
+            0 => "".to_string(),
+            _ => format!(" filters=[{}]", format::display_comma_separated(&self.filter)),
+        };
+        write!(f, "SeqScanExec: {}{}{}{}", self.table, projection, predicate, filters)
     }
 }
 
@@ -893,8 +951,8 @@ impl HashJoinExec {
         }
         let entries = entries.unwrap();
         let mut output = vec![];
-        for row in entries {
-            let mut ans = row.clone();
+        for entry in entries {
+            let mut ans = entry.clone();
             ans.extend(row.clone());
             output.push(ans);
         }
@@ -944,7 +1002,12 @@ impl ExecutionPlan for HashJoinExec {
         let mut n = ctx.vector_size().min(result.len());
         let mut rows = vec![];
         loop {
-            let row = result.remove(0);
+            let row = result.pop();
+            if row.is_none() {
+                break;
+            }
+            // TODO: memory worth a carefully impl later(for the whole project).
+            let row = row.unwrap();
             let ok = self
                 .constraint
                 .evaluate(ctx, &RecordBatch::new(&self.schema, vec![row.clone()]))?

@@ -1,0 +1,17 @@
+{% if error is none %}
+## Task:
+Author a valid SQL Logical Test script to address the following directive/question.
+USER: "{{ prompt }}"
+{% else %}
+## Task:
+A SQL SQL Logical Test script was authored to address the user's directive/question, however it had errors.
+Fix the SQL Logical Test script
+
+USER: "{{ prompt }}"
+
+<slt-script>
+{{ answer }}
+</slt-script>
+
+ERROR: {{ error }}
+{% endif %}

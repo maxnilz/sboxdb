@@ -3,6 +3,7 @@ use std::fmt::Formatter;
 
 use crate::apply_each;
 use crate::catalog::r#type::DataType;
+use crate::catalog::schema::Constraints;
 use crate::error::Result;
 use crate::format_expr_vec;
 use crate::map_each_children;
@@ -24,6 +25,7 @@ use crate::sql::plan::visitor::Transformed;
 use crate::sql::plan::visitor::TreeNode;
 use crate::sql::plan::visitor::TreeNodeVisitor;
 use crate::sql::plan::visitor::VisitRecursion;
+use crate::value_err;
 
 /// A `Plan` is a logical node in a tree of relational operators(such as
 /// Projection or Filter). Also known as `Logical Plan`
@@ -82,12 +84,24 @@ pub enum Plan {
     /// Produces a relation with string representations of
     /// various parts of the plan. This is used to implement SQL `EXPLAIN`.
     Explain(Explain),
+    /// Create dataset
+    CreateDataset(CreateDataset),
+    /// Show
+    ShowTables(ShowTables),
+    ShowCreateTable(ShowCreateTable),
+    /// An echo node that do nothing but return the parsed sql directly in case
+    /// of execution.
+    Echo(Echo),
 }
 
 impl Plan {
     pub fn schema(&self) -> &LogicalSchema {
         match self {
-            Plan::CreateIndex(_) | Plan::DropTable(_) | Plan::DropIndex(_) => &EMPTY_SCHEMA,
+            Plan::CreateIndex(_)
+            | Plan::DropTable(_)
+            | Plan::DropIndex(_)
+            | Plan::Echo(_)
+            | Plan::CreateDataset(_) => &EMPTY_SCHEMA,
             Plan::CreateTable(CreateTable { schema, .. }) => schema,
             Plan::Insert(Insert { output_schema, .. }) => output_schema,
             Plan::Update(Update { output_schema, .. }) => output_schema,
@@ -103,6 +117,8 @@ impl Plan {
             Plan::Sort(Sort { input, .. }) => input.schema(),
             Plan::Limit(Limit { input, .. }) => input.schema(),
             Plan::Explain(Explain { output_schema, .. }) => output_schema,
+            Plan::ShowTables(ShowTables { output_schema }) => output_schema,
+            Plan::ShowCreateTable(ShowCreateTable { output_schema, .. }) => output_schema,
         }
     }
 
@@ -161,6 +177,10 @@ impl TreeNode for Plan {
             | Plan::DropTable(_)
             | Plan::DropIndex(_)
             | Plan::Values(_)
+            | Plan::CreateDataset(_)
+            | Plan::ShowTables(_)
+            | Plan::ShowCreateTable(_)
+            | Plan::Echo(_)
             | Plan::TableScan(_) => Ok(VisitRecursion::Continue),
             Plan::Insert(Insert { input, .. }) => apply_each!(f, input),
             Plan::Update(Update { input, .. }) => apply_each!(f, input),
@@ -204,6 +224,10 @@ impl TreeNode for Plan {
             | Plan::DropTable(_)
             | Plan::DropIndex(_)
             | Plan::Values(_)
+            | Plan::CreateDataset(_)
+            | Plan::ShowTables(_)
+            | Plan::ShowCreateTable(_)
+            | Plan::Echo(_)
             | Plan::TableScan(_) => Ok(Transformed::no(self)),
             Plan::Insert(a) => map_each_children!(f, *a.input)?.map_data(|mut children| {
                 Ok(Plan::Insert(Insert { input: Box::new(children.remove(0)), ..a }))
@@ -393,6 +417,18 @@ impl<'a, 'b> IndentVisitor<'a, 'b> {
                     Plan::Explain(Explain { physical: analyse, verbose, .. }) => {
                         write!(f, "Explain: analyse: {analyse}, verbose: {verbose}")
                     }
+                    Plan::CreateDataset(CreateDataset { dataset_name, if_not_exists }) => {
+                        write!(f, "CreateDataset {dataset_name}, if not exists: {if_not_exists}")
+                    }
+                    Plan::ShowTables(_) => {
+                        write!(f, "ShowTables")
+                    }
+                    Plan::ShowCreateTable(ShowCreateTable { table, .. }) => {
+                        write!(f, "ShowCreateTable {table}")
+                    }
+                    Plan::Echo(echo) => {
+                        write!(f, "Echo: {}", echo.sql)
+                    }
                 }
             }
         }
@@ -438,6 +474,59 @@ impl<'a, 'b, 'n> TreeNodeVisitor<'n> for IndentVisitor<'a, 'b> {
     fn f_up(&mut self, _node: &'n Self::Node) -> Result<VisitRecursion> {
         self.indent -= 1;
         Ok(VisitRecursion::Continue)
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+pub struct Echo {
+    pub sql: String,
+    pub output_schema: LogicalSchema,
+}
+
+impl Echo {
+    pub fn new(sql: impl Into<String>) -> Self {
+        let fields = vec![FieldBuilder::new("parsed_sql", DataType::String).build()];
+        let output_schema = LogicalSchema::from_fields(fields).unwrap();
+        Self { sql: sql.into(), output_schema }
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+pub struct CreateDataset {
+    pub dataset_name: String,
+    pub if_not_exists: bool,
+}
+
+impl CreateDataset {
+    pub fn new(dataset_name: String, if_not_exists: bool) -> Self {
+        Self { dataset_name, if_not_exists }
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+pub struct ShowTables {
+    pub output_schema: LogicalSchema,
+}
+
+impl ShowTables {
+    pub fn new() -> Self {
+        let fields = vec![FieldBuilder::new("tables", DataType::String).build()];
+        let output_schema = LogicalSchema::from_fields(fields).unwrap();
+        Self { output_schema }
+    }
+}
+
+#[derive(Clone, Debug, PartialOrd, Eq, PartialEq, Hash)]
+pub struct ShowCreateTable {
+    pub table: String,
+    pub output_schema: LogicalSchema,
+}
+
+impl ShowCreateTable {
+    pub fn new(table: String) -> Self {
+        let fields = vec![FieldBuilder::new("create_table_stmt", DataType::String).build()];
+        let output_schema = LogicalSchema::from_fields(fields).unwrap();
+        Self { table, output_schema }
     }
 }
 
@@ -700,7 +789,10 @@ pub struct TableScan {
     pub relation: TableReference,
     /// relation schema
     pub schema: LogicalSchema,
-    /// Optional column indices to use as a projection
+    /// Optional column indices to use as a projection,
+    /// based on the relation schema, when projection is
+    /// present, the output_schema is defined by th proj
+    /// otherwise it is default to the relation schema.
     pub projection: Option<Vec<usize>>,
     /// Optional expressions to be used as filters
     pub filters: Vec<Expr>,
@@ -732,21 +824,26 @@ impl TableScanBuilder {
 
     /// Set the column indices to use as a projection
     #[allow(dead_code)]
-    pub fn project(mut self, indices: Vec<usize>) -> Self {
+    pub fn project(mut self, indices: Vec<usize>) -> Result<Self> {
+        let mut qualifiers = vec![];
+        let mut fields = vec![];
+        for &i in &indices {
+            let (q, f) = self
+                .schema
+                .iter()
+                .nth(i)
+                .ok_or_else(|| value_err!("Invalid index {} for projection", i))?;
+            qualifiers.push(q.cloned());
+            fields.push(f.clone());
+        }
+        self.output_schema = LogicalSchema::new(fields, qualifiers, Constraints::empty());
         self.projection = Some(indices);
-        self
+        Ok(self)
     }
 
     /// Add a filter expression
     pub fn filter(mut self, expr: Expr) -> Self {
         self.filters.push(expr);
-        self
-    }
-
-    /// Set the output schema
-    #[allow(dead_code)]
-    pub fn output_schema(mut self, schema: LogicalSchema) -> Self {
-        self.output_schema = schema;
         self
     }
 

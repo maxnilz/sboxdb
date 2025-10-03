@@ -1,0 +1,20 @@
+# format the sltgen code in place
+format:
+    @uv venv --python 3.12 --allow-existing
+    @uv sync --active
+    @uv format --preview-features format
+
+# run the stlgen from source, use two level quote to pass space-included args to just,
+# just run --model gpt-4.1 --prompt "'A slt script to test basic sql operations'"
+run *args:
+    @uv venv --python 3.12 --allow-existing
+    @uv sync --active
+    @.venv/bin/python main.py {{args}}
+
+# build source distribution and wheel package
+build:
+    @uv venv --python 3.12 --allow-existing
+    @uv sync --active
+    @uv build
+    @uv run --no-project twine check ./dist/*
+

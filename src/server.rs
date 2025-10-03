@@ -231,7 +231,7 @@ impl<E: Engine + 'static> SocketSession<E> {
         debug!("Processing request {:?}", request);
         let resp = match request {
             Request::Query(query) => {
-                let res = self.session.process_query(query);
+                let res = self.session.execute_query(query);
                 match res {
                     Ok(rs) => Response::Query(rs),
                     Err(err) => Response::Error(err),

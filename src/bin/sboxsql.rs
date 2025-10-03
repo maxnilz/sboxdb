@@ -1,11 +1,11 @@
 use rustyline::error::ReadlineError;
 use rustyline::history::DefaultHistory;
 use rustyline::Editor;
-use rustyline::Modifiers;
 use sboxdb::client::Client;
 use sboxdb::error::Error;
 use sboxdb::error::Result;
 use sboxdb::parse_err;
+use sboxdb::sql::format;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,7 +35,7 @@ struct SboxSQL {
 impl SboxSQL {
     async fn try_new(addr: &str) -> Result<Self> {
         let client = Client::try_new(addr).await?;
-        let editor = Editor::new()?;
+        let editor = Editor::<(), DefaultHistory>::new()?;
         let history_path = std::env::var_os("HOME")
             .map(|home| std::path::Path::new(&home).join(".sboxsql.history"));
         Ok(Self { client, editor, history_path })
@@ -49,15 +49,13 @@ impl SboxSQL {
                 Err(err) => return Err(err.into()),
             };
         }
-        // Make sure multiline pastes are interpreted as normal inputs.
-        self.editor.bind_sequence(
-            rustyline::KeyEvent(rustyline::KeyCode::BracketedPasteStart, Modifiers::NONE),
-            rustyline::Cmd::Noop,
-        );
-        println!("Connected to sboxdb. Enter \\help for instructions.",);
+        println!("Welcome to sboxdb shell. Type \\help to learn more.",);
         while let Some(input) = self.prompt()? {
             match self.execute(&input).await {
-                Ok(()) => {}
+                Ok(action) => match action {
+                    Action::Continue => {}
+                    Action::Stop => break,
+                },
                 Err(err) => match err {
                     Error::Internal(_) => return Err(err),
                     err => println!("Error: {}", err),
@@ -70,9 +68,9 @@ impl SboxSQL {
         Ok(())
     }
 
-    async fn execute(&mut self, input: &str) -> Result<()> {
+    async fn execute(&mut self, input: &str) -> Result<Action> {
         if input.is_empty() {
-            return Ok(());
+            return Ok(Action::Continue);
         }
         if input.starts_with('\\') {
             return self.execute_command(input).await;
@@ -81,41 +79,81 @@ impl SboxSQL {
     }
 
     /// Handles a REPL command (prefixed by \, e.g. \help)
-    async fn execute_command(&mut self, input: &str) -> Result<()> {
+    async fn execute_command(&mut self, input: &str) -> Result<Action> {
         let mut input = input.split_ascii_whitespace();
         let command = input.next().ok_or_else(|| parse_err!("Expected command."))?;
         match command {
-            "\\help" => println!(
-                r#"
-Enter a SQL statement terminated by a semicolon (;) to execute it and display the result.
-The following commands are also available:
-
-    \help        This help message
-"#
-            ),
-            c => return Err(parse_err!("Unknown command {}", c)),
-        };
-        Ok(())
+            "\\help" => {
+                println!("{}", self.help_msg());
+                Ok(Action::Continue)
+            }
+            "\\q" => {
+                println!("Bye!");
+                Ok(Action::Stop)
+            }
+            "\\d" => {
+                if let Some(table) = input.next() {
+                    return self.execute_query(format!("SHOW CREATE TABLE {}", table)).await;
+                }
+                self.execute_query("SHOW TABLES").await
+            }
+            "\\tpcc" => self.execute_query("CREATE DATASET tpcc").await,
+            _ => Err(parse_err!("Unknown command {}", command)),
+        }
     }
 
-    async fn execute_query(&mut self, query: &str) -> Result<()> {
+    async fn execute_query(&mut self, query: impl Into<String>) -> Result<Action> {
         match self.client.execute_query(query.into()).await {
-            Ok(rs) => println!("{}", rs),
-            Err(err) => return Err(err),
-        };
-        Ok(())
+            Ok(rs) => {
+                if rs.is_empty() {
+                    println!("done");
+                    return Ok(Action::Continue);
+                }
+                println!("{}", rs);
+                Ok(Action::Continue)
+            }
+            Err(err) => Err(err),
+        }
+    }
+    fn help_msg(&self) -> String {
+        format::dedent(
+            r#"
+                Enter a SQL statement terminated by a semicolon (;) to execute it and display the result.
+                The following commands are also available:
+                     \help        This help message
+                    \q           Quite the shell
+                    \d           List tables
+                    \d NAME      Describe table
+                    \tpcc        Load tpcc dataset
+            "#,
+            true,
+        )
     }
 
     /// Prompts the user for input
     fn prompt(&mut self) -> Result<Option<String>> {
-        let prompt = "sboxdb> ";
-        match self.editor.readline(&prompt) {
-            Ok(input) => {
-                self.editor.add_history_entry(&input)?;
-                Ok(Some(input.trim().to_string()))
+        let mut output = String::new();
+        loop {
+            let prompt = if output.is_empty() { "sboxdb> " } else { "....>>> " };
+            match self.editor.readline(&prompt) {
+                Ok(input) => {
+                    output.push_str(&input.trim());
+                    if input.starts_with("\\") || output.trim().ends_with(";") {
+                        break;
+                    }
+                }
+                Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => {
+                    return Ok(None);
+                }
+                Err(err) => return Err(err.into()),
             }
-            Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => Ok(None),
-            Err(err) => Err(err.into()),
         }
+        self.editor.add_history_entry(&output)?;
+        Ok(Some(output))
     }
+}
+
+pub enum Action {
+    Continue,
+    Stop,
 }

@@ -17,11 +17,12 @@ struct WasmSession {
 
 impl WasmSession {
     fn new() -> Self {
+        console_log::init_with_level(log::Level::Debug).unwrap();
         let kv = Kv::new(Memory::new());
         Self { session: Session::new(kv) }
     }
     fn handle(&mut self, query: impl Into<String>) -> Result<ResultSet> {
-        self.session.process_query(query.into())
+        self.session.execute_query(query.into())
     }
 }
 
@@ -62,6 +63,9 @@ impl WasmResultSet {
 
 impl From<ResultSet> for WasmResultSet {
     fn from(rs: ResultSet) -> Self {
+        if rs.is_empty() {
+            return WasmResultSet { result_str: "".to_string() };
+        }
         WasmResultSet { result_str: format!("{}", rs) }
     }
 }

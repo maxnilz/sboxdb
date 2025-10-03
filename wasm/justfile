@@ -1,5 +1,5 @@
+# build wasm-web lib
 wasm-build:
     cargo install wasm-pack
     cargo install wasm-bindgen-cli
-    wasm-pack -vvv build --target web --release --out-dir web/dist
-
+    RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack -vvv build --target web --release --out-dir web/dist

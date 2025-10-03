@@ -8,7 +8,7 @@ use crate::catalog::catalog::Catalog;
 use crate::error::Result;
 
 /// The Transactional access engine interface
-pub trait Engine: Send + Sync {
+pub trait Engine: Send + Sync + Clone {
     type Transaction: Transaction;
 
     /// Begins a read-write transaction.

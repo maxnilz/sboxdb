@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use log::debug;
+
 use crate::access::engine::Engine;
 use crate::access::engine::Transaction;
 use crate::error::Result;
@@ -37,8 +39,10 @@ impl<E: Engine + 'static> Session<E> {
     }
 
     /// Process query
-    pub fn process_query(&mut self, query: String) -> Result<ResultSet> {
-        let stmt = self.parse_query(query)?;
+    pub fn execute_query(&mut self, query: impl Into<String>) -> Result<ResultSet> {
+        let query = query.into();
+        debug!("executing query {}", query);
+        let stmt = self.parse_query(query.into())?;
         match stmt {
             Statement::Begin { .. } if self.txn.is_some() => {
                 Err(value_err!("Already in a transaction"))

@@ -26,6 +26,7 @@ mod query;
 
 pub mod compiler;
 pub mod context;
+mod show;
 
 #[derive(Clone)]
 pub struct ExecutionEngine {}
@@ -81,6 +82,10 @@ impl ResultSet {
             .collect::<Result<Vec<_>>>()?;
         Ok(Tuple::from(values))
     }
+
+    pub fn iter(&self) -> ResultSetIter<'_> {
+        ResultSetIter { rows: &self.rows, index: 0 }
+    }
 }
 
 impl From<&dyn Transaction> for ResultSet {
@@ -101,6 +106,23 @@ impl Display for ResultSet {
     }
 }
 
+pub struct ResultSetIter<'a> {
+    rows: &'a [Tuple],
+    index: usize,
+}
+impl<'a> Iterator for ResultSetIter<'a> {
+    type Item = &'a Tuple;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index == self.rows.len() {
+            return None;
+        }
+        let item = &self.rows[self.index];
+        self.index += 1;
+        Some(item)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -115,7 +137,7 @@ mod tests {
     use crate::sql::execution::compiler::Compiler;
     use crate::sql::execution::context::ExecContext;
     use crate::sql::execution::display::DisplayableExecutionPlan;
-    use crate::sql::parser::display_utils;
+    use crate::sql::format;
     use crate::sql::parser::Parser;
     use crate::sql::plan::plan::Plan;
     use crate::sql::plan::planner::BindContext;
@@ -209,7 +231,7 @@ mod tests {
 
                     write!(f, "Stmt: \n")?;
                     write!(f, "-----\n")?;
-                    write!(f, "{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "{}\n\n", format::dedent($stmt, false))?;
 
                     let plan = q.logical_plan($stmt)?;
 

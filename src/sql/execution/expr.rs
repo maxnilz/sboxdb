@@ -219,6 +219,7 @@ macro_rules! compare_op {
             (Value::Float(lhs), Value::Integer(rhs)) => Ok(Value::Boolean(lhs $op rhs as f64)),
             (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Boolean(lhs $op rhs)),
             (Value::String(lhs), Value::String(rhs)) => Ok(Value::Boolean(lhs $op rhs)),
+            (Value::Null, Value::Null) => Ok(Value::Boolean(true)),
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             (lhs, rhs) => {
                 Err(crate::value_err!("Can't compare {} and {}", lhs, rhs))
@@ -392,7 +393,7 @@ impl PhysicalExpr for NegativeExec {
                 Value::Null => Value::Null,
                 Value::Integer(i) => Value::Integer(-i),
                 Value::Float(f) => Value::Float(-f),
-                _ => unreachable!(),
+                _ => unreachable!("NativeExec on unexpected datatype"),
             })
             .collect::<Vec<_>>();
         Ok(Tuple::from(values))

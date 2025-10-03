@@ -28,6 +28,7 @@ pub enum Token {
     Lt,
     LtEq,
     Dot,
+    Comment(String),
 }
 
 impl std::fmt::Display for Token {
@@ -61,6 +62,7 @@ impl std::fmt::Display for Token {
             Token::Lt => f.write_str("<"),
             Token::LtEq => f.write_str("<="),
             Token::Dot => f.write_str("."),
+            Token::Comment(s) => write!(f, "--{}\n", s),
         }
     }
 }
@@ -133,6 +135,11 @@ pub enum Keyword {
     Timestamp,
     Decimal,
     Char,
+    Dataset,
+    Show,
+    Tables,
+    Check,
+    Having,
 }
 
 impl Keyword {
@@ -204,6 +211,11 @@ impl Keyword {
             "TIMESTAMP" => Self::Timestamp,
             "DECIMAL" => Self::Decimal,
             "CHAR" => Self::Char,
+            "DATASET" => Self::Dataset,
+            "SHOW" => Self::Show,
+            "TABLES" => Self::Tables,
+            "CHECK" => Self::Check,
+            "HAVING" => Self::Having,
             _ => return None,
         };
         Some(ans)
@@ -277,6 +289,11 @@ impl Keyword {
             Keyword::Timestamp => "TIMESTAMP",
             Keyword::Decimal => "DECIMAL",
             Keyword::Char => "CHAR",
+            Keyword::Dataset => "DATASET",
+            Keyword::Show => "SHOW",
+            Keyword::Tables => "TABLES",
+            Keyword::Check => "CHECK",
+            Keyword::Having => "HAVING",
         }
     }
 }
@@ -384,6 +401,14 @@ impl<'a> Lexer<'a> {
             Token::Exclamation if self.consume_if_char('=') => Token::Neq,
             Token::Gt if self.consume_if_char('=') => Token::GtEq,
             Token::Lt if self.consume_if_char('=') => Token::LtEq,
+            Token::Minus if self.consume_if_char('-') => {
+                let comment = self.next_while(|c| c != '\n');
+                if let Some(comment) = comment {
+                    Token::Comment(comment)
+                } else {
+                    Token::Comment(String::new())
+                }
+            }
             tok => tok,
         })
     }
@@ -459,6 +484,10 @@ impl<'a> Iterator for Lexer<'a> {
 
     fn next(&mut self) -> Option<Result<Token>> {
         match self.scan() {
+            Ok(Some(token)) if matches!(token, Token::Comment(_)) => {
+                // ignore comment.
+                self.scan().transpose()
+            }
             Ok(Some(token)) => Some(Ok(token)),
             Ok(None) => {
                 // if we have any chars left, consider it as syntax error,
@@ -476,8 +505,8 @@ mod tests {
 
     use goldenfile::Mint;
 
-    use super::super::display_utils;
     use super::*;
+    use crate::sql::format;
 
     const GOLDEN_DIR: &str = "src/sql/parser/golden/lexer";
 
@@ -494,7 +523,7 @@ mod tests {
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
 
-                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Stmt: \n{}\n\n", format::dedent($stmt, false))?;
                     write!(f, "Tokens: \n")?;
                     for token in &tokens {
                         write!(f, "  {:?}\n", token)?;
@@ -516,7 +545,7 @@ mod tests {
                 col6 text default 'a' NOT NULL,
                 "col 7" text NULL
                 col8 char(2),
-                col9 decimal(4, 2),
+                col9 decimal(4, 2),  -- comment 1
                 col10 timestamp default '2025-09-22 07:00:00',
             );
         "#,

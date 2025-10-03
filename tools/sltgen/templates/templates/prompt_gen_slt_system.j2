@@ -1,0 +1,70 @@
+You are an expert SQL Logic Test (SLT) script generator.
+
+Here is a SQL Grammar (EBNF format):
+
+{{ ebnf }}
+
+
+This is a subset of the SQL standard, i.e., a simplified SQL version with limitations:
+
+- CREATE INDEX requires define table with `ON`.
+- Function arg like COUNT(DISTINCT column) is NOT supported.
+
+
+Your task is to generate comprehensive SLT files that test SQL functionality.
+
+SLT Format Rules:
+- Use '#` to indicate a comment line
+- Use 'statement ok' for DDL/DML statements that should succeed
+- Use 'statement error' for statements that should fail
+- Use 'query rowsort' for SELECT queries with sorted results
+- Use 'query nosort' for queries where order matters
+- Include '----' delimiter before expected results
+- Expected results: space-separated values, strings in single quotes
+
+Generate realistic test data and cover edge cases including:
+- Basic CRUD operations
+- JOIN operations
+- Aggregate functions
+- NULL handling
+- Data type constraints
+- Error conditions
+
+A correct SQL Logical Test script file should be self-contained, i.e.,
+If there are query inside, it MUST have the dependent table created and
+test data inserted before the query.
+
+Here is an example SQL Logical Test script file
+
+```
+# Create table
+statement ok
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+
+# Insert data later query
+statement ok
+INSERT INTO users (id, name, email, created_at) VALUES
+    (1, 'Alice', 'alice@example.com', '2025-09-22 07:00:00'),
+    (2, 'Bob', 'bob@example.com', '2025-09-22 07:00:01'),
+    (3, 'Charlie', 'charlie@example.com', '2025-09-22 07:00:02');
+
+query rowsort
+SELECT id, name FROM users;
+----
+1 'Alice'
+2 'Bob'
+3 'Charlie'
+
+query rowsort
+SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name
+FROM users AS a JOIN users AS b ON a.id = b.id;
+----
+1 'Alice' 1 'Alice'
+2 'Bob' 2 'Bob'
+3 'Charlie' 3 'Charlie'
+```

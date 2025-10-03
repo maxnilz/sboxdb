@@ -23,6 +23,7 @@ use crate::sql::parser::ast::OrderByExpr;
 use crate::sql::parser::ast::Precedence;
 use crate::sql::parser::ast::Query;
 use crate::sql::parser::ast::SelectItem;
+use crate::sql::parser::ast::ShowTarget;
 use crate::sql::parser::ast::Statement;
 use crate::sql::parser::ast::TableConstraint;
 use crate::sql::parser::ast::TableFactor;
@@ -35,9 +36,9 @@ use crate::sql::parser::ast::WildcardExpr;
 use crate::sql::parser::lexer::Keyword;
 use crate::sql::parser::lexer::Lexer;
 use crate::sql::parser::lexer::Token;
+use crate::unimplemented_err;
 
 pub mod ast;
-pub mod display_utils;
 mod lexer;
 
 pub struct Parser {
@@ -93,6 +94,7 @@ impl Parser {
                 Keyword::Create => self.parse_ddl_create(),
                 Keyword::Drop => self.parse_ddl_drop(),
                 Keyword::Alter => self.parse_ddl_alter(),
+                Keyword::Show => self.parse_ddl_show(),
                 Keyword::Select => {
                     self.backup_token();
                     self.parse_dml_select()
@@ -101,10 +103,26 @@ impl Parser {
                 Keyword::Update => self.parse_dml_update(),
                 Keyword::Delete => self.parse_dml_delete(),
                 Keyword::Explain => self.parse_explain(),
-                _ => self.expected("an SQL statement", next_token),
+                Keyword::Check => self.parse_check(),
+                _ => self.expected("a SQL statement", next_token),
             },
-            _ => self.expected("an SQL statement", next_token),
+            _ => self.expected("a SQL statement", next_token),
         }
+    }
+
+    fn parse_check(&mut self) -> Result<Statement> {
+        let statement = self.parse_statement()?;
+        Ok(Statement::Check { statement: Box::new(statement) })
+    }
+
+    fn parse_ddl_show(&mut self) -> Result<Statement> {
+        if self.parse_keyword(Keyword::Tables) {
+            return Ok(Statement::Show(ShowTarget::Tables));
+        }
+        self.expect_keyword(&Keyword::Create)?;
+        self.expect_keyword(&Keyword::Table)?;
+        let ident = self.parse_ident()?;
+        Ok(Statement::Show(ShowTarget::CreateTable(ident)))
     }
 
     fn parse_explain(&mut self) -> Result<Statement> {
@@ -244,10 +262,19 @@ impl Parser {
         if self.parse_keyword(Keyword::Index) {
             return self.parse_ddl_create_index(false);
         }
+        if self.parse_keyword(Keyword::Dataset) {
+            return self.parse_ddl_create_dataset();
+        }
         if self.parse_keywords(&[Keyword::Unique, Keyword::Index]) {
             return self.parse_ddl_create_index(true);
         }
         self.expected("an object type after CREATE", self.peek_token())
+    }
+
+    fn parse_ddl_create_dataset(&mut self) -> Result<Statement> {
+        let if_not_exists = self.parse_keywords(&[Keyword::If, Keyword::Not, Keyword::Exists]);
+        let dataset_name = self.parse_ident()?;
+        Ok(Statement::CreateDataset { dataset_name, if_not_exists })
     }
 
     fn parse_ddl_create_index(&mut self, unique: bool) -> Result<Statement> {
@@ -574,13 +601,15 @@ impl Parser {
     }
 
     fn parse_function_call(&mut self, func_name: Ident) -> Result<Function> {
-        self.expect_token(&Token::LParen)?;
+        self.expect_token(&Token::LParen)
+            .map_err(|err| parse_err!("Invalid function call {}, {}", func_name, err))?;
         if self.consume_token(&Token::RParen) {
             return Ok(Function { name: func_name, args: vec![] });
         }
         let args = self.parse_comma_separated(Parser::parse_function_arg)?;
         let function = Function { name: func_name, args };
-        self.expect_token(&Token::RParen)?;
+        self.expect_token(&Token::RParen)
+            .map_err(|err| parse_err!("Invalid function call {}, {}", function.name, err))?;
         Ok(function)
     }
 
@@ -656,7 +685,15 @@ impl Parser {
         let group_by = self.parse_optional_group_by()?.unwrap_or(vec![]);
         let order_by = self.parse_optional_order_by()?.unwrap_or(vec![]);
         let limit_clause = self.parse_optional_limit_clause()?;
+        let _ = self.parse_optional_having()?;
         Ok(Box::new(Query { projection, from, selection, group_by, order_by, limit_clause }))
+    }
+
+    fn parse_optional_having(&mut self) -> Result<()> {
+        if !self.parse_keyword(Keyword::Having) {
+            return Ok(());
+        }
+        Err(unimplemented_err!("Having clause is unsupported yet"))
     }
 
     fn parse_optional_group_by(&mut self) -> Result<Option<Vec<Expr>>> {
@@ -1112,11 +1149,11 @@ impl Parser {
     }
 
     fn expected<T>(&self, expected: &str, found: Token) -> Result<T> {
-        Err(parse_err!("Expected: '{expected}', found: '{found}'"))
+        Err(parse_err!("Expected: {expected}, found: {found}"))
     }
 
     fn expected_ref<T>(&self, expected: &str, found: &Token) -> Result<T> {
-        Err(parse_err!("Expected: '{expected}', found: '{found}'"))
+        Err(parse_err!("Expected: {expected}, found: {found}"))
     }
 }
 
@@ -1126,8 +1163,8 @@ mod tests {
 
     use goldenfile::Mint;
 
-    use super::display_utils;
     use super::*;
+    use crate::sql::format;
 
     const GOLDEN_DIR: &str = "src/sql/parser/golden/parser";
 
@@ -1142,7 +1179,7 @@ mod tests {
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
 
-                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Stmt: \n{}\n\n", format::dedent($stmt, false))?;
                     write!(f, "Parsed Stmts:\n")?;
                     write!(f, "------------\n\n")?;
                     if stmts.len() == 1 {
@@ -1172,7 +1209,7 @@ mod tests {
               "col 7" text NULL,
               col8 char(2),
               col9 decimal(4, 2),
-              col10 timestamp default '2025-09-22 07:00:00',
+              col10 timestamp default '2025-09-22 07:00:00', -- comment 1
               PRIMARY KEY(col1, col2)
             );
         "#,

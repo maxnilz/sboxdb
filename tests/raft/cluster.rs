@@ -8,7 +8,6 @@ use std::time::SystemTime;
 
 use log::debug;
 use log::error;
-use sboxdb::error::Error;
 use sboxdb::internal_err;
 use sboxdb::raft::log::Log;
 use sboxdb::raft::node::NodeId;

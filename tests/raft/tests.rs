@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use log::debug;
 use log::info;
-use rand::thread_rng;
+use rand::rngs::SmallRng;
 use rand::Rng;
+use rand::SeedableRng;
 use sboxdb::error::Result;
 use sboxdb::raft::node::NodeId;
 use sboxdb::raft::Command;
@@ -88,14 +89,16 @@ fn test_many_election_r1() -> Result<()> {
     let num_nodes = 7;
     setup!(cluster, num_nodes);
 
+    let mut rng = SmallRng::from_os_rng();
+
     let iters = 10;
     for i in 0..iters {
         debug!("test many election iter {}", i);
 
         // disconnect three nodes
-        let i1 = thread_rng().gen_range(0..num_nodes) as NodeId;
-        let i2 = thread_rng().gen_range(0..num_nodes) as NodeId;
-        let i3 = thread_rng().gen_range(0..num_nodes) as NodeId;
+        let i1 = rng.random_range(0..num_nodes) as NodeId;
+        let i2 = rng.random_range(0..num_nodes) as NodeId;
+        let i3 = rng.random_range(0..num_nodes) as NodeId;
 
         cluster.disconnect(i1);
         cluster.disconnect(i2);
@@ -373,6 +376,7 @@ fn test_backup_r2() -> Result<()> {
 }
 
 fn rand_cmd() -> Vec<u8> {
-    let ans = thread_rng().gen_range(0..0xffffffffu32);
+    let mut rng = SmallRng::from_os_rng();
+    let ans = rng.random_range(0..0xffffffffu32);
     ans.to_be_bytes().into()
 }

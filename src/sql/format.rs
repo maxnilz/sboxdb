@@ -120,8 +120,8 @@ where
     DisplaySeparated { slice, sep: None, inline: false }
 }
 
-#[cfg(test)]
-pub fn dedent(s: &str) -> String {
+/// remove common leading whitespace.
+pub fn dedent(s: &str, keep_empty: bool) -> String {
     let lines: Vec<&str> = s.lines().collect();
     // Find the minimum leading whitespace
     let min_indent = lines
@@ -131,10 +131,16 @@ pub fn dedent(s: &str) -> String {
         .min()
         .unwrap_or(0);
     // Remove the common ident from each line
-    lines
-        .iter()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| &line[min_indent.min(line.len())..])
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = vec![];
+    for line in lines.iter() {
+        if line.trim().is_empty() {
+            if keep_empty {
+                out.push("");
+            }
+            continue;
+        }
+        let a = &line[min_indent.min(line.len())..];
+        out.push(a);
+    }
+    out.join("\n")
 }

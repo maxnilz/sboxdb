@@ -57,30 +57,30 @@ impl Column {
                 "Singular primary key and part of key can't be set at the same time",
             ));
         }
-        // Validate default data type
-        if let Some(default) = &self.default {
-            let datatype = default.datatype();
-            if datatype == DataType::Null {
-                return Err(value_err!("Default value for column {} can't be NULL", self.name));
-            }
-            if datatype != self.datatype {
-                return Err(value_err!(
-                    "Default value for column {} has datatype {}, expect {}",
-                    self.name,
-                    datatype,
-                    self.datatype
-                ));
-            }
-            if !self.nullable {
-                return Err(value_err!(
-                    "Can't use NULL as default for non-nullable column {}",
-                    self.name
-                ));
-            }
+        if self.default.is_none() {
             return Ok(());
         }
-        if self.nullable {
-            return Err(value_err!("Nullable column {} must have a default value", self.name));
+
+        // Validate default data type
+        let default = self.default.as_ref().unwrap();
+        let datatype = default.datatype();
+        if datatype == DataType::Null && !self.nullable {
+            return Err(value_err!(
+                "Can't use NULL as default for non-nullable column {}",
+                self.name
+            ));
+        }
+        if datatype == DataType::Null && self.nullable {
+            // nullable column can have null as default
+            return Ok(());
+        }
+        if datatype != self.datatype {
+            return Err(value_err!(
+                "Default value for column {} has datatype {}, expect {}",
+                self.name,
+                datatype,
+                self.datatype
+            ));
         }
         Ok(())
     }

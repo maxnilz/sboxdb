@@ -7,7 +7,6 @@ edition = "2021"
 default = ["std", "native"]
 std = []
 native = [
-    "dep:rand",
     "dep:config",
     "dep:tokio-stream",
     "dep:clap",
@@ -15,9 +14,11 @@ native = [
     "dep:tokio",
     "dep:tokio-util",
     "dep:tokio-serde",
-    "dep:rustyline"
+    "dep:rustyline",
+    "getrandom/std",
+    "dep:simplelog"
 ]
-wasm = ["dep:wasm_sync"]
+wasm = ["dep:wasm_sync", "dep:console_log", "getrandom/wasm_js"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -31,9 +32,11 @@ log = "0.4.21"
 env_logger = "0.11.3"
 hex = "0.4.3"
 regex = "1.10.4"
-simplelog = "0.12.2"
+chrono = "0.4.42"
+getrandom = { version = "0.3" }
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng", "small_rng"] }
 
-rand = { version = "0.8.5", optional = true }
+simplelog = { version = "0.12.2", optional = true }
 config = { version = "0.14.0", optional = true }
 tokio-stream = { version = "0.1.15", features = ["net"], optional = true }
 clap = { version = "4.5.47", features = ["cargo", "derive"], optional = true }
@@ -44,11 +47,12 @@ tokio-util = { version = "0.7.11", features = ["codec"], optional = true }
 rustyline = { version = "17.0.1", optional = true }
 
 wasm_sync = { version = "0.1.2", optional = true }
-chrono = "0.4.42"
+console_log = { version = "1.0.0", optional = true }
 
 [dev-dependencies]
 paste = "1.0.14"
 goldenfile = "1.8.0"
+peak_alloc = "0.3.0"
 
 # Make this Cargo.toml also the workspace manifest.
 # The root package is implicitly a member; add wasm crate.

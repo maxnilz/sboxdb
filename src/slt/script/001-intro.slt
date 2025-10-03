@@ -1,0 +1,29 @@
+statement ok
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+
+statement ok
+INSERT INTO users (id, name, email, created_at) VALUES
+    (1, 'Alice', 'alice@example.com', '2025-09-22 07:00:00'),
+    (2, 'Bob', 'bob@example.com', '2025-09-22 07:00:01'),
+    (3, 'Charlie', 'charlie@example.com', '2025-09-22 07:00:02');
+
+query rowsort
+SELECT id, name FROM users;
+----
+1 'Alice'
+2 'Bob'
+3 'Charlie'
+
+query rowsort
+SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name
+FROM users AS a JOIN users AS b ON a.id = b.id;
+----
+1 'Alice' 1 'Alice'
+2 'Bob' 2 'Bob'
+3 'Charlie' 3 'Charlie'
+

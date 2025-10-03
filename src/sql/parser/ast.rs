@@ -1,13 +1,13 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
-use crate::sql::parser::display_utils::display_comma_separated;
-use crate::sql::parser::display_utils::display_dot_separated;
-use crate::sql::parser::display_utils::display_inline_dot_separated;
-use crate::sql::parser::display_utils::display_space_separated;
-use crate::sql::parser::display_utils::Indent;
-use crate::sql::parser::display_utils::NewLine;
-use crate::sql::parser::display_utils::SpaceOrNewline;
+use crate::sql::format::display_comma_separated;
+use crate::sql::format::display_dot_separated;
+use crate::sql::format::display_inline_dot_separated;
+use crate::sql::format::display_space_separated;
+use crate::sql::format::Indent;
+use crate::sql::format::NewLine;
+use crate::sql::format::SpaceOrNewline;
 use crate::sql::parser::lexer::Token;
 
 pub enum Statement {
@@ -27,6 +27,10 @@ pub enum Statement {
     /// CREATE TABLE
     /// ```
     CreateTable(CreateTable),
+    /// ```sql
+    /// CREATE DATASET
+    /// ```
+    CreateDataset { dataset_name: Ident, if_not_exists: bool },
     /// ```sql
     /// `CREATE INDEX`
     /// ```
@@ -71,6 +75,19 @@ pub enum Statement {
         /// A SQL query that specifies what to explain
         statement: Box<Statement>,
     },
+    /// ```sql
+    /// SHOW
+    /// ```
+    Show(ShowTarget),
+    ///```sql
+    /// CHECK
+    /// ```
+    Check { statement: Box<Statement> },
+}
+
+pub enum ShowTarget {
+    Tables,
+    CreateTable(Ident),
 }
 
 impl std::fmt::Display for Statement {
@@ -87,6 +104,13 @@ impl std::fmt::Display for Statement {
             Statement::Commit => write!(f, "COMMIT"),
             Statement::Rollback => write!(f, "ROLLBACK"),
             Statement::CreateTable(create_table) => create_table.fmt(f),
+            Statement::CreateDataset { dataset_name, if_not_exists } => {
+                write!(
+                    f,
+                    "CREATE DATASET {s_if_not_exists}{dataset_name}",
+                    s_if_not_exists = if *if_not_exists { "IF NOT EXISTS " } else { "" }
+                )
+            }
             Statement::CreateIndex(create_index) => create_index.fmt(f),
             Statement::DropTable { table_name, if_exists } => {
                 write!(
@@ -134,6 +158,16 @@ impl std::fmt::Display for Statement {
                 if *verbose {
                     write!(f, " VERBOSE")?;
                 }
+                SpaceOrNewline.fmt(f)?;
+                statement.fmt(f)?;
+                Ok(())
+            }
+            Statement::Show(target) => match target {
+                ShowTarget::Tables => write!(f, "SHOW TABLES"),
+                ShowTarget::CreateTable(table) => write!(f, "SHOW CREATE TABLE {}", table),
+            },
+            Statement::Check { statement } => {
+                write!(f, "EXPLAIN")?;
                 SpaceOrNewline.fmt(f)?;
                 statement.fmt(f)?;
                 Ok(())
@@ -694,7 +728,7 @@ impl std::fmt::Display for AlterTableOperation {
     }
 }
 
-/// An SQL expression.
+/// A SQL expression.
 #[derive(Debug)]
 pub enum Expr {
     /// A literal value, such as string, number or NULL

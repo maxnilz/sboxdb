@@ -3,17 +3,28 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use log::debug;
+
 use crate::catalog::index::Index;
 use crate::catalog::schema::Schema;
 use crate::error::Error;
 use crate::error::Result;
+use crate::sql::execution::compiler::Compiler;
 use crate::sql::execution::compiler::RecordBatch;
+use crate::sql::execution::context::ExecContext;
 use crate::sql::execution::Context;
+use crate::sql::execution::ExecutionEngine;
 use crate::sql::execution::ExecutionPlan;
+use crate::sql::parser::Parser;
 use crate::sql::plan::plan::CreateIndex;
 use crate::sql::plan::plan::DropIndex;
 use crate::sql::plan::plan::DropTable;
+use crate::sql::plan::planner::BindContext;
+use crate::sql::plan::planner::Planner;
 use crate::sql::plan::schema::LogicalSchema;
+use crate::tpcc;
+use crate::tpcc::TpccGenerator;
+use crate::unimplemented_err;
 
 /// Create table execution plan
 #[derive(Debug)]
@@ -196,5 +207,82 @@ impl ExecutionPlan for DropIndexExec {
 impl Display for DropIndexExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "DROP INDEX {} ON {}", self.index_name, self.table_name)
+    }
+}
+
+#[derive(Debug)]
+pub struct CreateDatasetExec {
+    pub dataset_name: String,
+    pub if_not_exists: bool,
+}
+
+impl CreateDatasetExec {
+    pub fn try_new(dataset_name: String, if_not_exists: bool) -> Result<Self> {
+        if !dataset_name.eq_ignore_ascii_case("tpcc") {
+            return Err(unimplemented_err!("Unknown dataset {}", dataset_name));
+        }
+        Ok(Self { dataset_name, if_not_exists })
+    }
+}
+
+impl ExecutionPlan for CreateDatasetExec {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> LogicalSchema {
+        LogicalSchema::empty()
+    }
+
+    fn init(&self, _ctx: &mut dyn Context) -> Result<()> {
+        Ok(())
+    }
+
+    fn execute(&self, ctx: &mut dyn Context) -> Result<Option<RecordBatch>> {
+        match self.dataset_name.as_str() {
+            "tpcc" => {
+                // create tables
+                debug!("tpcc creating tables");
+                let mut parser = Parser::new(tpcc::TPCC_TABLES)?;
+                let stmts = parser.parse_statements()?;
+                let planner = Planner::new();
+                let compiler = Compiler {};
+                for stmt in stmts.into_iter() {
+                    let mut bc = BindContext::new(ctx.txn());
+                    let plan = planner.sql_statement_to_plan(&mut bc, stmt)?;
+                    let executor = compiler.build_execution_plan(plan)?;
+                    let mut ec = ExecContext::new(ctx.txn(), 10);
+                    ExecutionEngine::execute(&mut ec, executor)?;
+                }
+                // load data
+                debug!("tpcc init generator");
+                let mut generator = TpccGenerator::new(10);
+
+                debug!("tpcc generating data");
+                let data = generator.generate()?;
+
+                debug!("tpcc loading generated data");
+                let queries = data.to_queries()?;
+                for it in queries.into_iter() {
+                    let mut parser = Parser::new(&it)?;
+                    let stmts = parser.parse_statements()?;
+                    for stmt in stmts.into_iter() {
+                        let mut bc = BindContext::new(ctx.txn());
+                        let plan = planner.sql_statement_to_plan(&mut bc, stmt)?;
+                        let executor = compiler.build_execution_plan(plan)?;
+                        let mut ec = ExecContext::new(ctx.txn(), 10);
+                        ExecutionEngine::execute(&mut ec, executor)?;
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Display for CreateDatasetExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CreateDataset {}, if not exists: {}", self.dataset_name, self.if_not_exists)
     }
 }

@@ -10,8 +10,9 @@ use async_trait::async_trait;
 use futures::Stream;
 use log::debug;
 use log::error;
+use rand::prelude::SmallRng;
 use rand::Rng;
-use sboxdb::error::Error;
+use rand::SeedableRng;
 use sboxdb::error::Result;
 use sboxdb::internal_err;
 use sboxdb::raft::message::Address;
@@ -96,15 +97,16 @@ impl Transport for LabTransport {
                 }
                 SocketState::Unstable(noise) => {
                     // mimic the packet loss ratio
-                    let rng = rand::thread_rng().gen_range(0..100);
-                    if rng < noise.loss_ratio {
+                    let mut rng = SmallRng::from_os_rng();
+                    let num = rng.random_range(0..100);
+                    if num < noise.loss_ratio {
                         // drop message quietly.
                         continue;
                     }
 
                     // mimic the package delay
-                    let rng = rand::thread_rng().gen_range(noise.delay_ms);
-                    tokio::time::sleep(Duration::from_millis(rng)).await;
+                    let num = rng.random_range(noise.delay_ms);
+                    tokio::time::sleep(Duration::from_millis(num)).await;
 
                     tx.send(message.clone()).await?
                 }
@@ -207,7 +209,7 @@ impl LabNetMesh {
         Self { nodes, noise, connected, txs, rxs, net }
     }
 
-    pub fn get(&self, id: NodeId) -> sboxdb::error::Result<LabTransport> {
+    pub fn get(&self, id: NodeId) -> Result<LabTransport> {
         let rx = self.rxs.get(&id).ok_or(internal_err!("node {} not found", id))?;
         let peers: HashMap<_, _> = self
             .txs
@@ -225,7 +227,7 @@ impl LabNetMesh {
         Ok(LabTransport::new(id, Arc::clone(rx), peers, Arc::clone(&self.net)))
     }
 
-    pub fn disconnect(&mut self, id: NodeId) -> sboxdb::error::Result<()> {
+    pub fn disconnect(&mut self, id: NodeId) -> Result<()> {
         for &peer in &self.nodes {
             // disconnect outgoing
             self.net.set(id, peer, SocketState::Disconnected)?;
@@ -238,7 +240,7 @@ impl LabNetMesh {
         Ok(())
     }
 
-    pub fn connect(&mut self, id: NodeId) -> sboxdb::error::Result<()> {
+    pub fn connect(&mut self, id: NodeId) -> Result<()> {
         // get connecting state with the mesh noise setup
         let state = SocketState::from_noise(self.noise.clone());
         for &peer in &self.nodes {

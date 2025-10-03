@@ -3,7 +3,9 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::time::Duration;
 
+use rand::rngs::SmallRng;
 use rand::Rng;
+use rand::SeedableRng;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -88,7 +90,7 @@ pub const ELECTION_TIMEOUT_RANGE: std::ops::Range<u8> = 10..20;
 // Generates a randomized election timeout, range from TICK_INTERVAL * 10 to
 // TICK_INTERVAL * 20, e.g., 1s to 2s if TICK_INTERVAL is 100ms.
 fn rand_election_timeout() -> Ticks {
-    rand::thread_rng().gen_range(ELECTION_TIMEOUT_RANGE)
+    SmallRng::from_os_rng().random_range(ELECTION_TIMEOUT_RANGE)
 }
 
 pub trait Node: Send {

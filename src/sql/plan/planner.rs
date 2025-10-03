@@ -30,6 +30,7 @@ use crate::sql::parser::ast::JoinConstraint;
 use crate::sql::parser::ast::JoinOperator;
 use crate::sql::parser::ast::Query;
 use crate::sql::parser::ast::SelectItem;
+use crate::sql::parser::ast::ShowTarget;
 use crate::sql::parser::ast::Statement;
 use crate::sql::parser::ast::TableConstraint;
 use crate::sql::parser::ast::TableFactor;
@@ -51,11 +52,13 @@ use crate::sql::plan::expr::Operator;
 use crate::sql::plan::expr::ScalarFunction;
 use crate::sql::plan::expr::Subquery;
 use crate::sql::plan::plan::Aggregate;
+use crate::sql::plan::plan::CreateDataset;
 use crate::sql::plan::plan::CreateIndex;
 use crate::sql::plan::plan::CreateTable;
 use crate::sql::plan::plan::Delete;
 use crate::sql::plan::plan::DropIndex;
 use crate::sql::plan::plan::DropTable;
+use crate::sql::plan::plan::Echo;
 use crate::sql::plan::plan::Explain;
 use crate::sql::plan::plan::Filter;
 use crate::sql::plan::plan::Insert;
@@ -64,6 +67,8 @@ use crate::sql::plan::plan::JoinType;
 use crate::sql::plan::plan::Limit;
 use crate::sql::plan::plan::Plan;
 use crate::sql::plan::plan::Projection;
+use crate::sql::plan::plan::ShowCreateTable;
+use crate::sql::plan::plan::ShowTables;
 use crate::sql::plan::plan::Sort;
 use crate::sql::plan::plan::SortExpr;
 use crate::sql::plan::plan::SubqueryAlias;
@@ -179,6 +184,10 @@ impl Planner {
             Statement::CreateIndex(sql_create_index) => {
                 self.create_index_to_plan(ctx, sql_create_index)
             }
+            Statement::CreateDataset { dataset_name, if_not_exists } => {
+                let name = self.normalize_ident(&dataset_name);
+                Ok(Plan::CreateDataset(CreateDataset::new(name, if_not_exists)))
+            }
             Statement::DropTable { table_name, if_exists } => {
                 let relation = TableReference::new(&self.normalize_ident(&table_name));
                 Ok(Plan::DropTable(DropTable::new(relation, if_exists)))
@@ -199,11 +208,22 @@ impl Planner {
                 let plan = self.sql_statement_to_plan(ctx, *statement)?;
                 Ok(Plan::Explain(Explain::new(plan, verbose, physical)))
             }
+            Statement::Check { statement } => {
+                let sql = format!("{}", statement);
+                Ok(Plan::Echo(Echo::new(sql)))
+            }
+            Statement::Show(target) => match target {
+                ShowTarget::Tables => Ok(Plan::ShowTables(ShowTables::new())),
+                ShowTarget::CreateTable(ident) => {
+                    let name = self.normalize_ident(&ident);
+                    Ok(Plan::ShowCreateTable(ShowCreateTable::new(name)))
+                }
+            },
             _ => Err(internal_err!("Unexpected stmt {}", statement)),
         }
     }
 
-    /// Generate a logical plan from an SQL query/subquery
+    /// Generate a logical plan from a SQL query/subquery
     fn query_to_plan(&self, ctx: &mut BindContext, query: Query) -> Result<Plan> {
         // plan table with joins
         let mut plan = self.plan_table_with_joins(ctx, query.from)?;
@@ -1117,7 +1137,7 @@ pub mod tests {
     use crate::catalog::index::Indexes;
     use crate::catalog::schema::Schema;
     use crate::catalog::schema::Schemas;
-    use crate::sql::parser::display_utils;
+    use crate::sql::format;
     use crate::sql::parser::Parser;
     use crate::value_err;
 
@@ -1139,7 +1159,7 @@ pub mod tests {
                     let mut mint = Mint::new(GOLDEN_DIR);
                     let mut f = mint.new_goldenfile(format!("{}", stringify!($name)))?;
 
-                    write!(f, "Stmt: \n{}\n\n", display_utils::dedent($stmt))?;
+                    write!(f, "Stmt: \n{}\n\n", format::dedent($stmt, false))?;
 
                     write!(f, "Logical Plan:\n")?;
                     write!(f, "--------------\n\n")?;
