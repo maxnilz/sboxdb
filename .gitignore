@@ -13,6 +13,7 @@ __pycache__/
 *.log
 *.bkp
 *.swp
+*.drawio
 
 
 .env
@@ -26,5 +27,5 @@ NOTES.md
 generated.slt
 tools/sltgen/gen/
 
-/docs
+/doc0s
 /src/tpcc/testdata/

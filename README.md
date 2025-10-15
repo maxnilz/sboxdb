@@ -1,8 +1,11 @@
 # sboxdb
 
-A distributed SQL database, written as a learning project about my journey on the database and rust.
+sboxdb(Sandbox Database) is a distributed SQL database written in Rust, built as a learning project to explore how
+modern databases work under the hood — from storage engines and transaction systems (MVCC) to Raft-based replication and
+SQL query execution.
 
-`sboxdb` represents `Sandbox DB`.
+**NB**: Just for learning and experimenting db internals, not suitable for real-word use, and not optimized for
+performance.
 
 ## Outline
 
@@ -33,7 +36,7 @@ A distributed SQL database, written as a learning project about my journey on th
         * `EXPLAIN SELECT ...`
         * `SHOW TABLES`
         * `CREATE DATASET ...`
-    - **Full reference** at [here](src/sql/sql.md)
+    - **Full reference** at [here](docs/sql.md)
 - [ ] **SQL Execution Engine:** Simple heuristic-based planner and optimizer supporting expressions, functions and
   joins.
     - [x] Logical Planner
@@ -44,20 +47,15 @@ A distributed SQL database, written as a learning project about my journey on th
     - [x] [sql logical test util](https://www.sqlite.org/sqllogictest/doc/trunk/about.wiki)
 - [x] Wasm for browser for fun, deployed at [here](https://maxnilz.com/app/sboxdb)
 
+## Documentation
+
+- [Architecture](docs/arch.md): A high level architecture about sboxdb
+- [SQL reference](docs/sql.md): Detailed SQL syntax sboxdb supported
+- [Examples](src/slt/script/README.md): The SQL examples sboxdb supported
+- [References](docs/references.md): Materials used while building sboxdb
+
 ## Dev Tools
 
-1. [Just][just-gh] - Task runner for project commands
-2. [uv][uv] - Python package manager for the SQL Logical Test script generator([sltgen])
-
-## Reference
-
-- https://github.com/cmu-db/bustub
-- https://github.com/erikgrinaker/toydb
-- https://github.com/postgres/postgres
-- https://github.com/apache/datafusion-sqlparser-rs
-- https://github.com/apache/datafusion
-
-
-[just-gh]: https://github.com/casey/just
-[uv]: https://docs.astral.sh/uv/getting-started
-[sltgen]: tools/sltgen
+1. [Just](https://github.com/casey/just) - Task runner for project commands
+2. [uv](https://docs.astral.sh/uv/getting-started) - Python package manager for
+   the [SQL Logical Test script generator](tools/sltgen)
