@@ -11,8 +11,10 @@ performance.
 
 - [ ] **KV Storage:**
     - [x] in memory based key-value storage
-    - [ ] add LSM based kv storage for OLTP
+    - [ ] add LSM based kv storage for OLTP(C++, WIP)
+    - [ ] testability, benchmarks and observability
     - [ ] add parquet based storage for OLAP
+    - [ ] vector-friend storage format like [lance](https://github.com/lance-format/lance)
     - ~~[x] buffer pool manager with lru-k replacer~~
 - [x] **Replication:** Raft-based replicated state machine
     - no cluster membership config change support.
