@@ -1,0 +1,12 @@
+NOTES*.md
+build
+release
+cmake-build-debug
+
+GEMINI.md
+AGENTS.md
+
+hn*.md
+code_overview.md
+
+a.log

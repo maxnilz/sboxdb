@@ -11,7 +11,7 @@ performance.
 
 - [ ] **KV Storage:**
     - [x] in memory based key-value storage
-    - [ ] add LSM based kv storage for OLTP(C++, WIP)
+    - [ ] add LSM based kv storage for OLTP([C++, WIP](cckv/README.md))
     - [ ] testability, benchmarks and observability
     - [ ] add parquet based storage for OLAP
     - [ ] vector-friend storage format like [lance](https://github.com/lance-format/lance)

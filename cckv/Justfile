@@ -1,0 +1,53 @@
+#!/usr/bin/env just --justfile
+
+build:
+  cmake -S . -B build -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D CMAKE_BUILD_TYPE=Debug
+  cmake --build build
+
+release:
+  cmake -S . -B release -D CMAKE_BUILD_TYPE=Release
+  cmake --build release
+
+# python3 -m pip install cmakelang
+# Uses + for batch processing (faster than -exec {} \;)?
+cmake-format:
+  @find . -name 'CMakeLists.txt' -exec cmake-format --line-width 100 -i {} +
+
+clang-format:
+  @CLANG_FMT=$(command -v clang-format-18 || command -v clang-format || true); \
+  if [ -z $CLANG_FMT ]; then echo "clang-format not found"; exit 1; fi; \
+  git ls-files -- '*.h' '*.cc' | xargs -r $CLANG_FMT -i --style=file
+
+format: clang-format cmake-format
+
+tidy:
+  @cmake -S . -B build -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D CMAKE_BUILD_TYPE=Debug
+  @CLANG_TIDY=$(command -v run-clang-tidy-18 || command -v run-clang-tidy || true); \
+  if [ -z $CLANG_TIDY ]; then echo "clang-tidy not found"; exit 1; fi; \
+  git ls-files -- '*.h' '*.cc' ':!third_party/' | xargs -r $CLANG_TIDY -j16 -p build -quiet
+
+
+# Show test cases
+# alternative: ./build/cckv_test --gtest_list_tests
+show-test-cases: build
+    ctest --test-dir build -N
+
+# Run specific test with verbose output
+test name: build
+    ctest --test-dir build -R "{{name}}" -V
+
+# Run tests matching pattern
+test-match pattern: build
+    ctest --test-dir build -R "{{pattern}}" -V
+
+# Run all tests with verbose output
+test-all: build
+    ctest --test-dir build
+
+coverage:
+  cmake -S . -B build -D CMAKE_EXPORT_COMPILE_COMMANDS=ON -D CMAKE_BUILD_TYPE=Debug -D CCKV_ENABLE_COVERAGE=ON
+  cmake --build build
+  ctest --test-dir build
+  ctest --test-dir build -T coverage
+  gcovr -r . --html-details -o build/coverage.html --print-summary \
+    --exclude '.*_test.cc' --exclude 'third_party/.*' --exclude 'build/_deps/.*'
