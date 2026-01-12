@@ -11,6 +11,7 @@ class Allocator {
  public:
   virtual ~Allocator() = default;
 
+  // Allocate number of bytes space that is aligned to std::max_align_t.
   virtual auto Allocate(size_t bytes) -> char* = 0;
 };
 

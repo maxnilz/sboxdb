@@ -122,44 +122,75 @@ auto InternalKey::Decode(const char* p) -> InternalKey {
   return InternalKey{Slice(user_key, user_key_size), version, type};
 }
 
-auto InternalKey::LowerBound(const Slice& user_key) -> std::string {
-  InternalKey ikey(user_key, kMaxVersion, ValueType::kTypeValue);
-  std::string out;
-  out.resize(ikey.EncodedLen());
-  ikey.Encode(out.data());
-  return out;
+auto InternalKey::LowerBound(const Slice& user_key) -> InternalKey {
+  return InternalKey(user_key, kMaxVersion, ValueType::kTypeValue);
 }
 
-auto InternalKey::LowerBound(const Slice& user_key, Version as_of) -> std::string {
-  InternalKey ikey(user_key, as_of, ValueType::kTypeValue);
-  std::string out;
-  out.resize(ikey.EncodedLen());
-  ikey.Encode(out.data());
-  return out;
+auto InternalKey::LowerBound(const Slice& user_key, Version as_of) -> InternalKey {
+  return InternalKey(user_key, as_of, ValueType::kTypeValue);
 }
 
-auto InternalKey::UpperBound(const Slice& user_key) -> std::string {
-  InternalKey ikey(user_key, 0, ValueType::kTypeValue);
-  std::string out;
-  out.resize(ikey.EncodedLen());
-  ikey.Encode(out.data());
-  return out;
+auto InternalKey::UpperBound(const Slice& user_key) -> InternalKey {
+  return InternalKey(user_key, kMinVersion, ValueType::kTypeValue);
 }
 
-auto InternalKeyComparator::operator()(const char* a, const char* b) const -> bool {
+auto InternalKeyComparator::CompareUserKey(const Slice& a, const Slice& b) -> int {
+  const size_t min_len = std::min(a.Size(), b.Size());
+  int r = memcmp(a.Data(), b.Data(), min_len);
+  if (r != 0) {
+    return r;
+  }
+  return static_cast<int>(a.Size() - b.Size());
+}
+
+auto InternalKeyComparator::Compare(const InternalKey& a, const InternalKey& b) -> int {
+  // order by user key asc
+  const size_t min_len = std::min(a.user_key_.Size(), b.user_key_.Size());
+  int r = memcmp(a.user_key_.Data(), b.user_key_.Data(), min_len);
+  if (r != 0) {
+    return r;
+  }
+  r = static_cast<int>(a.user_key_.Size() - b.user_key_.Size());
+  if (r != 0) {
+    return r;
+  }
+  // order by version desc;
+  r = static_cast<int>(b.version_ - a.version_);
+  if (r != 0) {
+    return r;
+  }
+  // order by type desc
+  return b.type_ - a.type_;
+}
+
+auto InternalKeyComparator::Compare(const char* a, const char* b) -> int {
   auto akey = InternalKey::Decode(a);
   auto bkey = InternalKey::Decode(b);
 
-  const size_t min_len = std::min(akey.user_key_.Size(), bkey.user_key_.Size());
-  int cmp = memcmp(akey.user_key_.Data(), bkey.user_key_.Data(), min_len);
-  if (cmp != 0) {
-    return cmp < 0;
-  }
-  if (akey.user_key_.Size() != bkey.user_key_.Size()) {
-    return akey.user_key_.Size() < bkey.user_key_.Size();
-  }
+  return Compare(akey, bkey);
+}
 
-  return akey.version_ > bkey.version_;
+auto InternalKeyComparator::Compare(const Slice& a, const Slice& b) -> int {
+  auto akey = InternalKey::Decode(a.Data());
+  auto bkey = InternalKey::Decode(b.Data());
+
+  return Compare(akey, bkey);
+}
+
+auto InternalKeyComparator::operator()(const InternalKey& a, const InternalKey& b) const -> bool {
+  return Compare(a, b) < 0;
+}
+
+auto InternalKeyComparator::operator()(const char* a, const char* b) const -> bool {
+  return Compare(a, b) < 0;
+}
+auto InternalKeyComparator::operator()(const InternalKey& a, const char* b) const -> bool {
+  auto bkey = InternalKey::Decode(b);
+  return Compare(a, bkey) < 0;
+}
+
+auto InternalKeyComparator::operator()(const Slice& a, const Slice& b) const -> bool {
+  return Compare(a, b) < 0;
 }
 
 }  // namespace cckv::internal

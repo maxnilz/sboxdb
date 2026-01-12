@@ -8,12 +8,13 @@
 #include "memory.h"
 
 namespace cckv::internal {
-TEST(FunctionTest, Memcpy) {
-  char buf[4] = {};
-  char* src = nullptr;
-  memcpy(buf, src, 0);
-  printf("hello");
-}
+struct Key {
+  Key(std::string&& user_key, Version version, ValueType typ)
+      : user_key_(std::move(user_key)), version_(version), type_(typ) {};
+  std::string user_key_;
+  Version version_;
+  ValueType type_;
+};
 
 class MemTableTest : public ::testing::Test {
  protected:
@@ -22,14 +23,6 @@ class MemTableTest : public ::testing::Test {
     tracker_ = std::make_unique<AllocTracker>(wbm_.get());
     allocator_ = NewAllocator(tracker_.get());
     table_ = NewMemTable(allocator_.get());
-
-    struct Key {
-      Key(std::string&& user_key, Version version, ValueType typ)
-          : user_key_(std::move(user_key)), version_(version), type_(typ) {};
-      std::string user_key_;
-      Version version_;
-      ValueType type_;
-    };
 
     std::vector<std::pair<Key, Slice>> cases = {
         {Key("bar", 3, ValueType::kTypeValue), Slice("bar1")},
@@ -73,53 +66,57 @@ TEST_F(MemTableTest, MapMemTableGet) {
   ASSERT_EQ(value, "foo2");
 }
 
-TEST_F(MemTableTest, MapMemTableScan) {
-  const auto kv = [](std::string_view key, std::string_view value) {
-    return std::make_pair(Slice(key), Slice(value));
+TEST_F(MemTableTest, MapMapTableGetWithTombstones) {
+  std::vector<std::pair<Key, Slice>> kvs = {
+      {Key("a", 1, ValueType::kTypeValue), Slice("a@1")},
+      {Key("b", 1, ValueType::kTypeValue), Slice("b@1")},
+      {Key("c", 1, ValueType::kTypeValue), Slice("c@1")},
+      {Key("d", 1, ValueType::kTypeValue), Slice("d@1")},
+
+      {Key("a", 2, ValueType::kTypeValue), Slice("a@2")},
+      {Key("b", 2, ValueType::kTypeValue), Slice("b@2")},
+      {Key("c", 2, ValueType::kTypeValue), Slice("c@2")},
+
+      {Key("a", 3, ValueType::kTypeValue), Slice("a@3")},
+      {Key("b", 3, ValueType::kTypeValue), Slice("b@3")},
+      {Key("c", 3, ValueType::kTypeValue), Slice("c@3")},
+      //    |-----4-------------------)
+      //              |-3-----)
+      //    |--2------)
+      // ---a---------b-------c--------d------
+      {Key("a", 2, ValueType::kTypeRangeDeletion), Slice("b")},
+      {Key("b", 3, ValueType::kTypeRangeDeletion), Slice("c")},
+      {Key("a", 4, ValueType::kTypeRangeDeletion), Slice("d")},
   };
-  const auto opts = [](Version version, std::optional<std::string_view> lower,
-                       std::optional<std::string_view> upper) {
-    return LookupOptions{
-        .version_ = version,
-        .lower_ = lower ? std::optional<Slice>(Slice(*lower)) : std::nullopt,
-        .upper_ = upper ? std::optional<Slice>(Slice(*upper)) : std::nullopt,
-    };
+  for (auto& kv : kvs) {
+    auto& key = kv.first;
+    auto& value = kv.second;
+    table_->Add(InternalKey(Slice(key.user_key_), key.version_, key.type_), Slice(value));
+  }
+
+  // get in case of we have tombstones
+  std::vector<std::tuple<std::string, std::string, Version, Status::Code, std::string>> cases = {
+      {"Get a@1", "a", 1, Status::kOk, "a@1"},    {"Get a@2", "a", 2, Status::kNotFound, ""},
+      {"Get a@3", "a", 3, Status::kOk, "a@3"},    {"Get a@4", "a", 4, Status::kNotFound, ""},
+      {"Get a@5", "a", 5, Status::kNotFound, ""},
+
+      {"Get b@1", "b", 1, Status::kOk, "b@1"},    {"Get b@2", "b", 2, Status::kOk, "b@2"},
+      {"Get b@3", "b", 3, Status::kNotFound, ""}, {"Get b@4", "b", 4, Status::kNotFound, ""},
+      {"Get b@5", "b", 5, Status::kNotFound, ""},
+
+      {"Get c@1", "c", 1, Status::kOk, "c@1"},    {"Get c@2", "c", 2, Status::kOk, "c@2"},
+      {"Get c@3", "c", 3, Status::kOk, "c@3"},    {"Get c@4", "c", 4, Status::kNotFound, ""},
+      {"Get c@5", "c", 5, Status::kNotFound, ""},
   };
-  struct ScanCase {
-    std::string name_;
-    LookupOptions options_;
-    std::vector<std::pair<Slice, Slice>> expected_;
-  };
-  std::vector<ScanCase> scan_cases = {
-      {"v2_from_bar", opts(2, "bar", std::nullopt), {kv("baz", "baz1")}},
-      {"v3_from_bar",
-       opts(3, "bar", std::nullopt),
-       {
-           kv("bar", "bar1"),
-           kv("baz", "baz1"),
-           kv("foo", "foo2"),
-       }},
-      {"v1_bar_to_foo",
-       opts(1, "bar", "foo"),
-       {
-           kv("baz", "baz1"),
-       }},
-      {"v1_from_foo",
-       opts(1, "foo", std::nullopt),
-       {
-           kv("foo", "foo1"),
-       }},
-      {"v2_from_foo", opts(2, "foo", std::nullopt), {}},
-  };
-  for (const auto& c : scan_cases) {
-    auto iter = table_->NewIterator(c.options_);
-    std::vector<std::pair<Slice, Slice>> results;
-    while (iter->Valid()) {
-      results.emplace_back(iter->Key(), iter->Value());
-      iter->Next();
+  for (auto& [name, k, v, expect_cd, expect_v] : cases) {
+    std::string value;
+    auto status = table_->Get(k, v, &value);
+    ASSERT_EQ(status.code(), expect_cd)
+        << name << ", expect code: " << expect_cd << ", got code: " << status.code();
+    if (expect_cd == Status::kOk) {
+      ASSERT_EQ(value, expect_v) << name << "expect value: " << expect_v
+                                 << ", got value: " << value;
     }
-    ASSERT_EQ(c.expected_, results)
-        << c.name_ << " expected: " << c.expected_ << ", got: " << results;
   }
 }
 

@@ -176,30 +176,4 @@ TEST(Codec, InternalKey) {
   EXPECT_TRUE(cmp(abuf.data(), bbuf.data()));
   EXPECT_FALSE(cmp(bbuf.data(), abuf.data()));
 }
-TEST(Codec, InternalKeyBounds) {
-  const std::string user_key = "my_key";
-
-  // LowerBound(user_key) -> Version should be kMaxVersion
-  std::string lower = InternalKey::LowerBound(user_key);
-  ASSERT_FALSE(lower.empty());
-  InternalKey decoded_lower = InternalKey::Decode(lower.data());
-  EXPECT_EQ(decoded_lower.user_key_, user_key);
-  EXPECT_EQ(decoded_lower.version_, kMaxVersion);
-
-  // LowerBound(user_key, version)
-  Version v = 100;
-  std::string lower_v = InternalKey::LowerBound(user_key, v);
-  ASSERT_FALSE(lower_v.empty());
-  InternalKey decoded_lower_v = InternalKey::Decode(lower_v.data());
-  EXPECT_EQ(decoded_lower_v.user_key_, user_key);
-  EXPECT_EQ(decoded_lower_v.version_, v);
-
-  // UpperBound(user_key) -> Version should be 0
-  std::string upper = InternalKey::UpperBound(user_key);
-  ASSERT_FALSE(upper.empty());
-  InternalKey decoded_upper = InternalKey::Decode(upper.data());
-  EXPECT_EQ(decoded_upper.user_key_, user_key);
-  EXPECT_EQ(decoded_upper.version_, 0);
-}
-
 }  // namespace cckv::internal

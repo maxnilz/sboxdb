@@ -33,6 +33,11 @@ target_sources(
           src/internal/fsposix.cc
           src/internal/memtable.h
           src/internal/memtable.cc
+          src/internal/internal_iterator.h
+          src/internal/range_tombstone.h
+          src/internal/range_tombstone.cc
+          src/internal/merging_iterator.h
+          src/internal/merging_iterator.cc
           src/internal/storage.h
           src/internal/storage.cc)
 
@@ -50,8 +55,14 @@ if(BUILD_TESTING)
   add_subdirectory(third_party)
 
   add_executable(
-    cckv_test src/internal/codec_test.cc src/internal/memory_test.cc src/internal/memtable_test.cc
-              src/internal/fsposix_test.cc src/status_test.cc)
+    cckv_test
+    src/internal/codec_test.cc
+    src/internal/memory_test.cc
+    src/internal/memtable_test.cc
+    src/internal/fsposix_test.cc
+    src/internal/range_tombstone_test.cc
+    src/internal/merging_iterator_test.cc
+    src/status_test.cc)
 
   target_link_libraries(
     cckv_test PRIVATE cckv GTest::gtest # Core framework (TEST(), EXPECT_EQ, etc.)

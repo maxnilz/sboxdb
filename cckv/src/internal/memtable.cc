@@ -1,18 +1,20 @@
 #include "memtable.h"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <string>
 
+#include "internal_iterator.h"
 #include "memory.h"
+#include "range_tombstone.h"
 
 namespace cckv::internal {
 namespace {
+using Table = std::map<const char*, const char*, InternalKeyComparator>;
 class MapMemTable : public MemTable {
  public:
-  using Table = std::map<const char*, const char*, InternalKeyComparator>;
-
   explicit MapMemTable(Allocator* allocator) : allocator_(allocator) {}
   ~MapMemTable() override = default;
 
@@ -21,6 +23,25 @@ class MapMemTable : public MemTable {
     char* key_buf = allocator_->Allocate(key_size);
     ikey.Encode(key_buf);
 
+    // if it is a range deletion, encode the value
+    // as end_key with version info, e.g., the entry
+    // would represent [ikey, end_key).
+    if (ikey.type_ == kTypeRangeDeletion) {
+      InternalKey end_key(value, ikey.version_, ikey.type_);
+
+      size_t end_key_size = end_key.EncodedLen();
+      size_t value_size = VarintLength(end_key_size) + end_key_size;
+
+      char* value_buf = allocator_->Allocate(value_size);
+      char* buf = value_buf;
+      buf = EncodeVarint32(buf, end_key_size);
+      end_key.Encode(buf);
+
+      range_del_table_.insert_or_assign(key_buf, value_buf);
+
+      return Status::Ok();
+    }
+
     const uint32_t value_size = VarintLength(value.Size()) + value.Size();
     char* value_buf = allocator_->Allocate(value_size);
     char* p = value_buf;
@@ -28,19 +49,13 @@ class MapMemTable : public MemTable {
     memcpy(p, value.Data(), value.Size());
 
     // Latest entry for the encoded internal key wins.
-    auto& table = ikey.type_ == kTypeRangeDeletion ? range_del_table_ : table_;
-    table.insert_or_assign(key_buf, value_buf);
+    table_.insert_or_assign(key_buf, value_buf);
 
     return Status::Ok();
   }
 
   auto Get(const Slice& user_key, Version as_of, std::string* value) -> Status override {
-    // The InternalKeyComparator sorts (UserKey ASC, Version DESC).
-    // We want the first entry where Version <= as_of.
-    // Since "Greater Version" < "Lower Version" in the comparator logic:
-    // - Entries with Version > as_of are considered "smaller" (come before).
-    // - lower_bound skips those and lands on the first entry where Version <= as_of.
-    std::string buf = InternalKey::LowerBound(user_key, as_of);
+    std::string buf = InternalKey::LowerBound(user_key, as_of).ToString();
     auto it = table_.lower_bound(buf.data());
 
     if (it == table_.end()) {
@@ -52,14 +67,22 @@ class MapMemTable : public MemTable {
       return Status::NotFound();
     }
 
-    if (ikey.type_ == ValueType::kTypeDeletion) {
+    if (ikey.type_ == kTypeDeletion) {
       // deleted explicitly
       return Status::NotFound();
     }
 
-    assert(ikey.type_ == ValueType::kTypeValue);
+    assert(ikey.type_ == kTypeValue);
 
-    // TODO: check range deletion tombstones
+    // check range deletion
+    std::unique_ptr<InternalIterator> range_del_iter =
+        std::make_unique<Iterator>(&range_del_table_);
+    auto frag = FragmentedRangeTombstones(range_del_iter);
+    auto max_covering_seq = frag.MaxCoveringSeq(user_key, as_of);
+    if (ikey.version_ <= max_covering_seq) {
+      // covered by the range tombstone
+      return Status::NotFound();
+    }
 
     // decode the value
     uint32_t value_size;
@@ -69,57 +92,41 @@ class MapMemTable : public MemTable {
     return Status::Ok();
   }
 
-  auto NewIterator(const LookupOptions& opts) const -> std::unique_ptr<cckv::Iterator> override {
-    auto iter = std::make_unique<Iterator>(&table_, opts);
+  auto NewIterator() const -> std::unique_ptr<InternalIterator> override {
+    auto iter = std::make_unique<Iterator>(&table_);
     return iter;
   }
 
-  class Iterator : public cckv::Iterator {
+  class Iterator : public InternalIterator {
    public:
-    Iterator(const Table* table, const LookupOptions& opts) : table_(table), opts_(opts) {
-      it_ = opts.lower_.has_value()
-                ? table->lower_bound(InternalKey::LowerBound(opts.lower_.value()).data())
-                : table->begin();
-      end_ = opts.upper_.has_value()
-                 ? table->lower_bound(InternalKey::LowerBound(opts.upper_.value()).data())
-                 : table->end();
-      FindNextVisible();
-    }
+    explicit Iterator(const Table* table)
+        : table_(table), first_(table->begin()), end_(table->end()) {}
 
     ~Iterator() override = default;
 
     auto Valid() const -> bool override { return it_ != end_; }
 
+    void SeekToFirst() override { it_ = first_; }
+
+    void SeekToLast() override { it_ = std::prev(end_); }
+
+    // Advance to the first entry with a key >= user_key
     void Seek(const Slice& user_key) override {
-      Slice key = user_key;
-      if (opts_.lower_.has_value() && CompareUserKey(user_key, *opts_.lower_) < 0) {
-        // seek should honor the lower bound if the given
-        // user_key is less than lower bound.
-        key = *opts_.lower_;
-      }
-      while (it_ != end_) {
-        InternalKey ikey = InternalKey::Decode(it_->first);
-        if (CompareUserKey(ikey.user_key_, key) < 0) {
-          SkipUserKey(ikey.user_key_);
-          continue;
-        }
-        break;
-      }
-      FindNextVisible();
+      const auto ikey = InternalKey::LowerBound(user_key);
+      it_ = std::ranges::lower_bound(
+          *table_, ikey, InternalKeyComparator(),
+          [](auto& kv) -> InternalKey { return InternalKey::Decode(kv.first); });
     }
 
     void Next() override {
-      if (it_ == end_) {
-        return;
+      if (it_ != end_) {
+        ++it_;
       }
-      ++it_;
-      FindNextVisible();
     }
 
-    auto Key() const -> Slice override {
-      InternalKey ikey = InternalKey::Decode(it_->first);
-      return ikey.user_key_;
-    }
+    auto Key() const -> InternalKey override { return InternalKey::Decode(it_->first); }
+
+    auto UserKey() const -> Slice override { return Key().user_key_; }
 
     auto Value() const -> Slice override {
       const auto* p = it_->second;
@@ -130,61 +137,13 @@ class MapMemTable : public MemTable {
 
     auto Status() const -> cckv::Status override { return cckv::Status::Ok(); }
 
-   private:
-    void FindNextVisible() {
-      while (it_ != end_) {
-        InternalKey ikey = InternalKey::Decode(it_->first);
-        if (opts_.upper_.has_value() && CompareUserKey(ikey.user_key_, *opts_.upper_) >= 0) {
-          it_ = end_;
-          return;  // exceed the upper bound
-        }
-        if (ikey.version_ > opts_.version_) {
-          ++it_;
-          continue;
-        }
-        if (ikey.type_ == ValueType::kTypeDeletion) {
-          SkipUserKey(ikey.user_key_);
-          continue;
-        }
-
-        // TODO: check range deletion tombstones
-
-        // Found the visible item
-        break;
-      }
-    }
-
-    void SkipUserKey(const Slice& user_key) {
-      while (it_ != end_) {
-        InternalKey ikey = InternalKey::Decode(it_->first);
-        if (CompareUserKey(ikey.user_key_, user_key) != 0) {
-          break;
-        }
-        ++it_;
-      }
-    }
-
     const Table* table_;
-    const LookupOptions& opts_;
+    Table::const_iterator first_;
     Table::const_iterator it_;
     Table::const_iterator end_;
   };
 
  private:
-  static auto CompareUserKey(const Slice& a, const Slice& b) -> int {
-    const size_t min_len = std::min(a.Size(), b.Size());
-    int cmp = memcmp(a.Data(), b.Data(), min_len);
-    if (cmp != 0) {
-      return cmp;
-    }
-    if (a.Size() < b.Size()) {
-      return -1;
-    }
-    if (a.Size() > b.Size()) {
-      return 1;
-    }
-    return 0;
-  }
   Allocator* allocator_;
   Table table_;
   Table range_del_table_;

@@ -9,11 +9,13 @@ enum ValueType : unsigned char {
   kTypeValue = 0x00,
   kTypeDeletion = 0x01,
   kTypeRangeDeletion = 0x02,
+  kTypeMaxValue = 0x7F,
 };
 
 // We leave eight bits empty at the bottom so a type and version#
 // can be packed together into 64-bits.
 static constexpr Version kMaxVersion = ((1ULL << 56) - 1);
+static constexpr Version kMinVersion = 0;
 
 // Pack a sequence number and a ValueType into an uint64_t
 inline auto PackVersionAndType(Version version, ValueType typ) -> uint64_t {
@@ -50,12 +52,12 @@ auto DecodeFixed64(const char* p) -> uint64_t;
 
 // Packed ordering key: user key + commit version + value type.
 struct InternalKey {
+  InternalKey() : version_(0), type_(kTypeValue) {};
+
   InternalKey(const Slice& user_key, Version version, ValueType type)
       : user_key_(user_key), version_(version), type_(type) {}
 
-  Slice user_key_;
-  Version version_;
-  ValueType type_;
+  auto Valid() const -> bool { return !user_key_.Empty() && version_ > 0; }
 
   auto EncodedLen() const -> size_t {
     uint32_t key_size = user_key_.Size() + 8;
@@ -72,6 +74,13 @@ struct InternalKey {
   //  packed version and type: 8
   auto Encode(char* buf) const -> char*;
 
+  auto ToString() const -> std::string {
+    std::string out;
+    out.resize(EncodedLen());
+    Encode(out.data());
+    return out;
+  }
+
   // Decode an encoded internal key into a lightweight view that points into
   // the provided buffer; caller must ensure the lifetime of `p` exceeds the
   // returned object.
@@ -79,29 +88,40 @@ struct InternalKey {
 
   // Returns an encoded InternalKey that is guaranteed to be < any InternalKey
   // for this user_key and any version.
-  static auto LowerBound(const Slice& user_key) -> std::string;
-  // Returns an encoded InternalKey that is suitable for finding the first entry
-  // with a version less than or equal to `as_of` for a given user_key.
-  static auto LowerBound(const Slice& user_key, Version as_of) -> std::string;
-  static auto UpperBound(const Slice& user_key) -> std::string;
+  static auto LowerBound(const Slice& user_key) -> InternalKey;
+  static auto LowerBound(const Slice& user_key, Version as_of) -> InternalKey;
+
+  static auto UpperBound(const Slice& user_key) -> InternalKey;
+
+  Slice user_key_;
+  Version version_;
+  ValueType type_;
 };
 
+// Orders by user key ascending, then by version descending so that
+// newer entries come before older ones for the same user key.
+//
+// NB: Two key are considered as equal if the user key and version are
+// equal respectively, the value type is ignored.
+// The returning result following the less_than semantic.
+//
+// Example semantic of sorting (UserKey ASC, Version DESC):
+// smaller
+//    |   key@3
+//    |   key@2
+//    |   key@1
+//    ↓   key@0
+// greater
 struct InternalKeyComparator {
-  // Orders by user key ascending, then by version descending so that
-  // newer entries come before older ones for the same user key.
-  //
-  // NB: Two key are considered as equal if the user key and version are
-  // equal respectively, the value type is ignored.
-  // The returning result following the less_than semantic.
-  //
-  // Example semantic of sorting (UserKey ASC, Version DESC):
-  // smaller
-  //    |   key@3
-  //    |   key@2
-  //    |   key@1
-  //    ↓   key@0
-  // greater
+  static auto CompareUserKey(const Slice& a, const Slice& b) -> int;
+  static auto Compare(const InternalKey& a, const InternalKey& b) -> int;
+  static auto Compare(const char* a, const char* b) -> int;
+  static auto Compare(const Slice& a, const Slice& b) -> int;
+
+  auto operator()(const InternalKey& a, const InternalKey& b) const -> bool;
   auto operator()(const char* a, const char* b) const -> bool;
+  auto operator()(const InternalKey& a, const char* b) const -> bool;
+  auto operator()(const Slice& a, const Slice& b) const -> bool;
 };
 
 }  // namespace cckv::internal

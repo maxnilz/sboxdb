@@ -6,16 +6,11 @@
 #include "cckv/slice.h"
 #include "cckv/status.h"
 #include "codec.h"
+#include "internal_iterator.h"
 
 namespace cckv::internal {
 
 class Allocator;
-
-struct LookupOptions {
-  Version version_{0};
-  std::optional<Slice> lower_;  // inclusive user_key
-  std::optional<Slice> upper_;  // exclusive user_key
-};
 
 class ReadOnlyMemTable {
  public:
@@ -25,8 +20,11 @@ class ReadOnlyMemTable {
   // none.
   virtual auto Get(const Slice& user_key, Version as_of, std::string* value) -> Status = 0;
 
-  // Iterator yields entries visible at as_of, honoring bounds hints.
-  virtual auto NewIterator(const LookupOptions& opts) const -> std::unique_ptr<Iterator> = 0;
+  // Return an iterator that yields the contents of the memtable.
+  //
+  // The caller must ensure that the underlying memtable remains live
+  // while the returned interator is live.
+  virtual auto NewIterator() const -> std::unique_ptr<InternalIterator> = 0;
 };
 
 class MemTable : public ReadOnlyMemTable {

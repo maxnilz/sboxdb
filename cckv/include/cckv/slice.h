@@ -29,6 +29,8 @@ class Slice {
   // Return true iff the length of the referenced data is zero
   auto Empty() const -> bool { return size_ == 0; }
 
+  auto ToString() const -> std::string_view { return std::string_view(data_, size_); }
+
   auto operator<=>(const Slice& other) const {
     const size_t min_len = (size_ < other.size_) ? size_ : other.size_;
     int cmp = memcmp(data_, other.data_, min_len);
@@ -54,6 +56,12 @@ class Slice {
   //    will automatically generate a matching operator==.
   // 2. Custom `<=>`: If operator<=> is customized, the compiler does not generate operator==.
   auto operator==(const Slice& other) const -> bool {
+    if (data_ == nullptr && other.data_ == nullptr) {
+      return true;
+    }
+    if (data_ == nullptr || other.data_ == nullptr) {
+      return false;
+    }
     return ((size_ == other.size_) && (memcmp(data_, other.data_, size_) == 0));
   }
 

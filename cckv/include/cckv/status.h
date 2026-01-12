@@ -103,6 +103,17 @@ class StatusOr {
   Status status_{Status::kOk};
 };
 
+inline auto operator<<(std::ostream& out, Status::Code c) -> std::ostream& {
+  switch (c) {
+    case Status::kOk:
+      return out << "kOk";
+    case Status::kNotFound:
+      return out << "kNotFound";
+    default:
+      return out << "Code(" << static_cast<int>(c) << ")";
+  }
+}
+
 #define RETURN_IF_ERROR(expr)          \
   do {                                 \
     auto _status = (expr);             \
