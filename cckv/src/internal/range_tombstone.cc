@@ -31,9 +31,9 @@ FragmentedRangeTombstones::FragmentedRangeTombstones(
         cur_end_keys.erase(cur_end_keys.begin(), it);
         cur_end_key = next_start_key;
       }
-      std::vector<Version> seqs_to_flush;
+      std::vector<SeqNum> seqs_to_flush;
       for (auto flush_it = it; flush_it != cur_end_keys.end(); ++flush_it) {
-        seqs_to_flush.push_back(flush_it->version_);
+        seqs_to_flush.push_back(flush_it->seq_);
       }
       std::ranges::sort(seqs_to_flush.begin(), seqs_to_flush.end(), std::greater<>{});
       size_t seq_start_idx = tombstone_seqs_.size();
@@ -76,7 +76,7 @@ FragmentedRangeTombstones::FragmentedRangeTombstones(
 }
 
 auto FragmentedRangeTombstones::MaxCoveringSeq(const Slice& user_key,
-                                               Version upper_bound) -> Version {
+                                               SeqNum upper_bound) -> SeqNum {
   auto proj = [](const RangeTombstone& t) -> Slice { return t.end_key_.user_key_; };
   // Since the end_key_ is exclusive, the first tombstone that
   // end_key_.user_key_ > user_key is our target, e.g., Given
@@ -89,7 +89,7 @@ auto FragmentedRangeTombstones::MaxCoveringSeq(const Slice& user_key,
   }
   const auto seq_it_begin = seq_iter(pos->seq_start_idx_);
   const auto seq_it_end = seq_iter(pos->seq_end_idx_);
-  // seqs is in desc order, find first seq less than or equal to the given version.
+  // seqs is in desc order, find first seq less than or equal to the given seq.
   const auto seq_pos =
       std::ranges::lower_bound(seq_it_begin, seq_it_end, upper_bound, std::greater<>{});
   if (seq_pos == seq_it_end) {
@@ -126,17 +126,17 @@ auto FragmentedRangeTombstones::ToString() const -> std::string {
 }
 
 auto FragmentedRangeTombstoneIterator::Valid() const -> bool {
-  if (pos_ == tombstones_->end()) {
+  if (pos_ == tombstones_.end()) {
     return false;
   }
-  if (seq_pos_ == tombstones_->seq_iter(pos_->seq_end_idx_)) {
+  if (seq_pos_ == tombstones_.seq_iter(pos_->seq_end_idx_)) {
     return false;
   }
   return true;
 }
 
 void FragmentedRangeTombstoneIterator::SeekToFirst() {
-  pos_ = tombstones_->begin();
+  pos_ = tombstones_.begin();
   // update seq_pos_ and pos_(maybe) to honor
   // the given upper bound.
   SetMaximumVisibleSeq();
@@ -144,7 +144,7 @@ void FragmentedRangeTombstoneIterator::SeekToFirst() {
 }
 
 void FragmentedRangeTombstoneIterator::SeekToLast() {
-  pos_ = std::prev(tombstones_->end());
+  pos_ = std::prev(tombstones_.end());
   // update seq_pos_ and pos_(maybe) to honor
   // the given upper bound.
   SetMaximumVisibleSeq();
@@ -158,7 +158,7 @@ void FragmentedRangeTombstoneIterator::Seek(const Slice& user_key) {
 
 auto FragmentedRangeTombstoneIterator::Next() -> void {
   ++pos_;
-  if (pos_ == tombstones_->end()) {
+  if (pos_ == tombstones_.end()) {
     return;
   }
   SetMaximumVisibleSeq();
@@ -167,22 +167,22 @@ auto FragmentedRangeTombstoneIterator::Next() -> void {
 
 auto FragmentedRangeTombstoneIterator::StartKey() const -> InternalKey { return pos_->start_key_; }
 auto FragmentedRangeTombstoneIterator::EndKey() const -> InternalKey { return pos_->end_key_; }
-auto FragmentedRangeTombstoneIterator::Seq() const -> Version { return *seq_pos_; }
+auto FragmentedRangeTombstoneIterator::Seq() const -> SeqNum { return *seq_pos_; }
 
-auto FragmentedRangeTombstoneIterator::MaxCoveringSeq(const Slice& user_key) -> Version {
+auto FragmentedRangeTombstoneIterator::MaxCoveringSeq(const Slice& user_key) -> SeqNum {
   SeekToCoveringTombstone(user_key);
-  if (pos_ == tombstones_->end() || pos_->start_key_.user_key_ > user_key) {
+  if (pos_ == tombstones_.end() || pos_->start_key_.user_key_ > user_key) {
     return 0;  // No covering tombstone
   }
-  if (seq_pos_ == tombstones_->seq_iter(pos_->seq_end_idx_)) {
+  if (seq_pos_ == tombstones_.seq_iter(pos_->seq_end_idx_)) {
     return 0;  // No seq less than the upper_bound_
   }
   return *seq_pos_;
 }
 
 void FragmentedRangeTombstoneIterator::SetMaximumVisibleSeq() {
-  const auto seq_it_begin = tombstones_->seq_iter(pos_->seq_start_idx_);
-  const auto seq_it_end = tombstones_->seq_iter(pos_->seq_end_idx_);
+  const auto seq_it_begin = tombstones_.seq_iter(pos_->seq_start_idx_);
+  const auto seq_it_end = tombstones_.seq_iter(pos_->seq_end_idx_);
   // seqs is in desc order, find first seq less than or equal to the given upper_bound_.
   // if there is no seq found for the given upper_bound_, it positioned at seq_it_end.
   seq_pos_ = std::ranges::lower_bound(seq_it_begin, seq_it_end, upper_bound_, std::greater<>{});
@@ -194,19 +194,20 @@ void FragmentedRangeTombstoneIterator::SeekToCoveringTombstone(const Slice& user
   // end_key_.user_key_ > user_key is our target, e.g., Given
   // tombstones like [3, 5), [5, 7), if target user_key is 5,
   // we land on [5, 7), if target user_key is 4, we land on [3, 5).
-  const auto pos = std::ranges::upper_bound(tombstones_->begin(), tombstones_->end(), user_key,
+  const auto pos = std::ranges::upper_bound(tombstones_.begin(), tombstones_.end(), user_key,
                                             std::ranges::less{}, proj);
-  if (pos == tombstones_->end()) {
-    seq_pos_ = tombstones_->seq_end();
+  if (pos == tombstones_.end()) {
+    Invalidate();
     return;
   }
+  pos_ = pos;
   SetMaximumVisibleSeq();
 }
 
 void FragmentedRangeTombstoneIterator::ScanForwardToVisibleTombstone() {
-  while (pos_ != tombstones_->end() && seq_pos_ == tombstones_->seq_iter(pos_->seq_end_idx_)) {
+  while (pos_ != tombstones_.end() && seq_pos_ == tombstones_.seq_iter(pos_->seq_end_idx_)) {
     ++pos_;
-    if (pos_ == tombstones_->end()) {
+    if (pos_ == tombstones_.end()) {
       Invalidate();
       return;  // no visible tombstone
     }
@@ -215,8 +216,8 @@ void FragmentedRangeTombstoneIterator::ScanForwardToVisibleTombstone() {
 }
 
 void FragmentedRangeTombstoneIterator::ScanBackwardToVisibleTombstone() {
-  while (pos_ != tombstones_->end() && seq_pos_ == tombstones_->seq_iter(pos_->seq_end_idx_)) {
-    if (pos_ == tombstones_->begin()) {
+  while (pos_ != tombstones_.end() && seq_pos_ == tombstones_.seq_iter(pos_->seq_end_idx_)) {
+    if (pos_ == tombstones_.begin()) {
       Invalidate();
       return;  // no visible tombstone
     }

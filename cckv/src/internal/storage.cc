@@ -19,21 +19,9 @@ auto BatchRep::Iterator::Next() -> void {
       DecodeVarint32(ptr, ptr + 5, &len);
       value_ = Slice();
       break;
+    default:
+      status_ = Status::Corruption("unknown BatchRep value type", std::to_string(type_));
   }
   offset_ += (ptr - start);
 }
-
-auto Storage::HandlerImpl::Commit(const BatchRep& rep, Version version) -> Status {
-  auto iter = rep.NewIterator();
-  while (iter.Valid()) {
-    iter.Next();
-    InternalKey ikey(iter.Key(), version, iter.Type());
-    auto s = storage_->table_->Add(ikey, iter.Value());
-    if (!s.ok()) {
-      return s;
-    }
-  }
-  return Status::Ok();
-}
-
 }  // namespace cckv::internal

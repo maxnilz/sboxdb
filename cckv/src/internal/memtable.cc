@@ -24,10 +24,10 @@ class MapMemTable : public MemTable {
     ikey.Encode(key_buf);
 
     // if it is a range deletion, encode the value
-    // as end_key with version info, e.g., the entry
+    // as end_key with seq info, e.g., the entry
     // would represent [ikey, end_key).
     if (ikey.type_ == kTypeRangeDeletion) {
-      InternalKey end_key(value, ikey.version_, ikey.type_);
+      InternalKey end_key(value, ikey.seq_, ikey.type_);
 
       size_t end_key_size = end_key.EncodedLen();
       size_t value_size = VarintLength(end_key_size) + end_key_size;
@@ -54,7 +54,7 @@ class MapMemTable : public MemTable {
     return Status::Ok();
   }
 
-  auto Get(const Slice& user_key, Version as_of, std::string* value) -> Status override {
+  auto Get(const Slice& user_key, SeqNum as_of, std::string* value) -> Status override {
     std::string buf = InternalKey::LowerBound(user_key, as_of).ToString();
     auto it = table_.lower_bound(buf.data());
 
@@ -77,9 +77,9 @@ class MapMemTable : public MemTable {
     // check range deletion
     std::unique_ptr<InternalIterator> range_del_iter =
         std::make_unique<Iterator>(&range_del_table_);
-    auto frag = FragmentedRangeTombstones(range_del_iter);
-    auto max_covering_seq = frag.MaxCoveringSeq(user_key, as_of);
-    if (ikey.version_ <= max_covering_seq) {
+    auto tombstones = FragmentedRangeTombstones(range_del_iter);
+    auto max_covering_seq = tombstones.MaxCoveringSeq(user_key, as_of);
+    if (ikey.seq_ <= max_covering_seq) {
       // covered by the range tombstone
       return Status::NotFound();
     }
@@ -97,6 +97,17 @@ class MapMemTable : public MemTable {
     return iter;
   }
 
+  auto NewRangeTombstoneIterator(SeqNum upper_bound)
+      -> std::unique_ptr<FragmentedRangeTombstoneIterator> override {
+    if (range_del_table_.empty()) {
+      return nullptr;
+    }
+    std::unique_ptr<InternalIterator> range_del_iter =
+        std::make_unique<Iterator>(&range_del_table_);
+    auto tombstones = FragmentedRangeTombstones(range_del_iter);
+    return std::make_unique<FragmentedRangeTombstoneIterator>(std::move(tombstones), upper_bound);
+  }
+
   class Iterator : public InternalIterator {
    public:
     explicit Iterator(const Table* table)
@@ -107,8 +118,6 @@ class MapMemTable : public MemTable {
     auto Valid() const -> bool override { return it_ != end_; }
 
     void SeekToFirst() override { it_ = first_; }
-
-    void SeekToLast() override { it_ = std::prev(end_); }
 
     // Advance to the first entry with a key >= user_key
     void Seek(const Slice& user_key) override {

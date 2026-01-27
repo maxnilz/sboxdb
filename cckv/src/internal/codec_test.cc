@@ -8,16 +8,16 @@
 
 namespace cckv::internal {
 TEST(Codec, PackVersionAndTyp) {
-  const std::vector<std::pair<Version, ValueType>> cases = {
+  const std::vector<std::pair<SeqNum, ValueType>> cases = {
       {1, ValueType::kTypeDeletion},
-      {kMaxVersion, ValueType::kTypeValue},
+      {kMaxSeqNum, ValueType::kTypeValue},
   };
   for (const auto& [fst, snd] : cases) {
-    auto packed = PackVersionAndType(fst, snd);
-    Version version;
+    auto packed = PackSequenceAndType(fst, snd);
+    SeqNum seq;
     ValueType typ;
-    UnpackVersionAndType(packed, &version, &typ);
-    ASSERT_EQ(fst, version);
+    UnpackSequenceAndType(packed, &seq, &typ);
+    ASSERT_EQ(fst, seq);
     ASSERT_EQ(snd, typ);
   }
 }
@@ -122,7 +122,7 @@ TEST(Codec, Fixed64) {
 TEST(Codec, InternalKey) {
   struct Case {
     std::string user_key_;
-    Version version_;
+    SeqNum seq_;
     ValueType type_;
   };
 
@@ -130,11 +130,11 @@ TEST(Codec, InternalKey) {
       {"foo", 1, ValueType::kTypeValue},
       {"foo", 2, ValueType::kTypeDeletion},
       {"bar", 10, ValueType::kTypeValue},
-      {"", kMaxVersion, ValueType::kTypeDeletion},
+      {"", kMaxSeqNum, ValueType::kTypeDeletion},
   };
 
   for (const auto& c : cases) {
-    InternalKey ikey{Slice(c.user_key_), c.version_, c.type_};
+    InternalKey ikey{Slice(c.user_key_), c.seq_, c.type_};
     std::vector<char> buf(ikey.EncodedLen());
     char* end = ikey.Encode(buf.data());
     EXPECT_EQ(end, buf.data() + buf.size());
@@ -142,7 +142,7 @@ TEST(Codec, InternalKey) {
     auto decoded = InternalKey::Decode(buf.data());
     EXPECT_EQ(decoded.user_key_.Size(), c.user_key_.size());
     EXPECT_EQ(std::string(decoded.user_key_.Data(), decoded.user_key_.Size()), c.user_key_);
-    EXPECT_EQ(decoded.version_, c.version_);
+    EXPECT_EQ(decoded.seq_, c.seq_);
     EXPECT_EQ(decoded.type_, c.type_);
   }
 
@@ -175,5 +175,22 @@ TEST(Codec, InternalKey) {
 
   EXPECT_TRUE(cmp(abuf.data(), bbuf.data()));
   EXPECT_FALSE(cmp(bbuf.data(), abuf.data()));
+}
+
+TEST(Comprator, InternalKey) {
+  std::vector<std::tuple<InternalKey, InternalKey, int>> cases{
+      // a@1_0 < b@1_0
+      {{"a", 1, ValueType::kTypeValue}, {"b", 1, ValueType::kTypeValue}, -1},
+      // a@1_0 > a@max_max
+      {{"a", 1, ValueType::kTypeValue}, InternalKey::LowerBound("a"), 1},
+      // a@1_0 > a@2_0
+      {{"a", 1, ValueType::kTypeValue}, {"a", 2, ValueType::kTypeValue}, 1},
+      // a@1_0 > a@2_1
+      {{"a", 1, ValueType::kTypeValue}, {"a", 2, ValueType::kTypeDeletion}, 1},
+  };
+  for (auto& [a, b, expect] : cases) {
+    auto got = InternalKeyComparator::Compare(a, b);
+    ASSERT_EQ(expect, got) << "compare " << a.DebugString() << " " << b.DebugString();
+  }
 }
 }  // namespace cckv::internal

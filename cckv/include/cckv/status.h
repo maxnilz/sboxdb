@@ -8,7 +8,14 @@
 namespace cckv {
 class Status {
  public:
-  enum Code : unsigned char { kOk = 0, kNotFound, kInvalidArgument, kIOError, kMaxCode };
+  enum Code : unsigned char {
+    kOk = 0,
+    kNotFound,
+    kInvalidArgument,
+    kIOError,
+    kCorruption,
+    kMaxCode
+  };
   enum Subcode : unsigned char { kNone = 0, kPathNotFound, kMaxSubCode };
 
   Status() : code_(kOk), subcode_(kNone), message_(nullptr) {}
@@ -25,6 +32,9 @@ class Status {
   }
   auto static InvalidArgument(const Slice& msg, const Slice& msgv = Slice()) -> Status {
     return Status(kInvalidArgument, kNone, msg, msgv);
+  }
+  auto static Corruption(const Slice& msg, const Slice& msgv = Slice()) -> Status {
+    return Status(kCorruption, kNone, msg, msgv);
   }
 
   // Since the move ctor is noexcept indeed, mark it so that

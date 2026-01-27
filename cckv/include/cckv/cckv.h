@@ -5,8 +5,6 @@
 
 namespace cckv {
 
-using Version = uint64_t;
-
 class Iterator {
  public:
   Iterator() = default;
@@ -47,7 +45,6 @@ class Snapshot {
  public:
   virtual ~Snapshot() = default;
 
-  virtual auto ReadTs() const -> Version = 0;
   virtual auto Get(const Slice& key, std::string* value) -> Status = 0;
   virtual auto NewIterator(const RangeOptions& options) -> StatusOr<std::unique_ptr<Iterator>> = 0;
 };
@@ -65,8 +62,8 @@ class WriteBatch {
   // contain any existing data in the range ["begin_key", "end_key").
   virtual auto DeleteRange(const Slice& begin_key, const Slice& end_key) -> Status = 0;
 
-  // Commit atomically with caller-supplied commit version.
-  virtual auto Commit(const Version& version) -> Status = 0;
+  // Apply the batch to db atomically.
+  virtual auto Apply() -> Status = 0;
 };
 
 class Storage {
@@ -78,12 +75,8 @@ class Storage {
 
   virtual ~Storage() = default;
 
-  virtual auto Snapshot(Version version) -> StatusOr<std::unique_ptr<Snapshot>> = 0;
+  virtual auto Snapshot() -> StatusOr<std::unique_ptr<Snapshot>> = 0;
   virtual auto WriteBatch() -> StatusOr<std::unique_ptr<WriteBatch>> = 0;
-
-  virtual auto NextVersion() -> Version = 0;
-
-  virtual auto LastCommittedVersion() const -> Version = 0;
 };
 
 }  // namespace cckv

@@ -65,8 +65,10 @@ if(BUILD_TESTING)
     src/status_test.cc)
 
   target_link_libraries(
-    cckv_test PRIVATE cckv GTest::gtest # Core framework (TEST(), EXPECT_EQ, etc.)
-                      GTest::gtest_main # Provides main() - no need to write it
+    cckv_test
+    PRIVATE cckv # our lib itself
+            GTest::gtest # Core framework (TEST(), EXPECT_EQ, etc.)
+            GTest::gtest_main # Provides main() - no need to write it
   )
 
   if(CCKV_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

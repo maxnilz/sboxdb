@@ -9,10 +9,10 @@
 
 namespace cckv::internal {
 struct Key {
-  Key(std::string&& user_key, Version version, ValueType typ)
-      : user_key_(std::move(user_key)), version_(version), type_(typ) {};
+  Key(std::string&& user_key, SeqNum seq, ValueType typ)
+      : user_key_(std::move(user_key)), seq_(seq), type_(typ) {};
   std::string user_key_;
-  Version version_;
+  SeqNum seq_;
   ValueType type_;
 };
 
@@ -35,7 +35,7 @@ class MemTableTest : public ::testing::Test {
     for (auto& c : cases) {
       auto& key = c.first;
       auto& value = c.second;
-      table_->Add(InternalKey(Slice(key.user_key_), key.version_, key.type_), Slice(value));
+      table_->Add(InternalKey(Slice(key.user_key_), key.seq_, key.type_), Slice(value));
     }
   }
 
@@ -44,6 +44,21 @@ class MemTableTest : public ::testing::Test {
   std::unique_ptr<Allocator> allocator_;
   std::unique_ptr<MemTable> table_;
 };
+
+TEST_F(MemTableTest, MapMemTableSeek) {
+  std::vector<std::pair<std::string, std::string>> cases{
+      {"bar", "bar@3"},
+      {"bay", "baz@1"},
+      {"foo", "foo@3"},
+  };
+
+  for (auto& [target, expect] : cases) {
+    auto iter = table_->NewIterator();
+    iter->Seek(target);
+    auto got = std::format("{}@{}", iter->Key().user_key_.ToString(), iter->Key().seq_);
+    ASSERT_EQ(expect, got) << "seek target " << target;
+  }
+}
 
 TEST_F(MemTableTest, MapMemTableGet) {
   std::string value;
@@ -91,11 +106,11 @@ TEST_F(MemTableTest, MapMapTableGetWithTombstones) {
   for (auto& kv : kvs) {
     auto& key = kv.first;
     auto& value = kv.second;
-    table_->Add(InternalKey(Slice(key.user_key_), key.version_, key.type_), Slice(value));
+    table_->Add(InternalKey(Slice(key.user_key_), key.seq_, key.type_), Slice(value));
   }
 
   // get in case of we have tombstones
-  std::vector<std::tuple<std::string, std::string, Version, Status::Code, std::string>> cases = {
+  std::vector<std::tuple<std::string, std::string, SeqNum, Status::Code, std::string>> cases = {
       {"Get a@1", "a", 1, Status::kOk, "a@1"},    {"Get a@2", "a", 2, Status::kNotFound, ""},
       {"Get a@3", "a", 3, Status::kOk, "a@3"},    {"Get a@4", "a", 4, Status::kNotFound, ""},
       {"Get a@5", "a", 5, Status::kNotFound, ""},

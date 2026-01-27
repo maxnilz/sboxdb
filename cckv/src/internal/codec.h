@@ -1,9 +1,13 @@
 #pragma once
 
+#include <format>
+
 #include "cckv/cckv.h"
 #include "cckv/slice.h"
 
 namespace cckv::internal {
+
+using SeqNum = uint64_t;
 
 enum ValueType : unsigned char {
   kTypeValue = 0x00,
@@ -12,21 +16,21 @@ enum ValueType : unsigned char {
   kTypeMaxValue = 0x7F,
 };
 
-// We leave eight bits empty at the bottom so a type and version#
+// We leave eight bits empty at the bottom so a type and sequence#
 // can be packed together into 64-bits.
-static constexpr Version kMaxVersion = ((1ULL << 56) - 1);
-static constexpr Version kMinVersion = 0;
+static constexpr SeqNum kMaxSeqNum = ((1ULL << 56) - 1);
+static constexpr SeqNum kMinSeqNum = 0;
 
 // Pack a sequence number and a ValueType into an uint64_t
-inline auto PackVersionAndType(Version version, ValueType typ) -> uint64_t {
-  assert(version <= kMaxVersion);
-  return version << 8 | typ;
+inline auto PackSequenceAndType(SeqNum seq, ValueType typ) -> uint64_t {
+  assert(seq <= kMaxSeqNum);
+  return seq << 8 | typ;
 }
 
-// Unpack the packed version and value type
-inline auto UnpackVersionAndType(uint64_t packed, Version* version, ValueType* typ) -> void {
+// Unpack the packed sequence number and value type
+inline auto UnpackSequenceAndType(uint64_t packed, SeqNum* seq, ValueType* typ) -> void {
   *typ = static_cast<ValueType>(packed & 0xFF);
-  *version = static_cast<Version>(packed >> 8);
+  *seq = static_cast<SeqNum>(packed >> 8);
 }
 
 // write varint into a character buffer directly, and return a pointer
@@ -50,14 +54,14 @@ auto DecodeVarint64(const char* p, const char* limit, uint64_t* value) -> const 
 auto EncodeFixed64(char* dst, uint64_t value) -> void;
 auto DecodeFixed64(const char* p) -> uint64_t;
 
-// Packed ordering key: user key + commit version + value type.
+// Packed ordering key: user key + sequence number + value type.
 struct InternalKey {
-  InternalKey() : version_(0), type_(kTypeValue) {};
+  InternalKey() : seq_(0), type_(kTypeValue) {};
 
-  InternalKey(const Slice& user_key, Version version, ValueType type)
-      : user_key_(user_key), version_(version), type_(type) {}
+  InternalKey(const Slice& user_key, SeqNum seq, ValueType type)
+      : user_key_(user_key), seq_(seq), type_(type) {}
 
-  auto Valid() const -> bool { return !user_key_.Empty() && version_ > 0; }
+  auto Valid() const -> bool { return !user_key_.Empty() && seq_ > 0; }
 
   auto EncodedLen() const -> size_t {
     uint32_t key_size = user_key_.Size() + 8;
@@ -69,9 +73,9 @@ struct InternalKey {
   // REQUIRES: buf has enough space for the value being written
   //
   // Format of an encoded key entry is concatenation of:
-  //  user_key        : varint32 of user_key.size()
-  //  user_key bytes  : char[user_key.size()]
-  //  packed version and type: 8
+  //  user_key           : varint32 of user_key.size()
+  //  user_key bytes     : char[user_key.size()]
+  //  packed seq and type: 8
   auto Encode(char* buf) const -> char*;
 
   auto ToString() const -> std::string {
@@ -81,31 +85,50 @@ struct InternalKey {
     return out;
   }
 
+  auto DebugString() const -> std::string {
+    auto seq_str = (seq_ == kMaxSeqNum) ? "@max" : std::format("@{}", seq_);
+    std::string type_str;
+    switch (type_) {
+      case kTypeValue:
+        type_str = "";
+        break;
+      case kTypeDeletion:
+        type_str = "_del";
+        break;
+      case kTypeMaxValue:
+        type_str = "_max";
+        break;
+      default:
+        type_str = std::format("{}", static_cast<char>(type_ + 48));
+    }
+    return std::format("{}{}{}", user_key_.ToString(), seq_str, type_str);
+  }
+
   // Decode an encoded internal key into a lightweight view that points into
   // the provided buffer; caller must ensure the lifetime of `p` exceeds the
   // returned object.
   static auto Decode(const char* p) -> InternalKey;
 
   // Returns an encoded InternalKey that is guaranteed to be < any InternalKey
-  // for this user_key and any version.
+  // for this user_key and any sequence number.
   static auto LowerBound(const Slice& user_key) -> InternalKey;
-  static auto LowerBound(const Slice& user_key, Version as_of) -> InternalKey;
+  static auto LowerBound(const Slice& user_key, SeqNum seq) -> InternalKey;
 
   static auto UpperBound(const Slice& user_key) -> InternalKey;
 
   Slice user_key_;
-  Version version_;
+  SeqNum seq_;
   ValueType type_;
 };
 
-// Orders by user key ascending, then by version descending so that
+// Orders by user key ascending, then by seq number descending so that
 // newer entries come before older ones for the same user key.
 //
-// NB: Two key are considered as equal if the user key and version are
+// NB: Two key are considered as equal if the user key and seq number are
 // equal respectively, the value type is ignored.
 // The returning result following the less_than semantic.
 //
-// Example semantic of sorting (UserKey ASC, Version DESC):
+// Example semantic of sorting (UserKey ASC, sequence DESC):
 // smaller
 //    |   key@3
 //    |   key@2

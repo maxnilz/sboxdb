@@ -30,38 +30,35 @@ struct FragmentedRangeTombstones {
   explicit FragmentedRangeTombstones(
       const std::unique_ptr<InternalIterator>& unfragmented_tombstones);
 
-  auto MaxCoveringSeq(const Slice& user_key, Version upper_bound) -> Version;
+  auto MaxCoveringSeq(const Slice& user_key, SeqNum upper_bound) -> SeqNum;
 
   auto ToString() const -> std::string;
 
   // NOLINTBEGIN
-  auto begin() -> std::vector<RangeTombstone>::const_iterator { return tombstones_.begin(); }
-  auto end() -> std::vector<RangeTombstone>::const_iterator { return tombstones_.end(); }
-  auto seq_iter(size_t idx) -> std::vector<Version>::const_iterator {
+  auto begin() const -> std::vector<RangeTombstone>::const_iterator { return tombstones_.begin(); }
+  auto end() const -> std::vector<RangeTombstone>::const_iterator { return tombstones_.end(); }
+  auto seq_iter(size_t idx) const -> std::vector<SeqNum>::const_iterator {
     return std::next(tombstone_seqs_.begin(), idx);
   }
-  auto seq_begin() -> std::vector<Version>::const_iterator { return tombstone_seqs_.begin(); }
-  auto seq_end() -> std::vector<Version>::const_iterator { return tombstone_seqs_.end(); }
+  auto seq_begin() const -> std::vector<SeqNum>::const_iterator { return tombstone_seqs_.begin(); }
+  auto seq_end() const -> std::vector<SeqNum>::const_iterator { return tombstone_seqs_.end(); }
   // NOLINTEND
 
   std::vector<RangeTombstone> tombstones_;
   // link with each tombstone by seq_start_idx and seq_end_idx,
   // order by seq num desc.
-  std::vector<Version> tombstone_seqs_;
+  std::vector<SeqNum> tombstone_seqs_;
 };
 
 // The iterator for traverse the fragmented/non-overlapped range tombstone with the
 // given inclusive upper_bound, it returns tombstones that closest or equal to the
-// given upper_bound version.
+// given upper_bound seq num.
 class FragmentedRangeTombstoneIterator {
  public:
   // Construct a fragmented range tombstone that positioned at the virtual end. Seek* methods
   // are expected to be called explicitly.
-  //
-  // NB: the input tombstones is not owned by the iterator.
-  FragmentedRangeTombstoneIterator(FragmentedRangeTombstones* tombstones, Version upper_bound)
-      : tombstones_(tombstones), upper_bound_(upper_bound) {
-    assert(tombstones_ != nullptr);
+  FragmentedRangeTombstoneIterator(FragmentedRangeTombstones tombstones, SeqNum upper_bound)
+      : tombstones_(std::move(tombstones)), upper_bound_(upper_bound) {
     Invalidate();  // Position the iterator to the virtual end.
   }
   ~FragmentedRangeTombstoneIterator() = default;
@@ -80,11 +77,11 @@ class FragmentedRangeTombstoneIterator {
   auto Next() -> void;
   auto StartKey() const -> InternalKey;
   auto EndKey() const -> InternalKey;
-  auto Seq() const -> Version;
+  auto Seq() const -> SeqNum;
 
   // Get the max covering seq that honor the given upper_bound_ for the
   // given user_key .
-  auto MaxCoveringSeq(const Slice& user_key) -> Version;
+  auto MaxCoveringSeq(const Slice& user_key) -> SeqNum;
 
  private:
   void SetMaximumVisibleSeq();
@@ -92,17 +89,17 @@ class FragmentedRangeTombstoneIterator {
   void ScanForwardToVisibleTombstone();
   void ScanBackwardToVisibleTombstone();
   void Invalidate() {
-    pos_ = tombstones_->end();
-    seq_pos_ = tombstones_->seq_end();
+    pos_ = tombstones_.end();
+    seq_pos_ = tombstones_.seq_end();
   }
 
   using RangeTombstone = FragmentedRangeTombstones::RangeTombstone;
 
-  FragmentedRangeTombstones* tombstones_;
-  Version upper_bound_;  // inclusive upper bound
+  FragmentedRangeTombstones tombstones_;
+  SeqNum upper_bound_;  // inclusive upper bound
 
   std::vector<RangeTombstone>::const_iterator pos_;
-  std::vector<Version>::const_iterator seq_pos_;
+  std::vector<SeqNum>::const_iterator seq_pos_;
 };
 
 }  // namespace cckv::internal

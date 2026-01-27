@@ -98,7 +98,7 @@ auto InternalKey::Encode(char* buf) const -> char* {
   memcpy(buf, user_key_.Data(), user_key_.Size());
   buf += user_key_.Size();
 
-  auto packed = PackVersionAndType(version_, type_);
+  auto packed = PackSequenceAndType(seq_, type_);
   EncodeFixed64(buf, packed);
   buf += 8;
 
@@ -115,23 +115,23 @@ auto InternalKey::Decode(const char* p) -> InternalKey {
   const char* packed_ptr = user_key + user_key_size;
   uint64_t packed = DecodeFixed64(packed_ptr);
 
-  Version version;
+  SeqNum seq;
   ValueType type;
-  UnpackVersionAndType(packed, &version, &type);
+  UnpackSequenceAndType(packed, &seq, &type);
 
-  return InternalKey{Slice(user_key, user_key_size), version, type};
+  return InternalKey{Slice(user_key, user_key_size), seq, type};
 }
 
 auto InternalKey::LowerBound(const Slice& user_key) -> InternalKey {
-  return InternalKey(user_key, kMaxVersion, ValueType::kTypeValue);
+  return InternalKey(user_key, kMaxSeqNum, ValueType::kTypeMaxValue);
 }
 
-auto InternalKey::LowerBound(const Slice& user_key, Version as_of) -> InternalKey {
-  return InternalKey(user_key, as_of, ValueType::kTypeValue);
+auto InternalKey::LowerBound(const Slice& user_key, SeqNum seq) -> InternalKey {
+  return InternalKey(user_key, seq, ValueType::kTypeMaxValue);
 }
 
 auto InternalKey::UpperBound(const Slice& user_key) -> InternalKey {
-  return InternalKey(user_key, kMinVersion, ValueType::kTypeValue);
+  return InternalKey(user_key, kMinSeqNum, ValueType::kTypeValue);
 }
 
 auto InternalKeyComparator::CompareUserKey(const Slice& a, const Slice& b) -> int {
@@ -146,21 +146,25 @@ auto InternalKeyComparator::CompareUserKey(const Slice& a, const Slice& b) -> in
 auto InternalKeyComparator::Compare(const InternalKey& a, const InternalKey& b) -> int {
   // order by user key asc
   const size_t min_len = std::min(a.user_key_.Size(), b.user_key_.Size());
-  int r = memcmp(a.user_key_.Data(), b.user_key_.Data(), min_len);
+  int64_t r = memcmp(a.user_key_.Data(), b.user_key_.Data(), min_len);
   if (r != 0) {
-    return r;
+    return r < 0 ? -1 : 1;
   }
   r = static_cast<int>(a.user_key_.Size() - b.user_key_.Size());
   if (r != 0) {
-    return r;
+    return r < 0 ? -1 : 1;
   }
-  // order by version desc;
-  r = static_cast<int>(b.version_ - a.version_);
+  // order by sequence number desc;
+  r = a.seq_ - b.seq_;
   if (r != 0) {
-    return r;
+    return r < 0 ? 1 : -1;
   }
   // order by type desc
-  return b.type_ - a.type_;
+  r = a.type_ - b.type_;
+  if (r == 0) {
+    return 0;
+  }
+  return r < 0 ? 1 : -1;
 }
 
 auto InternalKeyComparator::Compare(const char* a, const char* b) -> int {

@@ -22,6 +22,8 @@ class BatchRep {
     auto Key() const -> Slice { return key_; }
     auto Value() const -> Slice { return value_; }
 
+    auto Status() -> Status { return status_; }
+
    private:
     const char* buffer_;
     size_t size_;
@@ -31,6 +33,8 @@ class BatchRep {
     ValueType type_{0};
     Slice key_;
     Slice value_;
+
+    cckv::Status status_;
   };
 
   explicit BatchRep(size_t reserve_bytes) { buffer_.reserve(reserve_bytes); }
@@ -79,7 +83,7 @@ class Batch : public WriteBatch {
   class Handler {
    public:
     virtual ~Handler() = default;
-    virtual auto Commit(const BatchRep& rep, Version version) -> Status = 0;
+    virtual auto Apply(const BatchRep& rep) -> Status = 0;
   };
 
   explicit Batch(size_t reserved_bytes, Handler* handler)
@@ -105,7 +109,7 @@ class Batch : public WriteBatch {
     return Status::Ok();
   }
 
-  auto Commit(const Version& version) -> Status override { return handler_->Commit(rep_, version); }
+  auto Apply() -> Status override { return handler_->Apply(rep_); }
 
  private:
   Handler* handler_;
@@ -118,39 +122,35 @@ class Snapshot : public cckv::Snapshot {
    public:
     virtual ~Handler() = default;
 
-    virtual auto Get(const Slice& key, const Version& version, std::string* value) -> Status = 0;
+    virtual auto Get(const Slice& key, const SeqNum& seq, std::string* value) -> Status = 0;
     virtual auto NewIterator(const RangeOptions& options,
-                             const Version& version) -> StatusOr<std::unique_ptr<Iterator>> = 0;
+                             const SeqNum& seq) -> StatusOr<std::unique_ptr<Iterator>> = 0;
   };
 
-  explicit Snapshot(Version version, Handler* handler) : read_ts_(version), handler_(handler) {}
+  explicit Snapshot(Handler* handler, SeqNum seq) : handler_(handler), seq_(seq) {}
 
   ~Snapshot() override = default;
 
-  auto ReadTs() const -> Version override { return read_ts_; }
-
   auto Get(const Slice& key, std::string* value) -> Status override {
-    return handler_->Get(key, read_ts_, value);
+    return handler_->Get(key, seq_, value);
   }
   auto NewIterator(const RangeOptions& options) -> StatusOr<std::unique_ptr<Iterator>> override {
-    return handler_->NewIterator(options, read_ts_);
+    return handler_->NewIterator(options, seq_);
   }
 
  private:
-  Version read_ts_;
   Handler* handler_;
+  SeqNum seq_;
 };
 
 class Metadata {
  public:
-  Metadata(Version next_version, Version last_committed_version)
-      : next_version_(next_version), last_committed_version_(last_committed_version) {}
+  explicit Metadata(SeqNum next_seq) : next_seq_(next_seq) {}
 
   ~Metadata() = default;
 
  private:
-  Version next_version_;
-  Version last_committed_version_;
+  SeqNum next_seq_;
 };
 
 class Storage : public cckv::Storage {
@@ -160,13 +160,9 @@ class Storage : public cckv::Storage {
 
   ~Storage() override = default;
 
-  auto Snapshot(Version version) -> StatusOr<std::unique_ptr<cckv::Snapshot>> override;
+  auto Snapshot() -> StatusOr<std::unique_ptr<cckv::Snapshot>> override;
 
   auto WriteBatch() -> StatusOr<std::unique_ptr<cckv::WriteBatch>> override;
-
-  auto NextVersion() -> Version override;
-
-  auto LastCommittedVersion() const -> Version override;
 
  private:
   // Private nested types
@@ -175,16 +171,20 @@ class Storage : public cckv::Storage {
     explicit HandlerImpl(Storage* storage) : storage_(storage) {};
     ~HandlerImpl() override = default;
 
-    auto Commit(const BatchRep& rep, Version version) -> Status override;
+    auto Apply(const BatchRep& rep) -> Status override {
+      // TODO:
+      //  apply to memtable with correct seq
+      return Status::Ok();
+    }
 
-    auto Get(const Slice& key, const Version& version, std::string* value) -> Status override {
+    auto Get(const Slice& key, const SeqNum& seq, std::string* value) -> Status override {
       // TODO:
       //  check table_, imm_lists_ sequentially
       return Status::Ok();
     }
 
     auto NewIterator(const RangeOptions& options,
-                     const Version& version) -> StatusOr<std::unique_ptr<Iterator>> override {
+                     const SeqNum& seq) -> StatusOr<std::unique_ptr<Iterator>> override {
       // TODO:
       //  Need to implement rocksdb-like n-way merging iterator
       return Status::InvalidArgument("");

@@ -22,10 +22,6 @@ class InternalIterator {
   // after this call iff the source is not empty.
   virtual void SeekToFirst() = 0;
 
-  // Position at the last key in the source.  The iterator is
-  // Valid() after this call iff the source is not empty.
-  virtual void SeekToLast() = 0;
-
   // Position at the first key in the source that at or past user_key.
   // The iterator is Valid() after this call iff the source contains
   // an entry that comes at or past target.
