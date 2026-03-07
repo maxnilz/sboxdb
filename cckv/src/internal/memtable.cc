@@ -15,7 +15,9 @@ namespace {
 using Table = std::map<const char*, const char*, InternalKeyComparator>;
 class MapMemTable : public MemTable {
  public:
-  explicit MapMemTable(Allocator* allocator) : allocator_(allocator) {}
+  explicit MapMemTable(WriteBufferManager* write_buffer_manager) : tracker_(write_buffer_manager) {
+    allocator_ = NewAllocator(&tracker_);
+  }
   ~MapMemTable() override = default;
 
   auto Add(const InternalKey& ikey, const Slice& value) -> Status override {
@@ -108,6 +110,8 @@ class MapMemTable : public MemTable {
     return std::make_unique<FragmentedRangeTombstoneIterator>(std::move(tombstones), upper_bound);
   }
 
+  auto FlushState() -> FlushStateEnum override { return flush_state_; }
+
   class Iterator : public InternalIterator {
    public:
     explicit Iterator(const Table* table)
@@ -153,14 +157,22 @@ class MapMemTable : public MemTable {
   };
 
  private:
-  Allocator* allocator_;
+  auto UpdateFlushState() -> void {
+    flush_state_ = kFlushRequested;
+
+  }
+
+  AllocTracker tracker_;
+  std::unique_ptr<Allocator> allocator_;
   Table table_;
   Table range_del_table_;
+
+  FlushStateEnum flush_state_{kFlushNotRequested};
 };
 }  // namespace
 
-auto NewMemTable(Allocator* allocator) -> std::unique_ptr<MemTable> {
-  return std::make_unique<MapMemTable>(allocator);
+auto NewMemTable(WriteBufferManager* write_buffer_manager) -> std::unique_ptr<MemTable> {
+  return std::make_unique<MapMemTable>(write_buffer_manager);
 }
 
 }  // namespace cckv::internal

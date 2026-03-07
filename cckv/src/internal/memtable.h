@@ -2,7 +2,6 @@
 
 #include <memory>
 
-#include "cckv/cckv.h"
 #include "cckv/slice.h"
 #include "cckv/status.h"
 #include "codec.h"
@@ -36,6 +35,8 @@ class ReadOnlyMemTable {
       -> std::unique_ptr<FragmentedRangeTombstoneIterator> = 0;
 };
 
+enum FlushStateEnum : unsigned char { kFlushNotRequested, kFlushRequested, kFlushScheduled };
+
 class MemTable : public ReadOnlyMemTable {
  public:
   ~MemTable() override = default;
@@ -44,6 +45,8 @@ class MemTable : public ReadOnlyMemTable {
   //
   // ikey and value are copied/encoded into the underlying storage.
   virtual auto Add(const InternalKey& ikey, const Slice& value) -> Status = 0;
+
+  virtual auto FlushState() -> FlushStateEnum = 0;
 };
 
 // Factory for memtable.

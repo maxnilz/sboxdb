@@ -76,7 +76,7 @@ class Storage {
   virtual ~Storage() = default;
 
   virtual auto Snapshot() -> StatusOr<std::unique_ptr<Snapshot>> = 0;
-  virtual auto WriteBatch() -> StatusOr<std::unique_ptr<WriteBatch>> = 0;
+  virtual auto WriteBatch(size_t reserved_bytes) -> StatusOr<std::unique_ptr<WriteBatch>> = 0;
 };
 
 }  // namespace cckv
